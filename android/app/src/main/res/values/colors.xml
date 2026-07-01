@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ic_launcher_background">#2C3E50</color>
+    <!-- Phase 4：图标包切换背景色 -->
+    <color name="ic_launcher_background_warm">#E65100</color>
+    <color name="ic_launcher_background_festive">#C62828</color>
+    <color name="ic_launcher_background_minimal">#FAFAFA</color>
+</resources>

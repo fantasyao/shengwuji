@@ -1,0 +1,34 @@
+﻿# Flutter
+.dart_tool/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+devtools_options.yaml
+
+# Android
+android/.gradle/
+android/local.properties
+android/app/build/
+android/build/
+android/.cxx/
+
+# iOS
+ios/Pods/
+ios/Flutter/
+ios/build/
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# 大模型文件（走 GitHub Release，不进 git）
+assets/model.int8.onnx
+
+# 日志/临时
+*.log
+logs/
+build_output.log
+
+# 备份
+*.bak

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="quick_record_short">快速录音</string>
+    <string name="quick_record_long">快速开始日记录音</string>
+    <string name="quick_text_note_short">文本笔记</string>
+    <string name="quick_text_note_long">新建空白文本笔记</string>
+    <string name="accessibility_service_description">允许通过长按音量键快速启动录音，双击音量减键新建文本笔记。本服务不会读取屏幕内容或收集任何个人信息。</string>
+</resources>

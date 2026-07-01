@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Phase 4: icon2 深蓝前景的 bitmap 包装（给 minimal 图标包用，白底不可见白色）
+     不指定 android:gravity，使用默认 fill 让 PNG 等比拉伸到 108dp viewport -->
+<bitmap xmlns:android="http://schemas.android.com/apk/res/android"
+    android:src="@drawable/icon2_fg_dark" />

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Phase 4: icon2 白色前景的 bitmap 包装（adaptive-icon foreground 引用）
+     不指定 android:gravity，使用默认 fill 让 1024px PNG 等比拉伸到 108dp viewport；
+     之前用 center 导致 PNG 保持原尺寸被裁切到中心约 10% 区域 -->
+<bitmap xmlns:android="http://schemas.android.com/apk/res/android"
+    android:src="@drawable/icon2_fg_white" />

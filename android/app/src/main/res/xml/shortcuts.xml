@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 静态快捷方式：长按桌面图标触发的快捷操作
+     Phase 4：用自定义 action 替代 targetClass=MainActivity，
+     避免 setIconPack 切换图标包后 MainActivity 被 DISABLED 导致快捷方式启动失败。
+     每个 alias 都注册了对应的 intent-filter，alias enabled 时自动接管路由。-->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="quick_record"
+        android:enabled="true"
+        android:icon="@drawable/ic_record_shortcut"
+        android:shortcutShortLabel="@string/quick_record_short"
+        android:shortcutLongLabel="@string/quick_record_long">
+        <intent
+            android:action="com.shengwuji.app.ACTION_QUICK_RECORD"
+            android:targetPackage="com.shengwuji.app" />
+        <categories android:name="android.shortcut.conversation" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="quick_text_note"
+        android:enabled="true"
+        android:icon="@drawable/ic_record_shortcut"
+        android:shortcutShortLabel="@string/quick_text_note_short"
+        android:shortcutLongLabel="@string/quick_text_note_long">
+        <intent
+            android:action="com.shengwuji.app.ACTION_QUICK_TEXT_NOTE"
+            android:targetPackage="com.shengwuji.app" />
+        <categories android:name="android.shortcut.conversation" />
+    </shortcut>
+</shortcuts>
