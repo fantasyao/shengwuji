@@ -151,7 +151,9 @@ $excludeFiles = @(
     ".flutter-plugins",
     ".flutter-plugins-dependencies",
     "devtools_options.yaml",
-    "*.tmp"
+    "*.tmp",
+    "run.log",
+    "run_utf8.log"
 )
 
 Write-Host "排除目录: $($excludeDirs -join ', ')"
@@ -160,7 +162,22 @@ Write-Host "排除文件: $($excludeFiles -join ', ')"
 # 如果发布仓库已有 .git，先清空工作区（保留 .git）
 if ($releaseHasGit) {
     Write-Host "保留发布仓库 .git，清空其他内容..."
-    Get-ChildItem -Force $ReleaseRepoPath | Where-Object { $_.Name -ne ".git" } | Remove-Item -Recurse -Force
+    # Remove-Item -Recurse 在 Windows 长路径（>260 字符，如 build\.transforms\...\*.dex）下
+    # 会抛 DirectoryNotFoundException，改用 robocopy /MIR 镜像空目录清空（原生支持长路径），
+    # /XD .git 保护 release 的 .git 目录不被删除
+    $emptyMirror = Join-Path $env:TEMP ("empty_mirror_" + [System.Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $emptyMirror -Force | Out-Null
+    try {
+        $cleanCmd = 'robocopy "{0}" "{1}" /MIR /XD .git /NFL /NDL /NJH /NJS /R:1 /W:1' -f $emptyMirror, $ReleaseRepoPath
+        Write-Host "执行清空: $cleanCmd"
+        Invoke-Expression $cleanCmd | Out-Null
+        if ($LASTEXITCODE -ge 8) {
+            Write-Error "清空发布仓库失败，robocopy 退出码 $LASTEXITCODE"
+            exit 1
+        }
+    } finally {
+        Remove-Item $emptyMirror -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 # robocopy 参数

@@ -1,3 +1,4 @@
+import 'app_logger.dart';
 import 'dart:convert';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
@@ -33,7 +34,7 @@ class DbHelper {
         await db.execute(
           "CREATE TABLE dismissed_splits(id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL UNIQUE, created_at TEXT)",
         );
-        // 首次创建数据库时内置说明卡片（点击复制、长按编辑等 7 条功能引导）
+        // 首次创建数据库时内置说明卡片（点击复制、长按编辑等 8 条功能引导）
         await _seedTutorialDiaries(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
@@ -106,9 +107,9 @@ class DbHelper {
 
             // 删除 lists 表
             await db.execute('DROP TABLE lists');
-            print("数据库迁移 v7→v8：已将 $migratedCount 条清单迁移到日记表，lists 表已删除");
+            log("数据库迁移 v7→v8：已将 $migratedCount 条清单迁移到日记表，lists 表已删除");
           } catch (e) {
-            print("数据库迁移 v7→v8 失败（不阻止升级）：$e");
+            log("数据库迁移 v7→v8 失败（不阻止升级）：$e");
           }
         }
         // 数据库升级：从版本8升级到版本9，新增 dismissed_splits 表（日记页 ✕ 学习功能）
@@ -117,35 +118,42 @@ class DbHelper {
             await db.execute(
               "CREATE TABLE dismissed_splits(id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL UNIQUE, created_at TEXT)",
             );
-            print("数据库迁移 v8→v9：已创建 dismissed_splits 表");
+            log("数据库迁移 v8→v9：已创建 dismissed_splits 表");
           } catch (e) {
-            print("数据库迁移 v8→v9 失败（不阻止升级）：$e");
+            log("数据库迁移 v8→v9 失败（不阻止升级）：$e");
           }
         }
       },
     );
   }
 
-  // 内置说明卡片：首次创建数据库时调用，写入 7 条功能引导作为普通日记
+  // 内置说明卡片：首次创建数据库时调用，写入 8 条功能引导作为普通日记
   // 用户可左滑删除任意一条，删除后不会重生（除非清除数据/重装）
   // 时间戳策略：offsetSec 越大 → created_at 越新 → 排序越靠前
   Future<void> _seedTutorialDiaries(Database db) async {
     final baseTime = DateTime.now();
-    // 顺序：点击复制 → 长按编辑 → 双击跳AI → 左滑 → 语音日记 → 语音代办 → 时间识别
+    // 顺序：点击复制 → 长按编辑 → 双击跳AI → 左滑 → 搬家模式 → 语音代办 → 撤销命令 → 时间识别
     final tutorials = <Map<String, dynamic>>[
       {
         'content': '📋 点击复制\n轻点任意日记卡片，内容即刻复制到剪贴板，无提示音，可直接粘贴到任意位置。',
-        'offsetSec': 7,
+        'offsetSec': 8,
       },
-      {'content': '✏️ 长按编辑\n长按日记卡片，从底部弹出抽屉，可修改文字后保存。', 'offsetSec': 6},
+      {'content': '✏️ 长按编辑\n长按日记卡片，从底部弹出抽屉，可修改文字后保存。', 'offsetSec': 7},
       {
         'content': '💬 双击跳 AI\n双击日记卡片，一键将内容分享到 ChatGPT、DeepSeek、Kimi 等应用继续对话。',
-        'offsetSec': 5,
+        'offsetSec': 6,
       },
-      {'content': '⬅️ 左滑归档/删除\n将日记卡片向左滑动：活跃日记会归档，已归档日记会被彻底删除。', 'offsetSec': 4},
-      {'content': '🎤 说“记一下”\n录音时以“记一下…”开头，内容会自动保存为日记而非物品位置。', 'offsetSec': 3},
+      {'content': '⬅️ 左滑归档/删除\n将日记卡片向左滑动：活跃日记会归档，已归档日记会被彻底删除。', 'offsetSec': 5},
       {
-        'content': '✅ 语音待办清单\n连续说出多个事项（用“、”“还有”“再买”连接），系统会自动拆分为待办清单。',
+        'content': '📦 搬家模式\n录制页开启搬家模式后，双手不用看屏幕：持续录音 + Silero VAD 自动切段识别 + TTS 播报“已保存X到Y”，连说多件物品也逐条入库。',
+        'offsetSec': 4,
+      },
+      {
+        'content': '✅ 语音代办清单\n开口必须以“代办”或“待办”起头，再用顿号、“还有”、“再买”连接多个事项，系统才会自动拆分为待办清单（说正常话不会误判）。',
+        'offsetSec': 3,
+      },
+      {
+        'content': '↩️ 搬家模式撤销\n搬家模式中 TTS 念错时（如把“电扇”念成“电脑”），10 秒内说“不对”/“撤销”/“错了”等关键词，自动删除上一条物品记录并播报“已撤销”。',
         'offsetSec': 2,
       },
       {
@@ -168,14 +176,14 @@ class DbHelper {
       });
     }
     await batch.commit(noResult: true);
-    print("[DbHelper] 已内置 ${tutorials.length} 条说明卡片");
+    log("[DbHelper] 已内置 ${tutorials.length} 条说明卡片");
   }
 
   // 插入数据
   Future<void> insertItem(String name, String location) async {
     final dbClient = await db;
     await dbClient.insert('items', {'name': name, 'location': location});
-    print("已保存: $name 在 $location");
+    log("已保存: $name 在 $location");
   }
 
   /// 搬家模式专用：插入物品并返回 rowid（用于撤销）
@@ -184,7 +192,7 @@ class DbHelper {
   Future<int> insertItemReturningId(String name, String location) async {
     final dbClient = await db;
     final id = await dbClient.insert('items', {'name': name, 'location': location});
-    print("📦 [DB] 已保存(id=$id): $name 在 $location");
+    log("📦 [DB] 已保存(id=$id): $name 在 $location");
     return id;
   }
 
@@ -193,7 +201,7 @@ class DbHelper {
   Future<void> deleteItemById(int id) async {
     final dbClient = await db;
     await dbClient.delete('items', where: 'id = ?', whereArgs: [id]);
-    print("🗑️ [DB] 已撤销(id=$id)");
+    log("🗑️ [DB] 已撤销(id=$id)");
   }
 
   // 查询所有数据（用于后续展示）
@@ -251,7 +259,7 @@ class DbHelper {
       'duration': duration,
     };
     final id = await dbClient.insert('diary', map);
-    print("日记已保存: $content, audio: $audioPath, duration: ${duration}秒");
+    log("日记已保存: $content, audio: $audioPath, duration: ${duration}秒");
     return id;
   }
 
@@ -312,7 +320,7 @@ class DbHelper {
   Future<void> clearAllExportState() async {
     final dbClient = await db;
     await dbClient.update('diary', {'exported_at': null});
-    print("已清除所有日记的导出标记");
+    log("已清除所有日记的导出标记");
   }
 
   // 标记日记已导出（设置 exported_at 为当前时间）
@@ -353,7 +361,7 @@ class DbHelper {
       });
     }
     await batch.commit(noResult: true);
-    print("批量插入 ${items.length} 条物品数据");
+    log("批量插入 ${items.length} 条物品数据");
   }
 
   // 批量插入日记
@@ -369,7 +377,7 @@ class DbHelper {
       });
     }
     await batch.commit(noResult: true);
-    print("批量插入 ${diaries.length} 条日记数据");
+    log("批量插入 ${diaries.length} 条日记数据");
   }
 
   // 清空所有数据（用于导入前）
@@ -377,7 +385,7 @@ class DbHelper {
     final dbClient = await db;
     await dbClient.delete('items');
     await dbClient.delete('diary');
-    print("已清空所有数据");
+    log("已清空所有数据");
   }
 
   // ==================== dismissed_splits（日记页 ✕ 学习）====================
@@ -391,7 +399,7 @@ class DbHelper {
       'content': content,
       'created_at': DateTime.now().toIso8601String(),
     }, conflictAlgorithm: ConflictAlgorithm.ignore);
-    print("[DbHelper] 已记录 dismiss 内容: $content");
+    log("[DbHelper] 已记录 dismiss 内容: $content");
   }
 
   /// 启动时一次性加载所有 dismissed content 到内存 Set
@@ -400,7 +408,7 @@ class DbHelper {
     final dbClient = await db;
     final rows = await dbClient.query('dismissed_splits', columns: ['content']);
     final result = rows.map((r) => r['content'] as String).toSet();
-    print("[DbHelper] 已加载 ${result.length} 条 dismissed 记录到内存");
+    log("[DbHelper] 已加载 ${result.length} 条 dismissed 记录到内存");
     return result;
   }
 
@@ -420,6 +428,6 @@ class DbHelper {
   Future<void> clearAllDismissedSplits() async {
     final dbClient = await db;
     await dbClient.delete('dismissed_splits');
-    print("[DbHelper] 已清空所有 dismiss 记录");
+    log("[DbHelper] 已清空所有 dismiss 记录");
   }
 }

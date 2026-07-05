@@ -1,4 +1,6 @@
-﻿# 声物记
+﻿> flutter build apk --split-per-abi
+
+# 声物记
 
 > 完全离线的 Flutter 语音识别助手 —— 物品位置追踪、语音日记、清单提取、音量键快捷操作。
 

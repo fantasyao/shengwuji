@@ -1,3 +1,4 @@
+import 'app_logger.dart';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'recognizer_singleton.dart';
@@ -44,12 +45,12 @@ class _SplashScreenState extends State<SplashScreen> {
       final sw1 = Stopwatch()..start();
       await RecognizerSingleton.preloadModelPath();
       sw1.stop();
-      print("⏱️ [Splash] preloadModelPath 耗时: ${sw1.elapsedMilliseconds}ms");
+      log("⏱️ [Splash] preloadModelPath 耗时: ${sw1.elapsedMilliseconds}ms");
       StartupLogger.log("preloadModelPath", sw1.elapsedMilliseconds);
 
       // 检查当前权限状态：已授权则直接跳过按钮，继续初始化
       final status = await Permission.microphone.status;
-      print("🎤 [Splash] 麦克风权限状态: $status");
+      log("🎤 [Splash] 麦克风权限状态: $status");
       if (status.isGranted) {
         // 已授权，直接完成初始化
         await _finishInit();
@@ -84,9 +85,9 @@ class _SplashScreenState extends State<SplashScreen> {
     final sw2 = Stopwatch()..start();
     final status = await Permission.microphone.request();
     sw2.stop();
-    print("⏱️ [Splash] 请求权限 耗时: ${sw2.elapsedMilliseconds}ms");
+    log("⏱️ [Splash] 请求权限 耗时: ${sw2.elapsedMilliseconds}ms");
     StartupLogger.log("请求权限", sw2.elapsedMilliseconds);
-    print("🎤 [Splash] 权限请求结果: $status");
+    log("🎤 [Splash] 权限请求结果: $status");
 
     if (status.isGranted) {
       await _finishInit();

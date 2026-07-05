@@ -1,3 +1,4 @@
+import '../app_logger.dart';
 import '../models/time_entity.dart';
 
 /// 纯 Dart 实现的中文时间解析器
@@ -50,7 +51,7 @@ class DartChronoParser {
     final merged = _mergeAdjacentEntities(uniqueResults, text);
 
     if (merged.isNotEmpty) {
-      print('🕐 Dart Chrono 解析到 ${merged.length} 个时间实体: $merged');
+      log('🕐 Dart Chrono 解析到 ${merged.length} 个时间实体: $merged');
     }
 
     return merged;

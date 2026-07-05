@@ -1,3 +1,4 @@
+import 'app_logger.dart';
 import 'dart:async';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
@@ -119,7 +120,7 @@ class ListTabState extends State<ListTab> {
     // 调用单例加载（RecognizerSingleton 内部用 _isInitializing 串行化，
     // 即使 DiaryTab 同时也在 initEngine，二次调用会安全等待）
     final success = await _recognizerManager.initialize();
-    print("🔍 [ListTab] initEngine: 初始化结果, success=$success");
+    log("🔍 [ListTab] initEngine: 初始化结果, success=$success");
 
     if (mounted) {
       setState(() {}); // 刷新按钮状态（isReady 会变 true）
@@ -146,7 +147,7 @@ class ListTabState extends State<ListTab> {
         Vibration.vibrate(duration: duration, amplitude: amplitude);
       }
     } catch (e) {
-      print("ListTab 震动失败: $e");
+      log("ListTab 震动失败: $e");
     }
   }
 
@@ -221,9 +222,9 @@ class ListTabState extends State<ListTab> {
           _isVoiceRecording = true;
         });
       }
-      print("🔍 [ListTab] 语音查询录音开始");
+      log("🔍 [ListTab] 语音查询录音开始");
     } catch (e) {
-      print("🔍 [ListTab] 启动录音失败: $e");
+      log("🔍 [ListTab] 启动录音失败: $e");
       if (mounted) {
         ScaffoldMessenger.of(
           context,
@@ -260,10 +261,10 @@ class ListTabState extends State<ListTab> {
       await _audioRecorder!.stop();
       await Future.delayed(const Duration(milliseconds: 50));
     } catch (e) {
-      print("🔍 [ListTab] 停止录音失败: $e");
+      log("🔍 [ListTab] 停止录音失败: $e");
     }
 
-    print("🔍 [ListTab] 语音查询录音时长: ${recordingDuration.inMilliseconds}ms");
+    log("🔍 [ListTab] 语音查询录音时长: ${recordingDuration.inMilliseconds}ms");
 
     // 录音过短校验（<500ms 视为误触）
     if (recordingDuration.inMilliseconds < 500) {
@@ -299,7 +300,7 @@ class ListTabState extends State<ListTab> {
     try {
       final recognizer = _recognizerManager.recognizer;
       if (recognizer == null) {
-        print("🔍 [ListTab] 识别器为 null，无法识别");
+        log("🔍 [ListTab] 识别器为 null，无法识别");
         if (mounted) {
           ScaffoldMessenger.of(
             context,
@@ -309,7 +310,7 @@ class ListTabState extends State<ListTab> {
       }
 
       if (_audioBuffer.isEmpty) {
-        print("🔍 [ListTab] 录音缓冲为空");
+        log("🔍 [ListTab] 录音缓冲为空");
         if (mounted) {
           ScaffoldMessenger.of(
             context,
@@ -327,7 +328,7 @@ class ListTabState extends State<ListTab> {
       recognizer.decode(stream);
       final result = recognizer.getResult(stream);
       final rawText = result.text;
-      print("🔍 [ListTab] 原始识别: $rawText");
+      log("🔍 [ListTab] 原始识别: $rawText");
 
       if (rawText.isEmpty) {
         if (mounted) {
@@ -341,7 +342,7 @@ class ListTabState extends State<ListTab> {
       // 纠错（参考 DiaryTab 第 1407 行 widget.processor.process 调用）
       // ListTab 查询场景默认 removeSpaces=true（查询词不需要空格）
       final corrected = _processor.process(rawText, removeSpaces: true);
-      print("🔍 [ListTab] 纠错后: $corrected");
+      log("🔍 [ListTab] 纠错后: $corrected");
 
       // 查询检测
       final queryResult = QueryDetector.detect(corrected);
@@ -360,16 +361,16 @@ class ListTabState extends State<ListTab> {
       // _filterItems 已支持 name + location 双字段 LIKE 过滤，无论传物品名还是位置名都正确
       switch (queryResult.type) {
         case QueryType.itemQuery:
-          print("🔍 [ListTab] 正向查询: ${queryResult.itemName}");
+          log("🔍 [ListTab] 正向查询: ${queryResult.itemName}");
           setSearchQuery(queryResult.itemName);
           break;
         case QueryType.locationQuery:
-          print("🔍 [ListTab] 反向查询: ${queryResult.locationName}");
+          log("🔍 [ListTab] 反向查询: ${queryResult.locationName}");
           setSearchQuery(queryResult.locationName);
           break;
       }
     } catch (e) {
-      print("🔍 [ListTab] 识别/查询出错: $e");
+      log("🔍 [ListTab] 识别/查询出错: $e");
       if (mounted) {
         ScaffoldMessenger.of(
           context,
@@ -411,7 +412,9 @@ class ListTabState extends State<ListTab> {
         backgroundColor: Colors.transparent,
         elevation: 0,
         centerTitle: true,
-        systemOverlayStyle: SystemUiOverlayStyle.dark,
+        systemOverlayStyle: ext.isDarkOverlay
+            ? SystemUiOverlayStyle.light
+            : SystemUiOverlayStyle.dark,
       ),
       // 搜索框 + 物品列表（原 body 内 Stack 的第一层 Column）
       body: Column(
@@ -488,6 +491,8 @@ class ListTabState extends State<ListTab> {
                               color: ext.dangerAccent,
                             ),
                             onPressed: () async {
+                              // 删除震动反馈（与日记删除触感一致：20ms / amplitude 50）
+                              await _haptic(duration: 20, amplitude: 50);
                               final dbClient = await widget.dbHelper.db;
                               await dbClient.delete(
                                 'items',

@@ -168,7 +168,7 @@ class _MainScaffoldState extends State<MainScaffold>
         state == AppLifecycleState.hidden ||
         state == AppLifecycleState.inactive) {
       if (_hasHandledShortcutLaunch) {
-        print('App进入后台，重置快捷方式防重复标志');
+        log('App进入后台，重置快捷方式防重复标志');
         _hasHandledShortcutLaunch = false;
       }
     }
@@ -178,7 +178,7 @@ class _MainScaffoldState extends State<MainScaffold>
   Future<void> _handleQuickRecord() async {
     // 🔥 防止重复触发：立即设置标志（在方法开始时）
     if (_hasHandledShortcutLaunch) {
-      print('快捷方式已处理，忽略重复调用');
+      log('快捷方式已处理，忽略重复调用');
       return;
     }
     _hasHandledShortcutLaunch = true;
@@ -187,7 +187,7 @@ class _MainScaffoldState extends State<MainScaffold>
 
     // 如果正在录音，停止录音（长按音量键切换逻辑）
     if (diaryState != null && diaryState.isListening) {
-      print('🔑 快捷录音：检测到正在录音，执行停止');
+      log('🔑 快捷录音：检测到正在录音，执行停止');
       diaryState.stopListening();
       return;
     }
@@ -208,7 +208,7 @@ class _MainScaffoldState extends State<MainScaffold>
   /// 处理双击音量键新建文本笔记
   Future<void> _handleQuickTextNote() async {
     if (_hasHandledShortcutLaunch) {
-      print('快捷方式已处理，忽略重复调用');
+      log('快捷方式已处理，忽略重复调用');
       return;
     }
     _hasHandledShortcutLaunch = true;
@@ -331,6 +331,9 @@ class _MainScaffoldState extends State<MainScaffold>
               ),
               child: BottomNavigationBar(
                 currentIndex: _currentIndex,
+                // 显式指定背景色：黑金主题下默认白色会与深色 scaffold 断裂
+                // 4 套主题中 3 套浅色 cardBackground≈白，视觉无变化；黑金修复白底问题
+                backgroundColor: ext.cardBackground,
                 type: BottomNavigationBarType
                     .fixed, // [注意] 超过3个tab建议加上这个属性，防止图标乱动
                 onTap: (index) {
@@ -425,7 +428,7 @@ class _MainScaffoldState extends State<MainScaffold>
                     try {
                       await _platform.invokeMethod('stopAlarmRingtone');
                     } catch (e) {
-                      print('⚠️ 停止闹钟失败: $e');
+                      log('⚠️ 停止闹钟失败: $e');
                     }
                     if (mounted) {
                       setState(() => _isAlarmRinging = false);

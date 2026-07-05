@@ -18,6 +18,7 @@ import '../vad_singleton.dart';
 import '../tts_singleton.dart';
 import '../theme/app_theme_extension.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class RecordTab extends StatefulWidget {
   final TextProcessor processor;
@@ -64,7 +65,10 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
   // ── 搬家模式字段 ──
   bool _isMoveMode = false; // 搬家模式总开关
   bool _isTtsPlaying = false; // TTS 播报中（回采屏蔽三层防御的标志位）
+  bool _ttsEnabled =
+      true; // 搬家模式 TTS 保存播报开关（仅控制 _playTtsFeedback，不影响撤销 _speakRaw；持久化 key: move_mode_tts_enabled）
   int _moveSavedCount = 0; // 本场已保存条数（UI 显示，退出不清零，作为"本场共 N 条"统计）
+  int _moveSegmentSeq = 0; // VAD 切段流水号（仅日志诊断用，_enterMoveMode 时清零，便于看本场切段数与识别关联）
   // 最近保存记录列表（最多保留 5 条，最新在尾部）
   // 每条记录保存 rowid + 预览文字，用于列表内撤销（替代旧的 SnackBar 撤销）
   final List<_MoveSaveRecord> _recentSaves = [];
@@ -89,7 +93,12 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
   // 2) 10 秒窗口不阻塞正常录入——超时或非命中关键词的文本走 ItemSplitter 正常保存
   // 3) 与 _undoSave (UI 撤销按钮) 复用同一删除路径
   static const Set<String> _kUndoKeywords = {
-    '不对', '撤销', '错了', '取消', '删掉', '不是这个',
+    '不对',
+    '撤销',
+    '错了',
+    '取消',
+    '删掉',
+    '不是这个',
   };
   static const int _kUndoMaxTextLen = 5; // 撤销命令文本最大长度（避免长句误命中）
   static const int _kUndoWindowSeconds = 10; // 撤销时间窗口（秒）
@@ -115,7 +124,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
   Future<void> initializeIfNeeded() async {
     // 刷新模型路径缓存，使 hasModel 判断正确
     await RecognizerSingleton.preloadModelPath();
-    print(
+    log(
       "📍 [Record] initializeIfNeeded: _isReady=$_isReady, hasModel=${RecognizerSingleton.hasModel}",
     );
 
@@ -128,7 +137,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
         _isReady = true;
         _statusText = "长按录音";
       });
-      print("📍 [Record] 启动页已加载模型，同步状态");
+      log("📍 [Record] 启动页已加载模型，同步状态");
       return;
     }
 
@@ -168,6 +177,12 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
     _ttsPlayer.setAudioContext(
       AudioContextConfig(focus: AudioContextConfigFocus.mixWithOthers).build(),
     );
+
+    // 读取搬家模式 TTS 开关持久化值（fire-and-forget，默认 true 保持现有行为）
+    SharedPreferences.getInstance().then((prefs) {
+      _ttsEnabled = prefs.getBool('move_mode_tts_enabled') ?? true;
+      if (mounted) setState(() {});
+    });
   }
 
   @override
@@ -181,12 +196,12 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
     if (_isMoveMode &&
         (state == AppLifecycleState.paused ||
             state == AppLifecycleState.inactive)) {
-      print('🔄 [搬家模式] 检测到 app 进后台，自动退出');
+      log('🔄 [搬家模式] 检测到 app 进后台，自动退出');
       _exitMoveMode();
     }
 
     // 调试日志：打印所有状态变化
-    print(
+    log(
       "🔍 [生命周期] 录入页状态变化: $_lastState → $state, _isReady=$_isReady, _wasInBackground=$_wasInBackground",
     );
 
@@ -195,7 +210,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
         state == AppLifecycleState.hidden) {
       _wasInBackground = true;
       _pausedTime = DateTime.now(); // 记录进入后台的时间
-      print("录入页：进入后台，记录时间戳: $_pausedTime");
+      log("录入页：进入后台，记录时间戳: $_pausedTime");
     }
 
     // 只在从后台恢复到前台时才预热（真正的后台恢复，而非通知栏操作）
@@ -208,23 +223,23 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
 
       final isShortBackground = backgroundDuration < _shortBackgroundThreshold;
 
-      print(
+      log(
         "录入页：从后台恢复，后台时长: ${backgroundDuration.inSeconds}秒，是否短时间后台: $isShortBackground",
       );
 
       if (isShortBackground) {
         // 短时间后台：静默预热，不显示loading
-        print("录入页：短时间后台恢复，静默预热");
+        log("录入页：短时间后台恢复，静默预热");
 
         Future.delayed(const Duration(milliseconds: 50), () async {
           await _warmupEngine();
           if (mounted) {
-            print("录入页：静默预热完成");
+            log("录入页：静默预热完成");
           }
         });
       } else {
         // 长时间后台：显示全局loading并预热
-        print("录入页：长时间后台恢复，显示loading并预热");
+        log("录入页：长时间后台恢复，显示loading并预热");
 
         // 回调显示全局loading
         final stopwatch = Stopwatch()..start();
@@ -239,11 +254,11 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
           if (mounted) {
             // 回调隐藏全局loading
             stopwatch.stop();
-            print(
+            log(
               "🔍 [性能检测] 录入页后台恢复预热高斯模糊loading耗时: ${stopwatch.elapsedMilliseconds}ms",
             );
             widget.onLoadingChanged?.call(false);
-            print("录入页：后台恢复预热完成");
+            log("录入页：后台恢复预热完成");
           }
         });
       }
@@ -322,9 +337,9 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
       _recognizer!.getResult(stream);
       stream.free();
 
-      print("录入引擎预热完成");
+      log("录入引擎预热完成");
     } catch (e) {
-      print("录入引擎预热失败: $e");
+      log("录入引擎预热失败: $e");
     }
   }
 
@@ -470,9 +485,13 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
                 ); // build 外使用主题色
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
-                    content: const Row(
+                    content: Row(
                       children: [
-                        Icon(Icons.auto_awesome, color: Colors.amber, size: 20),
+                        Icon(
+                          Icons.auto_awesome,
+                          color: snackBarExt.goldAccent, // 原 Colors.amber
+                          size: 20,
+                        ),
                         SizedBox(width: 10),
                         Text(
                           "智能识别：已为您存入随手记",
@@ -499,8 +518,8 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
 
           // 如果不是以"记录一下"开头，则继续走原来的"存物品"逻辑
           final processedText = widget.processor.process(rawText);
-          print("原始识别: $rawText");
-          print("修正后文本: $processedText");
+          log("原始识别: $rawText");
+          log("修正后文本: $processedText");
           AppLogger.appLog('🎤 [Record] 原始识别: $rawText');
           AppLogger.appLog('📝 [Record] 修正后文本: $processedText');
 
@@ -525,10 +544,10 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
 
     stopwatch.stop();
     // 改用 print，这样在任何过滤器下都更容易被看到
-    print("----------------------------------------");
-    print("🚀 [性能检测] 识别总耗时: ${stopwatch.elapsedMilliseconds} 毫秒");
-    print("📝 识别结果: ${_itemController.text} | ${_locationController.text}");
-    print("----------------------------------------");
+    log("----------------------------------------");
+    log("🚀 [性能检测] 识别总耗时: ${stopwatch.elapsedMilliseconds} 毫秒");
+    log("📝 识别结果: ${_itemController.text} | ${_locationController.text}");
+    log("----------------------------------------");
 
     _vibrate(duration: 30, amplitude: 40);
     setState(() {
@@ -631,7 +650,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
       try {
         await TtsSingleton.instance.initialize();
       } catch (e) {
-        print('⚠️ [搬家模式] TTS 初始化失败，降级为音效: $e');
+        log('⚠️ [搬家模式] TTS 初始化失败，降级为音效: $e');
       }
       _audioBuffer.clear();
       final stream = await _audioRecorder.startStream(
@@ -647,6 +666,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
         _isListening = true;
         _isProcessing = false;
         _moveSavedCount = 0;
+        _moveSegmentSeq = 0; // 新一场切段流水号归零，方便日志看本场切段数
         _statusText = '搬家模式：请说出「物品+位置」';
       });
       // 搬家模式屏幕常亮（防止系统锁屏中断 PCM 流）+ 启动闲置降亮计时
@@ -654,11 +674,11 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
       try {
         await WakelockPlus.enable();
       } catch (e) {
-        print("搬家模式启用 Wakelock 失败: $e");
+        log("搬家模式启用 Wakelock 失败: $e");
       }
       _startIdleDimTimer();
     } catch (e) {
-      print('❌ [搬家模式] 进入失败: $e');
+      log('❌ [搬家模式] 进入失败: $e');
       setState(() {
         _isProcessing = false;
         _statusText = '搬家模式启动失败：$e';
@@ -694,7 +714,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
       final vad = VadSingleton.instance.vad;
       final isDetected = vad?.isDetected();
       final isEmpty = vad?.isEmpty();
-      print(
+      log(
         '📊 [搬家诊断] chunk#$_pcmChunkCounter '
         'bytes=${data.length} samples=${samples.length} '
         'rms=${rms.toStringAsFixed(4)} '
@@ -714,8 +734,42 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
     while (!vad.isEmpty()) {
       final seg = vad.front();
       vad.pop();
-      print('📦 [搬家模式] 切出一段 ${seg.samples.length} samples');
-      _recognizeAndSave(seg.samples); // 不 await，循环继续
+      final samples = seg.samples;
+      final seq = ++_moveSegmentSeq;
+      // ── VAD 切段诊断日志（用于判定识别率低的根因） ──
+      // 段长：判定首尾字被切（"袋子里"应 0.6-0.9s，过短=被切）
+      // RMS：判定段内能量（弱音节"子" RMS 会低）
+      // 头/尾静音：判定 VAD 边界是否在音节中间切断（正常应 < 50ms）
+      final durationSec = samples.length / 16000.0;
+      double sumSq = 0;
+      for (final s in samples) {
+        sumSq += s * s;
+      }
+      final rms = samples.isNotEmpty ? sqrt(sumSq / samples.length) : 0.0;
+      const silenceThreshold = 0.01; // 约 -40dBFS，接近静音
+      int headSilent = 0;
+      for (final s in samples) {
+        if (s.abs() < silenceThreshold) {
+          headSilent++;
+        } else {
+          break;
+        }
+      }
+      int tailSilent = 0;
+      for (int i = samples.length - 1; i >= 0; i--) {
+        if (samples[i].abs() < silenceThreshold) {
+          tailSilent++;
+        } else {
+          break;
+        }
+      }
+      log(
+        '📦 [VAD#$seq] 段长 ${durationSec.toStringAsFixed(2)}s (${samples.length}样本), '
+        'RMS ${rms.toStringAsFixed(4)}, '
+        '头静音 ${(headSilent / 16).toStringAsFixed(0)}ms, '
+        '尾静音 ${(tailSilent / 16).toStringAsFixed(0)}ms',
+      );
+      _recognizeAndSave(samples); // 不 await，循环继续
     }
   }
 
@@ -741,6 +795,8 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
   /// 4. 播完后多留 200ms 缓冲（喇叭余震 + 麦克风回声衰减）
   /// 5. 失败降级为音效
   Future<void> _playTtsFeedback(String item, String location) async {
+    // TTS 开关关闭时直接 return（保存音效 _playSuccess 已在调用前播过，无需降级）
+    if (!_ttsEnabled) return;
     setState(() => _isTtsPlaying = true);
     // 关键：TTS 开始前清空 VAD 已 accept 但未输出的样本
     // （防 TTS 触发前用户刚说出口的尾巴被混入识别）
@@ -751,7 +807,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
       // 播完后多留 200ms 缓冲（喇叭余震 + 麦克风回声衰减）
       await Future.delayed(const Duration(milliseconds: 200));
     } catch (e) {
-      print('❌ [TTS] 播报失败，降级音效: $e');
+      log('❌ [TTS] 播报失败，降级音效: $e');
       _playSuccess();
     } finally {
       if (mounted) setState(() => _isTtsPlaying = false);
@@ -764,17 +820,18 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
   //  与 plan 第 3.7 节一致：insertItemReturningId 是纯 INSERT，恒用"已保存"文案。
   String _buildTtsText(String item, String location) {
     // 清掉 emoji / 标点等 TTS 可能读成乱码的字符
-    final cleanItem =
-        item.replaceAll(RegExp(r'[^\u4e00-\u9fa5a-zA-Z0-9]'), '');
-    final cleanLoc =
-        location.replaceAll(RegExp(r'[^\u4e00-\u9fa5a-zA-Z0-9]'), '');
+    final cleanItem = item.replaceAll(RegExp(r'[^\u4e00-\u9fa5a-zA-Z0-9]'), '');
+    final cleanLoc = location.replaceAll(
+      RegExp(r'[^\u4e00-\u9fa5a-zA-Z0-9]'),
+      '',
+    );
     return '已保存$cleanItem到$cleanLoc';
   }
 
   /// 识别单段语音 + 智能分割 + 写库
   Future<void> _recognizeAndSave(Float32List samples) async {
     if (_isTtsPlaying) {
-      print('🔇 [搬家模式] TTS 播放中，丢弃残余段'); // 回采屏蔽第 3 层（最深层防御）
+      log('🔇 [搬家模式] TTS 播放中，丢弃残余段'); // 回采屏蔽第 3 层（最深层防御）
       return;
     }
     setState(() {
@@ -784,7 +841,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
     try {
       final recognizer = _recognizer;
       if (recognizer == null) {
-        print('⚠️ [搬家模式] 识别器未就绪，跳过本段');
+        log('⚠️ [搬家模式] 识别器未就绪，跳过本段');
         setState(() {
           _isProcessing = false;
           _statusText = '识别器未就绪';
@@ -796,7 +853,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
       recognizer.decode(stream);
       final rawText = recognizer.getResult(stream).text;
       stream.free();
-      print('🎤 [搬家模式] 识别结果: "$rawText"');
+      log('🎤 [搬家模式] 识别结果: "$rawText"');
       if (rawText.isEmpty) {
         setState(() {
           _isProcessing = false;
@@ -816,7 +873,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
       final splitRes = ItemSplitter.detect(processed, lenient: true);
       if (splitRes == null) {
         // 智能分割失败：弹出带"手动保存"按钮的 SnackBar（步骤 5）
-        print('⚠️ [搬家模式] 智能分割失败: "$processed"');
+        log('⚠️ [搬家模式] 智能分割失败: "$processed"');
         setState(() {
           _isProcessing = false;
           _statusText = '没分出物品+位置: $processed';
@@ -854,9 +911,9 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
       } else {
         _playSuccess();
       }
-      print('📝 [搬家模式] 已保存: ${splitRes.item} → ${splitRes.location} (id=$id)');
+      log('📝 [搬家模式] 已保存: ${splitRes.item} → ${splitRes.location} (id=$id)');
     } catch (e) {
-      print('❌ [搬家模式] 识别保存失败: $e');
+      log('❌ [搬家模式] 识别保存失败: $e');
       setState(() {
         _isProcessing = false;
         _statusText = '识别失败：$e';
@@ -875,7 +932,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
       _moveSavedCount--;
       _statusText = '已撤销，本场共 $_moveSavedCount 条';
     });
-    print('↩️ [搬家模式] 已撤销 id=$id');
+    log('↩️ [搬家模式] 已撤销 id=$id');
   }
 
   /// 撤销场景的纯文本播报（不走"已保存X到Y"模板）
@@ -895,7 +952,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
       // 播完后多留 200ms 缓冲（喇叭余震 + 麦克风回声衰减）
       await Future.delayed(const Duration(milliseconds: 200));
     } catch (e) {
-      print('❌ [TTS] 撤销播报失败，降级音效: $e');
+      log('❌ [TTS] 撤销播报失败，降级音效: $e');
       _playFailure();
     } finally {
       if (mounted) setState(() => _isTtsPlaying = false);
@@ -925,7 +982,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
   //  注意：撤销 TTS 用 _speakRaw（纯文本播报），不走 _playTtsFeedback 的"已保存X到Y"模板
   Future<void> _handleUndoCommand() async {
     if (_recentSaves.isEmpty) {
-      print('🚫 [搬家模式] 撤销命令但无记录可撤');
+      log('🚫 [搬家模式] 撤销命令但无记录可撤');
       setState(() {
         _isProcessing = false;
         _statusText = '没有可撤销的记录';
@@ -936,7 +993,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
     final last = _recentSaves.last;
     final age = DateTime.now().difference(last.savedAt);
     if (age.inSeconds > _kUndoWindowSeconds) {
-      print('⏰ [搬家模式] 撤销命令但上一条已超时（${age.inSeconds}s）');
+      log('⏰ [搬家模式] 撤销命令但上一条已超时（${age.inSeconds}s）');
       setState(() {
         _isProcessing = false;
         _statusText = '上一条已超时，无法撤销';
@@ -945,7 +1002,9 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
       return;
     }
     // 窗口内 → 复用 UI 撤销的同款删除逻辑
-    print('↩️ [搬家模式] 语音撤销：${last.item} → ${last.location} (id=${last.id}, ${age.inSeconds}s 前)');
+    log(
+      '↩️ [搬家模式] 语音撤销：${last.item} → ${last.location} (id=${last.id}, ${age.inSeconds}s 前)',
+    );
     await _undoSave(last.id);
     setState(() {
       _isProcessing = false;
@@ -988,7 +1047,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
                 _statusText = '已保存 $_moveSavedCount 条';
               });
               _playSuccess();
-              print('📝 [搬家模式] 手动保存（无位置）: $rawText');
+              log('📝 [搬家模式] 手动保存（无位置）: $rawText');
             },
           ),
         ),
@@ -998,7 +1057,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
   /// 退出搬家模式：清理录音 + 处理 VAD 尾部 + 释放资源
   Future<void> _exitMoveMode() async {
     if (!_isMoveMode) return;
-    print('🚪 [搬家模式] 退出中...');
+    log('🚪 [搬家模式] 退出中...');
     try {
       await _moveStreamSub?.cancel();
       _moveStreamSub = null;
@@ -1016,7 +1075,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
       try {
         await WakelockPlus.disable();
       } catch (e) {
-        print("搬家模式禁用 Wakelock 失败: $e");
+        log("搬家模式禁用 Wakelock 失败: $e");
       }
       setState(() {
         _isMoveMode = false;
@@ -1029,9 +1088,9 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
             ? '搬家模式结束，本场共保存 $_moveSavedCount 条'
             : '搬家模式结束';
       });
-      print('✅ [搬家模式] 已退出');
+      log('✅ [搬家模式] 已退出');
     } catch (e) {
-      print('❌ [搬家模式] 退出失败: $e');
+      log('❌ [搬家模式] 退出失败: $e');
       setState(() => _statusText = '退出失败：$e');
     }
   }
@@ -1201,6 +1260,55 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
                               ],
                             ),
                           ),
+                          // ── 搬家模式 TTS 子开关（仅在搬家模式打开时显示） ──
+                          // 只控制 _playTtsFeedback（保存播报），不影响撤销 _speakRaw
+                          if (_isMoveMode)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 4,
+                              ),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    Icons.volume_up,
+                                    size: 20,
+                                    color: ext.primary,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    '语音播报',
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w600,
+                                      color: ext.textPrimary,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    '· 保存后朗读',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: ext.textSecondary,
+                                    ),
+                                  ),
+                                  const Spacer(),
+                                  Switch(
+                                    value: _ttsEnabled,
+                                    activeThumbColor: ext.primary,
+                                    onChanged: (v) async {
+                                      setState(() => _ttsEnabled = v);
+                                      final prefs =
+                                          await SharedPreferences.getInstance();
+                                      await prefs.setBool(
+                                        'move_mode_tts_enabled',
+                                        v,
+                                      );
+                                    },
+                                  ),
+                                ],
+                              ),
+                            ),
                           if (_isMoveMode) ...[
                             // 麦克风"正在听"指示器：自管 Timer + setState，不污染外层 layout
                             const _MicPulseIndicator(),

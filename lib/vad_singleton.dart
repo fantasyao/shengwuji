@@ -1,3 +1,4 @@
+import 'app_logger.dart';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show rootBundle;
@@ -51,7 +52,7 @@ class VadSingleton {
     // 如果文件已存在，直接返回路径（跳过拷贝）
     if (modelFile.existsSync()) {
       final modelSize = await modelFile.length();
-      print("📍 [VAD] 模型已存在于本地: ${modelFile.path} (${(modelSize / 1024).toStringAsFixed(1)}KB)");
+      log("📍 [VAD] 模型已存在于本地: ${modelFile.path} (${(modelSize / 1024).toStringAsFixed(1)}KB)");
       return modelFile.path;
     }
 
@@ -60,13 +61,13 @@ class VadSingleton {
       await dir.create(recursive: true);
     }
 
-    print("📦 [VAD] 首次启动，从 assets 拷贝 silero_vad.onnx 到本地...");
+    log("📦 [VAD] 首次启动，从 assets 拷贝 silero_vad.onnx 到本地...");
     final copySw = Stopwatch()..start();
 
     // 从 assets 加载模型字节
     final modelData = await rootBundle.load('assets/silero_vad.onnx');
     copySw.stop();
-    print("⏱️ [VAD] rootBundle.load(silero_vad) 耗时: ${copySw.elapsedMilliseconds}ms");
+    log("⏱️ [VAD] rootBundle.load(silero_vad) 耗时: ${copySw.elapsedMilliseconds}ms");
 
     copySw.reset();
     copySw.start();
@@ -74,8 +75,8 @@ class VadSingleton {
       modelData.buffer.asUint8List(modelData.offsetInBytes, modelData.lengthInBytes),
     );
     copySw.stop();
-    print("⏱️ [VAD] writeAsBytes(silero_vad) 耗时: ${copySw.elapsedMilliseconds}ms, 大小: ${(modelData.lengthInBytes / 1024).toStringAsFixed(1)}KB");
-    print("📦 [VAD] silero_vad.onnx 拷贝完成: ${modelFile.path}");
+    log("⏱️ [VAD] writeAsBytes(silero_vad) 耗时: ${copySw.elapsedMilliseconds}ms, 大小: ${(modelData.lengthInBytes / 1024).toStringAsFixed(1)}KB");
+    log("📦 [VAD] silero_vad.onnx 拷贝完成: ${modelFile.path}");
     return modelFile.path;
   }
 
@@ -93,7 +94,7 @@ class VadSingleton {
         return false;
       }
 
-      print("🚀 [VAD] 初始化 VoiceActivityDetector, model=$path");
+      log("🚀 [VAD] 初始化 VoiceActivityDetector, model=$path");
       final initSw = Stopwatch()..start();
 
       // 在 Future 中加载，避免阻塞调用线程（参考 RecognizerSingleton.initialize）
@@ -117,8 +118,8 @@ class VadSingleton {
         );
       });
       initSw.stop();
-      print("⏱️ [VAD] VoiceActivityDetector 创建耗时: ${initSw.elapsedMilliseconds}ms");
-      print("✅ [VAD] 初始化成功");
+      log("⏱️ [VAD] VoiceActivityDetector 创建耗时: ${initSw.elapsedMilliseconds}ms");
+      log("✅ [VAD] 初始化成功");
       return true;
     } catch (e) {
       debugPrint("❌ [VAD] 初始化失败: $e");
@@ -137,7 +138,7 @@ class VadSingleton {
       _vad!.flush();
       _vad!.free();
       _vad = null;
-      print("🧹 [VAD] 已释放");
+      log("🧹 [VAD] 已释放");
     }
   }
 }

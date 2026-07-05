@@ -15,63 +15,95 @@ class AppThemeExtension extends ThemeExtension<AppThemeExtension> {
   // ============ 基础语义 ============
   /// 主色调（导航栏选中色、按钮主色等）
   final Color primary;
+
   /// 主色浅色变体（选中态浅色背景、徽章底色）
   final Color primaryLight;
+
   /// 主色深色变体（强调文字、按下态）
   final Color primaryDark;
 
   /// 卡片/面板背景
   final Color surface;
+
   /// 列表项卡片背景
   final Color cardBackground;
+
   /// Scaffold 全局背景
   final Color scaffoldBackground;
 
   // ============ 文字 ============
   /// 主要文字（原 Colors.black87）
   final Color textPrimary;
+
   /// 次要文字（原 Colors.black54）
   final Color textSecondary;
+
   /// 占位/提示文字（原 Colors.grey）
   final Color textHint;
+
   /// 主色背景上的文字（通常白色）
   final Color textOnPrimary;
 
   // ============ 功能色（与 UI 组件一一映射）============
   /// 查询答案区背景（原 #E0F2F1 浅青）
   final Color positiveAccent;
+
   /// 查询答案区文字（原 #00796B 深青）
   final Color positiveText;
+
   /// 物品转存横条背景（原 #FFF3E0 浅橙）
   final Color warningAccent;
+
   /// 物品转存横条文字（原 #E65100 深橙）
   final Color warningText;
+
   /// 侧滑删除渐变末端色（原 #E57373 柔红）
   final Color dangerAccent;
+
   /// 时间表达式高亮文字（原 Colors.blue.shade700）
   final Color timeHighlight;
+
   /// 时间表达式高亮背景（原 Colors.blue.shade50）
   final Color timeHighlightBg;
 
   // ============ 特殊色 ============
   /// 启动页背景（原 #2C3E50）
   final Color splashBackground;
+
   /// Pro 金色主色（原 #D4A437）
   final Color goldAccent;
+
   /// Pro 金色浅底（原 #FFF8E7）
   final Color goldLight;
+
   /// Pro 金色边框（原 #E6C158）
   final Color goldBorder;
 
   // ============ 浮动按钮状态色 ============
   /// 就绪态（原 Colors.teal）
   final Color fabReady;
+
   /// 录音中（原 Colors.redAccent）
   final Color fabRecording;
+
   /// 处理中（原 Colors.orangeAccent）
   final Color fabProcessing;
+
   /// 禁用态（原 Colors.grey）
   final Color fabDisabled;
+
+  // ============ 系统层 ============
+  /// 极淡分割线/边框（浅色主题用 black 8%，深色主题用 white 25%）
+  ///
+  /// 用于卡片边框、输入框边框等"几乎看不见但需要层次"的场景。
+  /// 黑金主题下 Colors.black×8% 在深底上完全不可见，必须用白色 alpha。
+  final Color divider;
+
+  /// 是否使用浅色图标的状态栏样式（黑金等深色 scaffold 主题用 true）
+  ///
+  /// true → SystemUiOverlayStyle.light（状态栏图标白色，深底可见）
+  /// false → SystemUiOverlayStyle.dark（状态栏图标深色，浅底可见）
+  final bool isDarkOverlay;
 
   const AppThemeExtension({
     required this.primary,
@@ -99,6 +131,8 @@ class AppThemeExtension extends ThemeExtension<AppThemeExtension> {
     required this.fabRecording,
     required this.fabProcessing,
     required this.fabDisabled,
+    required this.divider,
+    required this.isDarkOverlay,
   });
 
   @override
@@ -128,6 +162,8 @@ class AppThemeExtension extends ThemeExtension<AppThemeExtension> {
     Color? fabRecording,
     Color? fabProcessing,
     Color? fabDisabled,
+    Color? divider,
+    bool? isDarkOverlay,
   }) {
     return AppThemeExtension(
       primary: primary ?? this.primary,
@@ -155,6 +191,8 @@ class AppThemeExtension extends ThemeExtension<AppThemeExtension> {
       fabRecording: fabRecording ?? this.fabRecording,
       fabProcessing: fabProcessing ?? this.fabProcessing,
       fabDisabled: fabDisabled ?? this.fabDisabled,
+      divider: divider ?? this.divider,
+      isDarkOverlay: isDarkOverlay ?? this.isDarkOverlay,
     );
   }
 
@@ -166,7 +204,11 @@ class AppThemeExtension extends ThemeExtension<AppThemeExtension> {
       primaryDark: Color.lerp(primaryDark, other.primaryDark, t)!,
       surface: Color.lerp(surface, other.surface, t)!,
       cardBackground: Color.lerp(cardBackground, other.cardBackground, t)!,
-      scaffoldBackground: Color.lerp(scaffoldBackground, other.scaffoldBackground, t)!,
+      scaffoldBackground: Color.lerp(
+        scaffoldBackground,
+        other.scaffoldBackground,
+        t,
+      )!,
       textPrimary: Color.lerp(textPrimary, other.textPrimary, t)!,
       textSecondary: Color.lerp(textSecondary, other.textSecondary, t)!,
       textHint: Color.lerp(textHint, other.textHint, t)!,
@@ -178,7 +220,11 @@ class AppThemeExtension extends ThemeExtension<AppThemeExtension> {
       dangerAccent: Color.lerp(dangerAccent, other.dangerAccent, t)!,
       timeHighlight: Color.lerp(timeHighlight, other.timeHighlight, t)!,
       timeHighlightBg: Color.lerp(timeHighlightBg, other.timeHighlightBg, t)!,
-      splashBackground: Color.lerp(splashBackground, other.splashBackground, t)!,
+      splashBackground: Color.lerp(
+        splashBackground,
+        other.splashBackground,
+        t,
+      )!,
       goldAccent: Color.lerp(goldAccent, other.goldAccent, t)!,
       goldLight: Color.lerp(goldLight, other.goldLight, t)!,
       goldBorder: Color.lerp(goldBorder, other.goldBorder, t)!,
@@ -186,6 +232,9 @@ class AppThemeExtension extends ThemeExtension<AppThemeExtension> {
       fabRecording: Color.lerp(fabRecording, other.fabRecording, t)!,
       fabProcessing: Color.lerp(fabProcessing, other.fabProcessing, t)!,
       fabDisabled: Color.lerp(fabDisabled, other.fabDisabled, t)!,
+      divider: Color.lerp(divider, other.divider, t)!,
+      // bool 不能渐变，t<0.5 用自己，否则用对方（SystemUiOverlayStyle 也不支持渐变）
+      isDarkOverlay: t < 0.5 ? isDarkOverlay : other.isDarkOverlay,
     );
   }
 

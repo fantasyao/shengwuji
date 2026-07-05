@@ -19,9 +19,9 @@ import '../app_logger.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import '../widgets/pro_unlock_dialog.dart';
 import '../theme/app_theme_extension.dart';
-import '../theme/app_theme.dart';  // AppThemes / AppThemeDefinition（Phase 3 主题选择）
-import '../main.dart';  // AppRoot.themeNotifier（Phase 3 主题切换）
-import '../utils/icon_pack_switcher.dart';  // Phase 4 图标包切换
+import '../theme/app_theme.dart'; // AppThemes / AppThemeDefinition（Phase 3 主题选择）
+import '../main.dart'; // AppRoot.themeNotifier（Phase 3 主题切换）
+import '../utils/icon_pack_switcher.dart'; // Phase 4 图标包切换
 
 class SettingsTab extends StatefulWidget {
   final TextProcessor processor;
@@ -44,10 +44,14 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
   String _volumeKeyMode = 'down'; // 音量键监听模式：off/up/down/both
   bool _doubleClickTextNoteEnabled = true; // 双击音量键新建文本笔记开关，默认开启
   String _appVersion = ''; // 版本号，来自 package_info_plus
-  bool _isProUnlocked = false; // Pro 功能是否已解锁，持久化在 SharedPreferences 的 is_pro_unlocked
+  bool _isProUnlocked =
+      false; // Pro 功能是否已解锁，持久化在 SharedPreferences 的 is_pro_unlocked
   String _currentIconPackId = 'default'; // 当前图标包 ID（从原生层读取，不依赖 prefs），Phase 4
   bool _itemTransferEnabled = true; // 日记智能识别物品+位置开关（默认开启）
   bool _queryAnswerEnabled = true; // 日记智能查询物品位置开关（默认开启）
+
+  /// 启动耗时诊断 UI 开关（暂时隐藏，需要时改为 true）
+  static const bool _kShowStartupDiagnostics = false;
 
   @override
   void initState() {
@@ -114,18 +118,17 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
     final prefs = await SharedPreferences.getInstance();
     if (mounted) {
       setState(() {
-        _itemTransferEnabled = prefs.getBool('diary_item_transfer_enabled') ?? true;
-        _queryAnswerEnabled = prefs.getBool('diary_query_answer_enabled') ?? true;
+        _itemTransferEnabled =
+            prefs.getBool('diary_item_transfer_enabled') ?? true;
+        _queryAnswerEnabled =
+            prefs.getBool('diary_query_answer_enabled') ?? true;
       });
     }
   }
 
   /// 显示 Pro 解锁弹窗，关闭后刷新按钮文案
   void _showProUnlockDialog() async {
-    await ProUnlockDialog.show(
-      context,
-      isAlreadyUnlocked: _isProUnlocked,
-    );
+    await ProUnlockDialog.show(context, isAlreadyUnlocked: _isProUnlocked);
     // 弹窗里可能点击了解锁按钮，重新读 prefs 刷新本页按钮文案
     if (mounted) {
       _loadProUnlockStatus();
@@ -179,7 +182,7 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
         setState(() => _isAccessibilityEnabled = enabled);
       }
     } catch (e) {
-      print('检查无障碍服务状态失败: $e');
+      log('检查无障碍服务状态失败: $e');
     }
   }
 
@@ -187,7 +190,7 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
     try {
       await _platform.invokeMethod<bool>('openAccessibilitySettings');
     } catch (e) {
-      print('打开无障碍设置失败: $e');
+      log('打开无障碍设置失败: $e');
     }
   }
 
@@ -238,7 +241,7 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
         });
       }
     } catch (e) {
-      print('读取版本号失败: $e');
+      log('读取版本号失败: $e');
       // 回退：使用 pubspec.yaml 中的硬编码版本号
       if (mounted) {
         setState(() {
@@ -289,9 +292,9 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
           // 🆕 主动请求麦克风权限，避免首次录音时权限弹窗打断长按手势
           final micStatus = await Permission.microphone.status;
           if (!micStatus.isGranted) {
-            print("🔍 [Settings] 模型导入成功，主动请求麦克风权限...");
+            log("🔍 [Settings] 模型导入成功，主动请求麦克风权限...");
             await Permission.microphone.request();
-            print(
+            log(
               "🔍 [Settings] 麦克风权限请求完成: ${await Permission.microphone.status}",
             );
           }
@@ -302,7 +305,7 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
           if (!hasImportedBefore) {
             // 首次导入，标记并清理缓存
             await prefs.setBool('model_first_imported', true);
-            print("🎯 首次导入模型，准备清理缓存...");
+            log("🎯 首次导入模型，准备清理缓存...");
 
             // 异步清理缓存，不阻塞UI
             Future.delayed(const Duration(milliseconds: 500), () async {
@@ -314,7 +317,10 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                   SnackBar(
                     content: Row(
                       children: [
-                        Icon(Icons.cleaning_services, color: ext.textOnPrimary), // 原 Colors.white
+                        Icon(
+                          Icons.cleaning_services,
+                          color: ext.textOnPrimary,
+                        ), // 原 Colors.white
                         SizedBox(width: 10),
                         Text("✅ 模型导入成功！已自动清理缓存"),
                       ],
@@ -360,38 +366,6 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
         ],
       ),
     );
-  }
-
-  // --- 数据库备份逻辑 ---
-  Future<void> _exportBackup() async {
-    final data = await widget.dbHelper.queryAll();
-    String csv =
-        "物品,位置\n" + data.map((e) => "${e['name']},${e['location']}").join("\n");
-    String timestamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
-    await FilePicker.platform.saveFile(
-      fileName: 'storage_backup_$timestamp.csv',
-      bytes: utf8.encode(csv),
-    );
-    if (mounted)
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text("数据备份已导出")));
-  }
-
-  Future<void> _importBackup() async {
-    FilePickerResult? res = await FilePicker.platform.pickFiles();
-    if (res != null) {
-      final lines = await File(res.files.single.path!).readAsLines();
-      for (var line in lines.skip(1)) {
-        var parts = line.split(',');
-        if (parts.length >= 2)
-          await widget.dbHelper.insertItem(parts[0], parts[1]);
-      }
-      if (mounted)
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text("数据导入完成")));
-    }
   }
 
   // --- 热词导入导出逻辑 ---
@@ -538,7 +512,7 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                   await audioFile.delete();
                   deletedCount++;
                 } catch (e) {
-                  print('删除孤儿录音失败: $fileName, 错误: $e');
+                  log('删除孤儿录音失败: $fileName, 错误: $e');
                 }
               }
             }
@@ -924,12 +898,17 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
       appBar: AppBar(
         title: Text(
           "设置中心",
-          style: TextStyle(color: ext.textPrimary, fontWeight: FontWeight.bold), // 原 Colors.black87
+          style: TextStyle(
+            color: ext.textPrimary,
+            fontWeight: FontWeight.bold,
+          ), // 原 Colors.black87
         ),
         backgroundColor: Colors.transparent,
         elevation: 0,
         centerTitle: true,
-        systemOverlayStyle: SystemUiOverlayStyle.dark,
+        systemOverlayStyle: ext.isDarkOverlay
+            ? SystemUiOverlayStyle.light
+            : SystemUiOverlayStyle.dark,
       ),
       body: ListView(
         padding: const EdgeInsets.all(20),
@@ -964,52 +943,7 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
           // --- 数据库管理部分 ---
           _buildSectionTitle("数据备份与还原"),
 
-          // 快速备份（仅物品）
-          _buildCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(
-                      Icons.inventory_2_outlined,
-                      color: ext.primary, // 原 Colors.blueAccent
-                      size: 18,
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      "物品数据备份",
-                      style: TextStyle(color: ext.textSecondary, fontSize: 13), // 原 Colors.black54
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    Expanded(
-                      child: _buildSecondaryBtn(
-                        "导入备份",
-                        Icons.upload_file,
-                        _importBackup,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: _buildSecondaryBtn(
-                        "导出备份",
-                        Icons.download,
-                        _exportBackup,
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-
-          const SizedBox(height: 12),
-
-          // 全量备份（包含日记和音频）
+          // 数据备份（含物品、日记、音频）
           _buildCard(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1023,7 +957,7 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                     ),
                     const SizedBox(width: 6),
                     Text(
-                      "全量备份",
+                      "数据备份",
                       style: TextStyle(
                         color: ext.textPrimary, // 原 Colors.black87
                         fontSize: 14,
@@ -1035,14 +969,17 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                 const SizedBox(height: 4),
                 Text(
                   "包含物品、日记和所有音频文件",
-                  style: TextStyle(color: ext.textSecondary, fontSize: 12), // 原 Colors.black54
+                  style: TextStyle(
+                    color: ext.textSecondary,
+                    fontSize: 12,
+                  ), // 原 Colors.black54
                 ),
                 const SizedBox(height: 10),
                 Row(
                   children: [
                     Expanded(
                       child: _buildSecondaryBtn(
-                        "导入全量备份",
+                        "导入备份",
                         Icons.restore,
                         _importFullBackup,
                         color: ext.warningText, // 原 Colors.deepOrange
@@ -1051,7 +988,7 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                     const SizedBox(width: 12),
                     Expanded(
                       child: _buildSecondaryBtn(
-                        "导出全量备份",
+                        "导出备份",
                         Icons.backup,
                         _exportFullBackup,
                         color: ext.warningText, // 原 Colors.deepOrange
@@ -1126,7 +1063,10 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
               children: [
                 Text(
                   "选择日记分享时跳转的 AI 应用",
-                  style: TextStyle(fontSize: 14, color: ext.textHint), // 原 Colors.grey
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: ext.textHint,
+                  ), // 原 Colors.grey
                 ),
                 const SizedBox(height: 16),
                 // 单选列表
@@ -1150,11 +1090,14 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                               shape: BoxShape.circle,
                               border: Border.all(
                                 color: isSelected
-                                    ? ext.primary // 原 Colors.blue
+                                    ? ext
+                                          .primary // 原 Colors.blue
                                     : ext.textHint, // 原 Colors.grey.shade400
                                 width: 2,
                               ),
-                              color: isSelected ? ext.primary : ext.cardBackground, // 原 Colors.blue : Colors.white
+                              color: isSelected
+                                  ? ext.primary
+                                  : ext.cardBackground, // 原 Colors.blue : Colors.white
                             ),
                             child: isSelected
                                 ? Icon(
@@ -1172,7 +1115,10 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                           Expanded(
                             child: Text(
                               app.name,
-                              style: TextStyle(fontSize: 16, color: ext.textPrimary),
+                              style: TextStyle(
+                                fontSize: 16,
+                                color: ext.textPrimary,
+                              ),
                             ),
                           ),
                           // URL 提示
@@ -1209,7 +1155,8 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                           ? Icons.check_circle
                           : Icons.cancel_outlined,
                       color: _isAccessibilityEnabled
-                          ? ext.positiveText // 原 Colors.green
+                          ? ext
+                                .positiveText // 原 Colors.green
                           : ext.textHint, // 原 Colors.grey
                       size: 20,
                     ),
@@ -1218,7 +1165,8 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                       _isAccessibilityEnabled ? "已开启" : "未开启",
                       style: TextStyle(
                         color: _isAccessibilityEnabled
-                            ? ext.positiveText // 原 Colors.green
+                            ? ext
+                                  .positiveText // 原 Colors.green
                             : ext.textHint, // 原 Colors.grey
                         fontWeight: FontWeight.w600,
                         fontSize: 15,
@@ -1231,7 +1179,10 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                   _isAccessibilityEnabled
                       ? "在任何界面长按选择的音量键（约0.5秒）即可快速录音"
                       : "开启后，长按音量键即可在任何界面快速录音",
-                  style: TextStyle(color: ext.textSecondary, fontSize: 13), // 原 Colors.black54
+                  style: TextStyle(
+                    color: ext.textSecondary,
+                    fontSize: 13,
+                  ), // 原 Colors.black54
                 ),
                 // 音量键选择（仅在服务开启时显示）
                 if (_isAccessibilityEnabled) ...[
@@ -1244,8 +1195,14 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                   _buildVolumeKeySelector(),
                   const SizedBox(height: 12),
                   SwitchListTile(
-                    title: const Text('双击音量键新建文本笔记', style: TextStyle(fontSize: 13)),
-                    subtitle: Text('快速双击选中的音量键可新建空白笔记', style: TextStyle(fontSize: 11, color: ext.textHint)), // 原 Colors.black45
+                    title: const Text(
+                      '双击音量键新建文本笔记',
+                      style: TextStyle(fontSize: 13),
+                    ),
+                    subtitle: Text(
+                      '快速双击选中的音量键可新建空白笔记',
+                      style: TextStyle(fontSize: 11, color: ext.textHint),
+                    ), // 原 Colors.black45
                     value: _doubleClickTextNoteEnabled,
                     onChanged: (val) => _saveDoubleClickTextNote(val),
                     dense: true,
@@ -1262,7 +1219,10 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                 const SizedBox(height: 6),
                 Text(
                   "提示：在无障碍设置中找到「声物记」并开启服务",
-                  style: TextStyle(color: ext.textSecondary, fontSize: 11), // 原 Colors.blueGrey
+                  style: TextStyle(
+                    color: ext.textSecondary,
+                    fontSize: 11,
+                  ), // 原 Colors.blueGrey
                 ),
                 // 静音提示开关
                 if (_isAccessibilityEnabled) ...[
@@ -1314,7 +1274,10 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                   controlAffinity: ListTileControlAffinity.leading,
                 ),
                 SwitchListTile(
-                  title: const Text('日记智能查询物品位置', style: TextStyle(fontSize: 13)),
+                  title: const Text(
+                    '日记智能查询物品位置',
+                    style: TextStyle(fontSize: 13),
+                  ),
                   subtitle: Text(
                     '识别"XX在哪儿"语句并显示答案区',
                     style: TextStyle(fontSize: 11, color: ext.textHint),
@@ -1333,42 +1296,56 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
             ),
           ),
           const SizedBox(height: 24),
-          _buildSectionTitle("诊断"),
-          _buildCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(Icons.bug_report_outlined, color: ext.warningText, size: 18), // 原 Colors.orange
-                    const SizedBox(width: 6),
-                    Text("启动耗时诊断", style: TextStyle(color: ext.textSecondary, fontSize: 13)), // 原 Colors.black54
-                  ],
-                ),
-                const SizedBox(height: 10),
-                SizedBox(
-                  width: double.infinity,
-                  child: _buildSecondaryBtn(
-                    "导出启动日志",
-                    Icons.upload_file,
-                    () async {
-                      await StartupLogger.exportAndShare();
-                    },
+
+          // 启动耗时诊断区域：暂时隐藏，恢复时把 _kShowStartupDiagnostics 改为 true
+          if (_kShowStartupDiagnostics) ...[
+            _buildSectionTitle("诊断"),
+            _buildCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.bug_report_outlined,
+                        color: ext.warningText,
+                        size: 18,
+                      ), // 原 Colors.orange
+                      const SizedBox(width: 6),
+                      Text(
+                        "启动耗时诊断",
+                        style: TextStyle(
+                          color: ext.textSecondary,
+                          fontSize: 13,
+                        ),
+                      ), // 原 Colors.black54
+                    ],
                   ),
-                ),
-              ],
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
+                    child: _buildSecondaryBtn(
+                      "导出启动日志",
+                      Icons.upload_file,
+                      () async {
+                        await StartupLogger.exportAndShare();
+                      },
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ),
-          const SizedBox(height: 24),
+            const SizedBox(height: 24),
+          ],
 
           // --- 外观区域（Phase 3 主题选择 + Phase 4 图标包入口）---
           _buildSectionTitle("外观"),
           _buildCard(
             child: Column(
               children: [
-                _buildThemeEntry(),               // Phase 3
+                _buildThemeEntry(), // Phase 3
                 const Divider(height: 1),
-                _buildIconPackEntry(),            // Phase 4 新增
+                _buildIconPackEntry(), // Phase 4 新增
               ],
             ),
           ),
@@ -1382,9 +1359,16 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
               children: [
                 Row(
                   children: [
-                    Icon(Icons.workspace_premium, color: ext.goldAccent, size: 18), // 原 Color(0xFFD4A437)
+                    Icon(
+                      Icons.workspace_premium,
+                      color: ext.goldAccent,
+                      size: 18,
+                    ), // 原 Color(0xFFD4A437)
                     SizedBox(width: 6),
-                    Text("付费解锁 Pro 功能", style: TextStyle(color: ext.textSecondary, fontSize: 13)), // 原 Colors.black54
+                    Text(
+                      "付费解锁 Pro 功能",
+                      style: TextStyle(color: ext.textSecondary, fontSize: 13),
+                    ), // 原 Colors.black54
                   ],
                 ),
                 const SizedBox(height: 10),
@@ -1392,7 +1376,9 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                   width: double.infinity,
                   child: _buildSecondaryBtn(
                     _isProUnlocked ? "Pro 已解锁 ✓" : "付费解锁 Pro 功能",
-                    _isProUnlocked ? Icons.lock_open_outlined : Icons.lock_outline,
+                    _isProUnlocked
+                        ? Icons.lock_open_outlined
+                        : Icons.lock_outline,
                     _showProUnlockDialog,
                     color: ext.goldAccent, // 原 Color(0xFFD4A437)
                   ),
@@ -1413,7 +1399,11 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                 // 应用名称和版本号
                 Row(
                   children: [
-                    Icon(Icons.info_outline, color: ext.primary, size: 20), // 原 Colors.blueAccent
+                    Icon(
+                      Icons.info_outline,
+                      color: ext.primary,
+                      size: 20,
+                    ), // 原 Colors.blueAccent
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
@@ -1437,7 +1427,10 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                 const SizedBox(height: 4),
                 Text(
                   "完全离线 · 无需联网",
-                  style: TextStyle(fontSize: 12, color: ext.textSecondary), // 原 Colors.blueGrey
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: ext.textSecondary,
+                  ), // 原 Colors.blueGrey
                 ),
                 const SizedBox(height: 16),
 
@@ -1448,7 +1441,11 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                   dense: true,
                   title: Row(
                     children: [
-                      Icon(Icons.history, color: ext.textSecondary, size: 18), // 原 Colors.blueGrey
+                      Icon(
+                        Icons.history,
+                        color: ext.textSecondary,
+                        size: 18,
+                      ), // 原 Colors.blueGrey
                       const SizedBox(width: 6),
                       Text(
                         "更新日志",
@@ -1464,12 +1461,14 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                     _buildChangelogItem(
                       version: "v1.0.13",
                       date: "2026-06",
-                      changes: "日记一键转物品（浅橙横条转存按钮）+ 设置页新增 Pro 付费解锁弹窗（支持作者）+ 录音按钮样式统一 + 修复双击音量键键盘抖动",
+                      changes:
+                          "日记一键转物品（浅橙横条转存按钮）+ 设置页新增 Pro 付费解锁弹窗（支持作者）+ 录音按钮样式统一 + 修复双击音量键键盘抖动",
                     ),
                     _buildChangelogItem(
                       version: "v1.0.12",
                       date: "2026-06",
-                      changes: "日记页语音查找物品：说\"游戏机在哪儿\"自动在卡片下方展示物品位置答案，多匹配显示+N 跳转列表",
+                      changes:
+                          "日记页语音查找物品：说\"游戏机在哪儿\"自动在卡片下方展示物品位置答案，多匹配显示+N 跳转列表",
                     ),
                     _buildChangelogItem(
                       version: "v1.0.11",
@@ -1564,13 +1563,17 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
           avatar: Icon(
             icon,
             size: 16,
-            color: selected ? ext.textOnPrimary : ext.primary, // 原 Colors.white : Colors.blue
+            color: selected
+                ? ext.textOnPrimary
+                : ext.primary, // 原 Colors.white : Colors.blue
           ),
           label: Text(label),
           selected: selected,
           selectedColor: ext.primary, // 原 Colors.blue
           labelStyle: TextStyle(
-            color: selected ? ext.textOnPrimary : ext.textPrimary, // 原 Colors.white : Colors.black87
+            color: selected
+                ? ext.textOnPrimary
+                : ext.textPrimary, // 原 Colors.white : Colors.black87
             fontSize: 13,
           ),
           onSelected: (_) => _saveVolumeKeyMode(mode),
@@ -1604,7 +1607,9 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
         borderRadius: BorderRadius.circular(15),
         boxShadow: [
           BoxShadow(
-            color: ext.textPrimary.withValues(alpha: 0.03), // 原 Colors.black.withValues(alpha: 0.03)
+            color: ext.textPrimary.withValues(
+              alpha: 0.03,
+            ), // 原 Colors.black.withValues(alpha: 0.03)
             blurRadius: 10,
             offset: const Offset(0, 4),
           ),
@@ -1636,7 +1641,10 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('主题', style: TextStyle(fontSize: 15, color: ext.textPrimary)),
+                  Text(
+                    '主题',
+                    style: TextStyle(fontSize: 15, color: ext.textPrimary),
+                  ),
                   const SizedBox(height: 2),
                   Text(
                     currentTheme.name,
@@ -1677,7 +1685,9 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                 height: 4,
                 margin: const EdgeInsets.only(bottom: 16),
                 decoration: BoxDecoration(
-                  color: AppThemeExtension.of(sheetCtx).textHint.withValues(alpha: 0.3),
+                  color: AppThemeExtension.of(
+                    sheetCtx,
+                  ).textHint.withValues(alpha: 0.3),
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
@@ -1700,7 +1710,9 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
               mainAxisSpacing: 12,
               crossAxisSpacing: 12,
               childAspectRatio: 1.1,
-              children: AppThemes.all.map((t) => _buildThemeCard(sheetCtx, t)).toList(),
+              children: AppThemes.all
+                  .map((t) => _buildThemeCard(sheetCtx, t))
+                  .toList(),
             ),
           ],
         ),
@@ -1714,8 +1726,8 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
   /// 这样用户能直观看到切换后的视觉。当前选中主题加粗边框 + 右下角对勾。
   /// Pro 主题右上角显示金色 Pro 徽章。
   Widget _buildThemeCard(BuildContext sheetCtx, AppThemeDefinition theme) {
-    final currentExt = AppThemeExtension.of(sheetCtx);  // 弹窗当前主题色槽（用于非预览元素）
-    final previewExt = theme.extension;  // 被预览主题自己的色槽
+    final currentExt = AppThemeExtension.of(sheetCtx); // 弹窗当前主题色槽（用于非预览元素）
+    final previewExt = theme.extension; // 被预览主题自己的色槽
     final isCurrent = AppRoot.themeNotifier.value.id == theme.id;
 
     return GestureDetector(
@@ -1766,7 +1778,10 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                 top: 0,
                 right: 0,
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
                   decoration: BoxDecoration(
                     color: previewExt.goldAccent,
                     borderRadius: BorderRadius.circular(6),
@@ -1825,7 +1840,7 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
     // Pro 门禁：未解锁点击 Pro 主题 → 关闭主题弹窗 + 调 ProUnlockDialog
     if (theme.isPro && !_isProUnlocked) {
       if (mounted) Navigator.of(context).pop();
-      _showProUnlockDialog();  // 原方法签名为 void async，不 await（内部自管 mounted）
+      _showProUnlockDialog(); // 原方法签名为 void async，不 await（内部自管 mounted）
       return;
     }
 
@@ -1835,7 +1850,7 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
     AppRoot.themeNotifier.value = theme;
 
     if (mounted) {
-      Navigator.of(context).pop();  // 关闭主题弹窗
+      Navigator.of(context).pop(); // 关闭主题弹窗
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('已切换到「${theme.name}」主题'),
@@ -1850,7 +1865,8 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
   /// 图标包入口（ListTile 风格，仿 _buildThemeEntry）
   Widget _buildIconPackEntry() {
     final ext = AppThemeExtension.of(context);
-    final currentPack = IconPacks.findById(_currentIconPackId) ?? IconPacks.defaultPack;
+    final currentPack =
+        IconPacks.findById(_currentIconPackId) ?? IconPacks.defaultPack;
     return InkWell(
       onTap: _showIconPackPicker,
       child: Padding(
@@ -1863,7 +1879,10 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('图标', style: TextStyle(fontSize: 15, color: ext.textPrimary)),
+                  Text(
+                    '图标',
+                    style: TextStyle(fontSize: 15, color: ext.textPrimary),
+                  ),
                   const SizedBox(height: 2),
                   Text(
                     currentPack.name,
@@ -1881,11 +1900,14 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                 shape: BoxShape.circle,
                 // minimal 浅色背景加细边框，避免在白底卡片上不可见
                 border: currentPack.id == 'minimal'
-                    ? Border.all(color: ext.textHint.withValues(alpha: 0.3), width: 0.5)
+                    ? Border.all(
+                        color: ext.textHint.withValues(alpha: 0.3),
+                        width: 0.5,
+                      )
                     : null,
               ),
               child: Image.asset(
-                'assets/icon2_fg_white.png',
+                'assets/icon/icon2_fg_white.png',
                 width: 14,
                 height: 14,
                 color: Color(currentPack.foregroundColor),
@@ -1922,7 +1944,9 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                 height: 4,
                 margin: const EdgeInsets.only(bottom: 16),
                 decoration: BoxDecoration(
-                  color: AppThemeExtension.of(sheetCtx).textHint.withValues(alpha: 0.3),
+                  color: AppThemeExtension.of(
+                    sheetCtx,
+                  ).textHint.withValues(alpha: 0.3),
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
@@ -1954,7 +1978,9 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
               mainAxisSpacing: 12,
               crossAxisSpacing: 12,
               childAspectRatio: 1.1,
-              children: IconPacks.all.map((p) => _buildIconPackCard(sheetCtx, p)).toList(),
+              children: IconPacks.all
+                  .map((p) => _buildIconPackCard(sheetCtx, p))
+                  .toList(),
             ),
           ],
         ),
@@ -2005,11 +2031,14 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                       shape: BoxShape.circle,
                       // minimal 浅色背景加细边框，避免在白底卡片上不可见
                       border: pack.id == 'minimal'
-                          ? Border.all(color: currentExt.textHint.withValues(alpha: 0.3), width: 0.5)
+                          ? Border.all(
+                              color: currentExt.textHint.withValues(alpha: 0.3),
+                              width: 0.5,
+                            )
                           : null,
                     ),
                     child: Image.asset(
-                      'assets/icon2_fg_white.png',
+                      'assets/icon/icon2_fg_white.png',
                       width: 26,
                       height: 26,
                       color: Color(pack.foregroundColor),
@@ -2025,7 +2054,10 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                 top: 0,
                 right: 0,
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
                   decoration: BoxDecoration(
                     color: currentExt.goldAccent,
                     borderRadius: BorderRadius.circular(6),
@@ -2086,7 +2118,7 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
     // 调原生层切换
     final success = await IconPackSwitcher.switchTo(pack.id);
 
-    if (!mounted) return;  // 进程可能已被系统杀死
+    if (!mounted) return; // 进程可能已被系统杀死
 
     if (success) {
       setState(() => _currentIconPackId = pack.id);
@@ -2097,8 +2129,12 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
           content: Row(
             children: [
               const SizedBox(
-                width: 16, height: 16,
-                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.white,
+                ),
               ),
               const SizedBox(width: 12),
               Text('正在切换到「${pack.name}」图标...'),
@@ -2168,7 +2204,10 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
       ),
       style: OutlinedButton.styleFrom(
         foregroundColor: color ?? ext.primary, // 原 Colors.blueAccent
-        side: BorderSide(color: color ?? ext.primary, width: 1), // 原 Colors.blueAccent
+        side: BorderSide(
+          color: color ?? ext.primary,
+          width: 1,
+        ), // 原 Colors.blueAccent
         padding: const EdgeInsets.symmetric(vertical: 12),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       ),
@@ -2180,11 +2219,11 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
     try {
       await AppLogger.exportAndShare();
     } catch (e) {
-      print('❌ 导出日志失败: $e');
+      log('❌ 导出日志失败: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('导出日志失败: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('导出日志失败: $e')));
       }
     }
   }
@@ -2226,7 +2265,9 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                   Expanded(
                     child: Container(
                       width: 2,
-                      color: ext.primary.withValues(alpha: 0.2), // 原 Colors.blueAccent.withValues(alpha: 0.2)
+                      color: ext.primary.withValues(
+                        alpha: 0.2,
+                      ), // 原 Colors.blueAccent.withValues(alpha: 0.2)
                     ),
                   ),
               ],
@@ -2291,7 +2332,7 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
         });
       }
     } catch (e) {
-      print("⚠️ 计算目录大小失败: $e");
+      log("⚠️ 计算目录大小失败: $e");
     }
     return size;
   }
@@ -2318,12 +2359,12 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
 
         await tempDir.delete(recursive: true);
         await tempDir.create(recursive: true); // 重新创建空目录
-        print("✅ 已清理临时目录缓存: ${tempDir.path}");
+        log("✅ 已清理临时目录缓存: ${tempDir.path}");
       }
 
-      print("🗑️ 缓存清理完成，释放空间: ${_formatBytes(cacheSize)}");
+      log("🗑️ 缓存清理完成，释放空间: ${_formatBytes(cacheSize)}");
     } catch (e) {
-      print("❌ 缓存清理失败: $e");
+      log("❌ 缓存清理失败: $e");
     }
   }
 }

@@ -12,12 +12,16 @@ import 'app_theme_extension.dart';
 class AppThemeDefinition {
   /// 持久化用的唯一 ID（如 'default_teal'）
   final String id;
+
   /// 用户可见名称（如 '默认青'）
   final String name;
+
   /// ColorScheme.fromSeed 的种子色
   final Color seedColor;
+
   /// 是否 Pro 付费主题（true 时未解锁点击会触发 ProUnlockDialog）
   final bool isPro;
+
   /// 该主题的完整语义化色槽
   final AppThemeExtension extension;
 
@@ -73,12 +77,7 @@ class AppThemeDefinition {
 /// 新增主题只需在 `_all` 里加一项即可，设置页会自动遍历显示。
 class AppThemes {
   /// 所有预设主题列表（顺序即设置页显示顺序）
-  static const all = [
-    defaultTeal,
-    warmOrange,
-    forestGreen,
-    blackGold,
-  ];
+  static const all = [defaultTeal, warmOrange, forestGreen, skyBlue];
 
   /// 默认主题（应用首次启动时使用）
   static const defaultTheme = defaultTeal;
@@ -126,6 +125,8 @@ class AppThemes {
       fabRecording: Color(0xFFFF5252),
       fabProcessing: Color(0xFFFFAB40),
       fabDisabled: Colors.grey,
+      divider: Color(0x14000000),
+      isDarkOverlay: false,
     ),
   );
 
@@ -161,6 +162,8 @@ class AppThemes {
       fabRecording: Color(0xFFFF5252),
       fabProcessing: Color(0xFFFFAB40),
       fabDisabled: Colors.grey,
+      divider: Color(0x14000000),
+      isDarkOverlay: false,
     ),
   );
 
@@ -196,41 +199,53 @@ class AppThemes {
       fabRecording: Color(0xFFFF5252),
       fabProcessing: Color(0xFFFFAB40),
       fabDisabled: Colors.grey,
+      divider: Color(0x14000000),
+      isDarkOverlay: false,
     ),
   );
 
-  /// 黑金主题（Pro 付费）
-  static const blackGold = AppThemeDefinition(
-    id: 'black_gold',
-    name: '黑金',
-    seedColor: Color(0xFFD4A437),
+  /// 晴空蓝主题（Pro 付费）
+  ///
+  /// 灵感：晴朗天空的淡蓝色（#7CCAF4）。浅色主题，所有 primary 色背景上用深蓝黑文字/图标。
+  /// 关键决策：
+  /// - textOnPrimary=#0D2A40（深蓝黑）：#7CCAF4 较浅，白字对比度仅 1.8:1 不达标，
+  ///   深蓝黑对比度 8.2:1（AAA），且与晴空蓝同色系视觉协调
+  /// - cardBackground/scaffoldBackground 微淡蓝（#F8FBFE/#F0F6FB）：与 primary 同色系但不抢戏
+  /// - splashBackground=#2C5A7C（深蓝）：与晴空蓝同色系，避免黑底破坏调性
+  /// - 保留 warning 橙 / danger 红 / gold 金：语义色和品牌色不跟随主题色变化
+  static const skyBlue = AppThemeDefinition(
+    id: 'sky_blue',
+    name: '晴空蓝',
+    seedColor: Color(0xFF7CCAF4),
     isPro: true,
     extension: AppThemeExtension(
-      primary: Color(0xFFD4A437),
-      primaryLight: Color(0xFFFFE082),
-      primaryDark: Color(0xFFB8860B),
-      surface: Color(0xFF1E1E1E),
-      cardBackground: Color(0xFF2D2D2D),
-      scaffoldBackground: Color(0xFF121212),
-      textPrimary: Color(0xE6FFFFFF),
-      textSecondary: Color(0xB3FFFFFF),
-      textHint: Color(0xFF9E9E9E),
-      textOnPrimary: Color(0xFF1E1E1E),
-      positiveAccent: Color(0xFF3D3520),
-      positiveText: Color(0xFFD4A437),
-      warningAccent: Color(0xFF3D2D10),
-      warningText: Color(0xFFFFB74D),
-      dangerAccent: Color(0xFFEF5350),
-      timeHighlight: Color(0xFFD4A437),
-      timeHighlightBg: Color(0xFF3D3520),
-      splashBackground: Color(0xFF1E1E1E),
-      goldAccent: Color(0xFFFFD700),
+      primary: Color(0xFF7CCAF4),
+      primaryLight: Color(0xFFBFE2F9),
+      primaryDark: Color(0xFF4FA6E0),
+      surface: Colors.white,
+      cardBackground: Color(0xFFF8FBFE),
+      scaffoldBackground: Color(0xFFF0F6FB),
+      textPrimary: Color(0xDD000000),
+      textSecondary: Color(0x8A000000),
+      textHint: Colors.grey,
+      textOnPrimary: Color(0xFF0D2A40), // 深蓝黑（#7CCAF4 上对比度 8.2:1 AAA）
+      positiveAccent: Color(0xFFE0F2FB),
+      positiveText: Color(0xFF1976D2),
+      warningAccent: Color(0xFFFFF3E0),
+      warningText: Color(0xFFE65100),
+      dangerAccent: Color(0xFFE57373),
+      timeHighlight: Color(0xFF1976D2),
+      timeHighlightBg: Color(0xFFBBDEFB),
+      splashBackground: Color(0xFF2C5A7C), // 深蓝（同色系，替代默认黑底）
+      goldAccent: Color(0xFFD4A437),
       goldLight: Color(0xFFFFF8E7),
       goldBorder: Color(0xFFE6C158),
-      fabReady: Color(0xFFD4A437),
+      fabReady: Color(0xFF7CCAF4),
       fabRecording: Color(0xFFFF5252),
       fabProcessing: Color(0xFFFFAB40),
-      fabDisabled: Color(0xFF555555),
+      fabDisabled: Colors.grey,
+      divider: Color(0x14000000),
+      isDarkOverlay: false,
     ),
   );
 }

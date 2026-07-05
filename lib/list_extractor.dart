@@ -1,3 +1,5 @@
+import 'app_logger.dart';
+
 /// 清单提取器 - 从中文语音识别结果中提取结构化待办清单
 /// 纯 Dart 实现，不依赖第三方分词库
 /// 使用 5 阶段管道：预处理 → 意图检测 → 条目拆分 → 结构提取 → 分类
@@ -326,7 +328,7 @@ class ListExtractor {
 
     // Stage 1: 预处理
     final cleaned = _preprocess(rawText);
-    print('[ListExtractor] 预处理后: "$cleaned"');
+    log('[ListExtractor] 预处理后: "$cleaned"');
 
     // Stage 1.5: 触发词门禁
     // 必须严格以"代办"或"待办"开头（不支持前置引导词，避免"我要代办..."误触发）
@@ -339,7 +341,7 @@ class ListExtractor {
     }
 
     if (triggerWord == null) {
-      print('[ListExtractor] 未命中触发词"代办/待办"，跳过清单提取');
+      log('[ListExtractor] 未命中触发词"代办/待办"，跳过清单提取');
       return ExtractionResult(
         isList: false,
         normalizedText: cleaned,
@@ -355,11 +357,11 @@ class ListExtractor {
         .trim()
         .replaceAll(RegExp(r'^[，、,]\s*'), '')
         .replaceAll(RegExp(r'\s*[，、,]\s*$'), '');
-    print('[ListExtractor] 命中触发词"$triggerWord"，剥离后内容: "$payload"');
+    log('[ListExtractor] 命中触发词"$triggerWord"，剥离后内容: "$payload"');
 
     if (payload.isEmpty) {
       // 只有触发词没有实际内容，不算清单
-      print('[ListExtractor] 触发词后无内容，跳过清单提取');
+      log('[ListExtractor] 触发词后无内容，跳过清单提取');
       return ExtractionResult(
         isList: false,
         normalizedText: cleaned,
@@ -370,12 +372,12 @@ class ListExtractor {
     // 注意：isList 已由触发词门禁决定，_detectIntent 内部的评分判定不再生效
     // 仅 intent.type（分类标签）仍有意义
     final intent = _detectIntent(payload);
-    print('[ListExtractor] 意图检测(仅用于分类): type=${intent.type}, '
+    log('[ListExtractor] 意图检测(仅用于分类): type=${intent.type}, '
         'score=${intent.score}');
 
     // Stage 3: 条目拆分
     final segments = _splitEntries(payload);
-    print('[ListExtractor] 拆分结果: $segments');
+    log('[ListExtractor] 拆分结果: $segments');
 
     if (segments.length < 2) {
       // 拆分后只有一条，不算清单

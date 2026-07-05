@@ -1,3 +1,4 @@
+import '../app_logger.dart';
 import 'package:flutter/services.dart';
 
 /// 单个图标包定义
@@ -61,7 +62,7 @@ class IconPackSwitcher {
       final r = await _channel.invokeMethod<bool>('setIconPack', {'packId': packId});
       return r ?? false;
     } on PlatformException catch (e) {
-      print('❌ [IconPackSwitcher] 切换失败: ${e.message}');
+      log('❌ [IconPackSwitcher] 切换失败: ${e.message}');
       return false;
     }
   }
@@ -74,7 +75,7 @@ class IconPackSwitcher {
     try {
       return await _channel.invokeMethod<String>('getCurrentIconPack') ?? 'default';
     } on PlatformException catch (e) {
-      print('❌ [IconPackSwitcher] 查询失败: ${e.message}');
+      log('❌ [IconPackSwitcher] 查询失败: ${e.message}');
       return 'default';
     }
   }

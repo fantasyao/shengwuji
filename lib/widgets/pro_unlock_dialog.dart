@@ -1,3 +1,4 @@
+import '../app_logger.dart';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
@@ -44,9 +45,10 @@ class _ProUnlockDialogState extends State<ProUnlockDialog> {
 
   // 作者寄语文案，按句换行排版（用户原文，未删改）
   static const String _kUnlockText =
-      '本app全离线，已开源。\n'
-      '我没有做付费验证逻辑，（主要是做起来太麻烦）\n'
-      '如果觉得好用，欢迎扫码请我喝杯瑞幸；\n'
+      '本app完全离线，已开源。\n'
+      '没有做强制付费验证\n'
+      '（主要是做起来太麻烦\n'
+      '如果觉得好用，欢迎扫码请开发者喝杯瑞幸；\n'
       '如暂时手头紧，点下面的按钮也能直接解锁全部功能。';
 
   @override
@@ -59,12 +61,12 @@ class _ProUnlockDialogState extends State<ProUnlockDialog> {
     // 写入持久化解锁标志，后续功能门禁直接读这个 key
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('is_pro_unlocked', true);
-    print('✓ Pro 功能已解锁（is_pro_unlocked=true）');
+    log('✓ Pro 功能已解锁（is_pro_unlocked=true）');
     if (!mounted) return;
     setState(() => _unlocked = true);
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text('已解锁全部功能，感谢你的信任 ❤️'),
+        content: Text('已解锁全部功能，感谢你的喜欢 ❤️'),
         duration: Duration(seconds: 2),
       ),
     );
@@ -277,13 +279,13 @@ Future<void> _savePaymentToGallery(
     await Gal.putImage(tempFile.path);
     // 4. 清理临时文件
     await tempFile.delete();
-    print('✓ 付款码已保存到相册：$assetPath');
+    log('✓ 付款码已保存到相册：$assetPath');
     if (!context.mounted) return;
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(const SnackBar(content: Text('已保存到相册，可用微信/支付宝扫一扫识别')));
   } on GalException catch (e) {
-    print('✗ Gal 保存失败：${e.type.message}');
+    log('✗ Gal 保存失败：${e.type.message}');
     if (!context.mounted) return;
     ScaffoldMessenger.of(
       context,

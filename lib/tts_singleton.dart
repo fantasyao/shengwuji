@@ -1,3 +1,4 @@
+import 'app_logger.dart';
 import 'dart:async';
 import 'dart:io';
 import 'package:archive/archive.dart';
@@ -75,9 +76,9 @@ class TtsSingleton {
           Directory(p.join(dir, 'espeak-ng-data')).existsSync();
       if (modelOk && tokensOk && dataDirOk) {
         instance._bundledTtsDir = dir;
-        print("📍 [TTS] preloadModelPath: 内置模型已就绪, dir=$dir");
+        log("📍 [TTS] preloadModelPath: 内置模型已就绪, dir=$dir");
       } else {
-        print(
+        log(
           "📍 [TTS] preloadModelPath: 内置模型不完整("
           "model=$modelOk, tokens=$tokensOk, dataDir=$dataDirOk)，"
           "等待 initialize 时拷贝",
@@ -114,7 +115,7 @@ class TtsSingleton {
         tokensFile.existsSync() &&
         dataDir.existsSync()) {
       final modelSize = await modelFile.length();
-      print(
+      log(
         "📍 [TTS] 模型已存在于本地: $bundledDir "
         "(${(modelSize / 1024 / 1024).toStringAsFixed(1)}MB)",
       );
@@ -131,7 +132,7 @@ class TtsSingleton {
       await dir.create(recursive: true);
     }
 
-    print("📦 [TTS] 首次启动，从 assets/tts-model/ 拷贝到本地...");
+    log("📦 [TTS] 首次启动，从 assets/tts-model/ 拷贝到本地...");
     final copySw = Stopwatch()..start();
 
     // 1. 拷贝 onnx（20MB，直接 rootBundle.load）
@@ -172,12 +173,12 @@ class TtsSingleton {
 
     copySw.stop();
     final modelSize = await modelFile.length();
-    print(
+    log(
       "⏱️ [TTS] 拷贝完成 耗时: ${copySw.elapsedMilliseconds}ms, "
       "模型大小: ${(modelSize / 1024 / 1024).toStringAsFixed(1)}MB, "
       "文件数: $fileCount",
     );
-    print("📦 [TTS] 拷贝完成: $bundledDir");
+    log("📦 [TTS] 拷贝完成: $bundledDir");
 
     // 首次拷贝完成也要跑铺平 + 诊断（与"已存在"分支对称）
     await _flattenLangToVoices(bundledDir);
@@ -209,9 +210,9 @@ class TtsSingleton {
           }
         }
       }
-      print("📋 [TTS] 已铺平 lang/*/voices → voices/ ($copied 个文件)");
+      log("📋 [TTS] 已铺平 lang/*/voices → voices/ ($copied 个文件)");
     } else {
-      print("⚠️ [TTS] lang 或 voices 目录缺失，无法铺平");
+      log("⚠️ [TTS] lang 或 voices 目录缺失，无法铺平");
     }
   }
 
@@ -228,21 +229,21 @@ class TtsSingleton {
             return '${p.basename(f.path)}(${(size / 1024).toStringAsFixed(1)}KB)';
           })
           .join(', ');
-      print("📋 [TTS] espeak-ng-data 顶层文件: $topFiles");
+      log("📋 [TTS] espeak-ng-data 顶层文件: $topFiles");
       // 关键文件单独标记
       final cmnVoice = File(p.join(bundledDir, 'espeak-ng-data/lang/sit/cmn'));
-      print(
+      log(
         "📋 [TTS] lang/sit/cmn 存在=${cmnVoice.existsSync()} "
         "大小=${cmnVoice.existsSync() ? cmnVoice.lengthSync() : 0}B",
       );
       // 验证 voice 文件铺平后是否可见
       final cmnInVoices = File(p.join(bundledDir, 'espeak-ng-data/voices/cmn'));
-      print(
+      log(
         "📋 [TTS] voices/cmn 存在=${cmnInVoices.existsSync()} "
         "大小=${cmnInVoices.existsSync() ? cmnInVoices.lengthSync() : 0}B",
       );
     } else {
-      print("⚠️ [TTS] espeak-ng-data/ 目录不存在！");
+      log("⚠️ [TTS] espeak-ng-data/ 目录不存在！");
     }
   }
 
@@ -283,7 +284,7 @@ class TtsSingleton {
         return false;
       }
 
-      print("🚀 [TTS] 初始化 OfflineTts, model=$modelPath");
+      log("🚀 [TTS] 初始化 OfflineTts, model=$modelPath");
       final initSw = Stopwatch()..start();
 
       // 【关键】OfflineTts 构造是同步阻塞的（FFI calloc + native init），
@@ -314,8 +315,8 @@ class TtsSingleton {
       });
 
       initSw.stop();
-      print("⏱️ [TTS] OfflineTts 创建耗时: ${initSw.elapsedMilliseconds}ms");
-      print("✅ [TTS] 初始化成功");
+      log("⏱️ [TTS] OfflineTts 创建耗时: ${initSw.elapsedMilliseconds}ms");
+      log("✅ [TTS] 初始化成功");
       _hasEverInitialized = true;
       _isInitializing = false;
       return true;
@@ -355,12 +356,12 @@ class TtsSingleton {
           () => _tts!.generate(text: text, sid: 0, speed: 1.0),
         );
       } catch (e, st) {
-        print('❌ [TTS] generate 崩溃（dataDir 可能不对）: $e\n$st');
+        log('❌ [TTS] generate 崩溃（dataDir 可能不对）: $e\n$st');
         // 不再 throw，让调用方继续（避免 APP 整个崩）
         return;
       }
       if (audio.samples.isEmpty) {
-        print("⚠️ [TTS] generate 返回空音频，跳过播放");
+        log("⚠️ [TTS] generate 返回空音频，跳过播放");
         return;
       }
 
@@ -415,7 +416,7 @@ class TtsSingleton {
       _tts = null;
       _bundledTtsDir = null;
       _isInitializing = false;
-      print("🧹 [TTS] 已释放");
+      log("🧹 [TTS] 已释放");
     }
   }
 }

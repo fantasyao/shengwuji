@@ -1,3 +1,4 @@
+import '../app_logger.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import '../models/time_entity.dart';
@@ -101,7 +102,7 @@ class _TimeAwareTextState extends State<TimeAwareText> {
   }
 
   void _handleTimeTap(TimeEntity entity) {
-    print('点击时间: ${entity.text} -> ${entity.value}');
+    log('点击时间: ${entity.text} -> ${entity.value}');
     widget.onTimeTap?.call(entity);
   }
 }

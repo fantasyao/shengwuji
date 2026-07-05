@@ -88,7 +88,7 @@ flutter:
     - assets/hotwords.txt
     - assets/icon/app_icon.png
     - assets/icon/icon2.png
-    - assets/icon2_fg_white.png
+    - assets/icon/icon2_fg_white.png
     - assets/LXGWWenKaiMonoGBScreen.ttf
     - assets/model.int8.onnx
     - assets/tokens.txt

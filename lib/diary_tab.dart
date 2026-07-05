@@ -193,8 +193,8 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
   Set<String> _dismissedSplits = {};
 
   /// 智能识别开关（默认开启，用户可在设置页关闭）
-  bool _itemTransferEnabled = true;   // 日记智能识别物品+位置 → 显示转存横条
-  bool _queryAnswerEnabled = true;    // 日记智能查询"XX在哪儿" → 显示答案区
+  bool _itemTransferEnabled = true; // 日记智能识别物品+位置 → 显示转存横条
+  bool _queryAnswerEnabled = true; // 日记智能查询"XX在哪儿" → 显示答案区
 
   // SAF 持久化目录导出
   final PersistentUserDirAccessAndroid _safDir =
@@ -227,7 +227,8 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
   void _loadSmartSwitches() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
-      _itemTransferEnabled = prefs.getBool('diary_item_transfer_enabled') ?? true;
+      _itemTransferEnabled =
+          prefs.getBool('diary_item_transfer_enabled') ?? true;
       _queryAnswerEnabled = prefs.getBool('diary_query_answer_enabled') ?? true;
     });
   }
@@ -237,7 +238,7 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
     super.didChangeAppLifecycleState(state);
 
     // 调试日志：打印所有状态变化
-    print(
+    log(
       "🔍 [生命周期] 日记页状态变化: $_lastState → $state, isReady=$isReady, _wasInBackground=$_wasInBackground",
     );
 
@@ -246,7 +247,7 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
         state == AppLifecycleState.hidden) {
       _wasInBackground = true;
       _pausedTime = DateTime.now(); // 记录进入后台的时间
-      print("日记页：进入后台，记录时间戳: $_pausedTime");
+      log("日记页：进入后台，记录时间戳: $_pausedTime");
     }
 
     // 后台恢复时，如果编辑抽屉开着但键盘没拉起来，重新请求焦点
@@ -271,10 +272,10 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
         final view = WidgetsBinding.instance.platformDispatcher.views.first;
         final keyboardAlreadyVisible = view.viewInsets.bottom > 0;
         if (keyboardAlreadyVisible) {
-          print("⌨️ [DiaryTab] 键盘已可见（引擎层 viewInsets>0），跳过重试");
+          log("⌨️ [DiaryTab] 键盘已可见（引擎层 viewInsets>0），跳过重试");
           return;
         }
-        print("⌨️ [DiaryTab] 键盘未可见（引擎层 viewInsets=0），unfocus+requestFocus 重试");
+        log("⌨️ [DiaryTab] 键盘未可见（引擎层 viewInsets=0），unfocus+requestFocus 重试");
         _editFocusNode!.unfocus();
         Future.delayed(const Duration(milliseconds: 100), () {
           _editFocusNode?.requestFocus();
@@ -292,23 +293,23 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
 
       final isShortBackground = backgroundDuration < _shortBackgroundThreshold;
 
-      print(
+      log(
         "日记页：从后台恢复，后台时长: ${backgroundDuration.inSeconds}秒，是否短时间后台: $isShortBackground",
       );
 
       if (isShortBackground) {
         // 短时间后台：静默预热，不显示loading
-        print("日记页：短时间后台恢复，静默预热");
+        log("日记页：短时间后台恢复，静默预热");
 
         Future.delayed(const Duration(milliseconds: 50), () async {
           await _warmupEngine();
           if (mounted) {
-            print("日记页：静默预热完成");
+            log("日记页：静默预热完成");
           }
         });
       } else {
         // 长时间后台：显示全局loading并预热
-        print("日记页：长时间后台恢复，显示loading并预热");
+        log("日记页：长时间后台恢复，显示loading并预热");
 
         // 回调显示全局loading
         final stopwatch = Stopwatch()..start();
@@ -323,12 +324,12 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
           if (mounted) {
             // 回调隐藏全局loading
             stopwatch.stop();
-            print(
+            log(
               "🔍 [性能检测] 日记页后台恢复预热高斯模糊loading耗时: ${stopwatch.elapsedMilliseconds}ms",
             );
             widget.onLoadingChanged?.call(false);
             _updateState(() => _needsWarmup = false);
-            print("日记页：后台恢复预热完成");
+            log("日记页：后台恢复预热完成");
           }
         });
       }
@@ -431,7 +432,7 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
         });
       }
     } catch (e) {
-      print("播放失败: $e");
+      log("播放失败: $e");
     }
   }
 
@@ -458,7 +459,7 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
       audioPath: null,
       duration: null,
     );
-    print("📝 [Diary] 新建空白文本笔记, id=$newId");
+    log("📝 [Diary] 新建空白文本笔记, id=$newId");
     await refreshList();
     if (mounted) {
       _showEditSheet(newId, '', isNewEmptyNote: true);
@@ -470,9 +471,9 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('is_recording', recording);
-      print("📝 [Diary] 录音标志: is_recording=$recording");
+      log("📝 [Diary] 录音标志: is_recording=$recording");
     } catch (e) {
-      print("设置录音标志失败: $e");
+      log("设置录音标志失败: $e");
     }
   }
 
@@ -490,7 +491,7 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
       if (!_engineReadyCompleter.isCompleted) {
         _engineReadyCompleter.complete();
       }
-      print("📍 [Diary] 启动页已加载模型，同步状态");
+      log("📍 [Diary] 启动页已加载模型，同步状态");
       return;
     }
 
@@ -554,7 +555,7 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
 
         // 保存 URI 到 SharedPreferences
         await prefs.setString(_exportDirPrefKey, dirUri);
-        print("🔍 [Diary] 导出目录已保存: $dirUri");
+        log("🔍 [Diary] 导出目录已保存: $dirUri");
       }
 
       // 3. 生成 Markdown 文件
@@ -576,11 +577,11 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
             // 标记该日记已导出，下次不再重复导出
             await widget.dbHelper.markDiaryExported(diary['id']);
           } else {
-            print('导出日记 ID ${diary['id']} 失败: writeFile 返回 false');
+            log('导出日记 ID ${diary['id']} 失败: writeFile 返回 false');
             failCount++;
           }
         } catch (e) {
-          print('导出日记 ID ${diary['id']} 失败: $e');
+          log('导出日记 ID ${diary['id']} 失败: $e');
           failCount++;
         }
       }
@@ -733,7 +734,7 @@ $content
         });
       }
     } catch (e) {
-      print('解析时间实体失败: $e');
+      log('解析时间实体失败: $e');
     } finally {
       if (mounted) {
         setState(() {
@@ -750,7 +751,8 @@ $content
     if (!_queryAnswerEnabled) return;
 
     if (_queryAnswerCache.containsKey(diaryId) ||
-        _queryingDiaryIds.contains(diaryId)) return;
+        _queryingDiaryIds.contains(diaryId))
+      return;
 
     // 长句跳过：用户说长句时意图模糊，不进行查询处理（与 _parseItemSplit 同步）
     if (ItemSplitter.cleanPunctuation(content).length > kDiaryShortTextMax) {
@@ -783,7 +785,7 @@ $content
         });
       }
     } catch (e) {
-      print('解析查询答案失败: $e');
+      log('解析查询答案失败: $e');
     } finally {
       if (mounted) {
         setState(() {
@@ -838,11 +840,13 @@ $content
   /// 将日记转存为物品后删除原日记（含录音文件）
   /// 参考现有 _deleteItem 的录音文件清理模式
   Future<void> _transferToItem(
-      int diaryId, String itemName, String location) async {
+    int diaryId,
+    String itemName,
+    String location,
+  ) async {
     // 1. 写入 items 表
     await widget.dbHelper.insertItem(itemName, location);
-    AppLogger.appLog(
-        '📦 [Diary] 转存物品: $itemName -> $location (来源日记#$diaryId)');
+    AppLogger.appLog('📦 [Diary] 转存物品: $itemName -> $location (来源日记#$diaryId)');
 
     // 2. 先获取日记的录音文件路径（deleteDiary 只删数据库行，不删文件）
     final diaries = await widget.dbHelper.queryAllDiaries();
@@ -864,7 +868,7 @@ $content
         }
       } catch (e) {
         // 文件删除失败不影响主流程，仅记录日志
-        print('转存时删除录音文件失败: $e');
+        log('转存时删除录音文件失败: $e');
       }
     }
 
@@ -930,10 +934,8 @@ $content
     final after = content.substring(entity.end);
     String remaining = before + after;
     // 去掉首尾中英文标点和空白（剥离后可能留下孤立逗号/顿号）
-    remaining = remaining.replaceAll(
-        RegExp(r'^[\s，,。.、；;：:！!？?]+'), '');
-    remaining = remaining.replaceAll(
-        RegExp(r'[\s，,。.、；;：:！!？?]+$'), '');
+    remaining = remaining.replaceAll(RegExp(r'^[\s，,。.、；;：:！!？?]+'), '');
+    remaining = remaining.replaceAll(RegExp(r'[\s，,。.、；;：:！!？?]+$'), '');
     // 合并中间连续空格（如「提醒我 明天8点 起床」→「提醒我 起床」中间留有空格）
     remaining = remaining.replaceAll(RegExp(r'\s+'), ' ').trim();
     // 剥离后为空（原文只有时间表达式）→ 回退用原文，避免空标题
@@ -958,14 +960,9 @@ $content
 
     // 剥离时间子串，得到干净的日历事件标题（所见即所得：
     // AlarmDialog 显示的内容 = 写入日历的 title = 通知栏响铃显示的内容）
-    final actionContent = _extractActionContent(
-        diary['content'] ?? '', entity);
+    final actionContent = _extractActionContent(diary['content'] ?? '', entity);
 
-    final result = await AlarmDialog.show(
-      context,
-      entity,
-      actionContent,
-    );
+    final result = await AlarmDialog.show(context, entity, actionContent);
 
     if (result?.confirmed == true) {
       final enableAlarm = result!.enableAlarm;
@@ -978,10 +975,14 @@ $content
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: Text(notifStatus.isPermanentlyDenied
-                    ? '通知权限被拒绝，请在系统设置中手动开启，否则无法在通知栏停止响铃'
-                    : '需要通知权限才能显示响铃通知'),
-                backgroundColor: Colors.orange,
+                content: Text(
+                  notifStatus.isPermanentlyDenied
+                      ? '通知权限被拒绝，请在系统设置中手动开启，否则无法在通知栏停止响铃'
+                      : '需要通知权限才能显示响铃通知',
+                ),
+                backgroundColor: AppThemeExtension.of(
+                  context,
+                ).warningText, // 原 Colors.orange
                 duration: Duration(seconds: 3),
               ),
             );
@@ -996,10 +997,14 @@ $content
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text(status.isPermanentlyDenied
-                  ? '日历权限被拒绝，请在系统设置中手动开启'
-                  : '需要日历权限才能添加日程提醒'),
-              backgroundColor: Colors.orange,
+              content: Text(
+                status.isPermanentlyDenied
+                    ? '日历权限被拒绝，请在系统设置中手动开启'
+                    : '需要日历权限才能添加日程提醒',
+              ),
+              backgroundColor: AppThemeExtension.of(
+                context,
+              ).warningText, // 原 Colors.orange
               duration: Duration(seconds: 3),
             ),
           );
@@ -1018,18 +1023,22 @@ $content
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text(success == true
-                  ? (enableAlarm
-                      ? '日程已成功添加到系统日历'
-                      : '日程已添加到系统日历（无响铃）')
-                  : '添加日历事件失败，请检查日历权限'),
-              backgroundColor: success == true ? Colors.green : Colors.red,
+              content: Text(
+                success == true
+                    ? (enableAlarm ? '日程已成功添加到系统日历' : '日程已添加到系统日历（无响铃）')
+                    : '添加日历事件失败，请检查日历权限',
+              ),
+              backgroundColor: success == true
+                  ? AppThemeExtension.of(context).positiveText
+                  : AppThemeExtension.of(
+                      context,
+                    ).dangerAccent, // 原 Colors.green / Colors.red
               duration: Duration(seconds: 3),
             ),
           );
         }
       } catch (e) {
-        print('添加日历事件失败: $e');
+        log('添加日历事件失败: $e');
         if (mounted) {
           ScaffoldMessenger.of(
             context,
@@ -1049,7 +1058,7 @@ $content
   // 3. startListening() 的 isProcessing 检查是为了防止重复调用
   //    权限授予后的 generation 检查是为了防止权限弹窗打断长按手势的竞态条件
   Future<void> initEngine() async {
-    print(
+    log(
       "🔍 [Diary] initEngine: 入口, isReady=$isReady, isProcessing=$isProcessing",
     );
     if (isReady)
@@ -1059,7 +1068,7 @@ $content
     if (await Permission.microphone.request().isGranted) {
       // 使用单例初始化
       final success = await _recognizerManager.initialize();
-      print("🔍 [Diary] initEngine: 初始化结果, success=$success");
+      log("🔍 [Diary] initEngine: 初始化结果, success=$success");
 
       if (mounted) {
         _updateState(() {
@@ -1097,9 +1106,9 @@ $content
       _recognizer!.getResult(stream);
       stream.free();
 
-      print("日记引擎预热完成");
+      log("日记引擎预热完成");
     } catch (e) {
-      print("日记引擎预热失败: $e");
+      log("日记引擎预热失败: $e");
     }
   }
 
@@ -1108,13 +1117,13 @@ $content
   /// [lockedMode] 是否为锁定录音模式（通过快捷方式触发）
   Future<void> startListening({bool lockedMode = false}) async {
     final myGeneration = ++_operationGeneration;
-    print(
+    log(
       "🔍 [Diary] startListening: 入口, generation=$myGeneration, isProcessing=$isProcessing, isReady=$isReady, isListening=$isListening",
     );
 
     // 防止正在处理时重复调用
     if (isProcessing) {
-      print("🔍 [Diary] startListening: 正在处理中，忽略");
+      log("🔍 [Diary] startListening: 正在处理中，忽略");
       return;
     }
 
@@ -1125,7 +1134,7 @@ $content
       try {
         await WakelockPlus.enable();
       } catch (e) {
-        print("启用 Wakelock 失败: $e");
+        log("启用 Wakelock 失败: $e");
       }
       // 震动反馈
       _haptic('heavy');
@@ -1135,7 +1144,7 @@ $content
         // 显示静音提示（前5次）
         await _showMuteHintIfNeeded();
       } catch (e) {
-        print("静音媒体失败: $e");
+        log("静音媒体失败: $e");
       }
     }
 
@@ -1154,7 +1163,7 @@ $content
         try {
           await WakelockPlus.disable();
         } catch (e) {
-          print("禁用 Wakelock 失败: $e");
+          log("禁用 Wakelock 失败: $e");
         }
       }
       return;
@@ -1163,7 +1172,7 @@ $content
     // ... 原有的录音逻辑 ...
     // 权限授予后，检查是否已被 stopListening 中断（权限弹窗可能打断了长按手势）
     if (myGeneration != _operationGeneration || isProcessing) {
-      print(
+      log(
         "🔍 [Diary] startListening: 权限授予后发现状态已变（generation=$myGeneration→$_operationGeneration, isProcessing=$isProcessing），放弃录音",
       );
       if (lockedMode) {
@@ -1171,7 +1180,7 @@ $content
         try {
           await WakelockPlus.disable();
         } catch (e) {
-          print("禁用 Wakelock 失败: $e");
+          log("禁用 Wakelock 失败: $e");
         }
       }
       return;
@@ -1208,7 +1217,7 @@ $content
 
   void stopListening() async {
     _operationGeneration++; // 使正在等待权限的 startListening 失效
-    print(
+    log(
       "🔍 [Diary] stopListening: 入口, generation=$_operationGeneration, isProcessing=$isProcessing, _recordingStartTime=$_recordingStartTime",
     );
 
@@ -1223,13 +1232,13 @@ $content
       try {
         await WakelockPlus.disable();
       } catch (e) {
-        print("禁用 Wakelock 失败: $e");
+        log("禁用 Wakelock 失败: $e");
       }
       // 恢复媒体音量（如果用户没按音量减保持静音）
       try {
         await _channel.invokeMethod('restoreMedia');
       } catch (e) {
-        print("恢复媒体音量失败: $e");
+        log("恢复媒体音量失败: $e");
       }
       _isLockedRecording = false;
 
@@ -1248,7 +1257,7 @@ $content
 
     // 录音从未开始（权限弹窗阻断了 startListening 流程，录音从未启动）
     if (_recordingStartTime == null) {
-      print(
+      log(
         "🔍 [Diary] stopListening: 录音从未开始（_recordingStartTime=null），跳过模型加载，重置状态",
       );
       _updateState(() {
@@ -1268,7 +1277,7 @@ $content
     // 保存录音时长（秒）到成员变量，供后续保存到数据库使用
     _recordingDurationInSeconds = recordingDuration.inSeconds;
 
-    print("录音时长: ${recordingDuration.inSeconds}秒, 是否长语音: $isLongRecording");
+    log("录音时长: ${recordingDuration.inSeconds}秒, 是否长语音: $isLongRecording");
 
     // === 阶段1：先更新UI为识别中状态 ===
     _updateState(() {
@@ -1282,7 +1291,7 @@ $content
       await _audioRecorder.stop();
       await Future.delayed(const Duration(milliseconds: 50));
     } catch (e) {
-      print("停止录音失败: $e");
+      log("停止录音失败: $e");
     }
 
     // === 阶段3：先播放转圈动画（避免模型加载阻塞动画） ===
@@ -1321,7 +1330,7 @@ $content
                 try {
                   await WakelockPlus.disable();
                 } catch (e) {
-                  print("禁用 Wakelock 失败: $e");
+                  log("禁用 Wakelock 失败: $e");
                 }
               }
               if (mounted) {
@@ -1346,7 +1355,7 @@ $content
               try {
                 await WakelockPlus.disable();
               } catch (e) {
-                print("禁用 Wakelock 失败: $e");
+                log("禁用 Wakelock 失败: $e");
               }
             }
             _updateState(() {
@@ -1365,13 +1374,13 @@ $content
       // 模型加载完成后，继续原有的识别逻辑
       await _engineReadyCompleter.future;
     } catch (e) {
-      print("模型加载阶段出错: $e");
+      log("模型加载阶段出错: $e");
       if (_isLockedRecording) {
         _isLockedRecording = false;
         try {
           await WakelockPlus.disable();
         } catch (e) {
-          print("禁用 Wakelock 失败: $e");
+          log("禁用 Wakelock 失败: $e");
         }
       }
       _updateState(() {
@@ -1407,7 +1416,7 @@ $content
         await _processRecognizedText(rawText);
       }
     } catch (e) {
-      print("日记识别出错: $e");
+      log("日记识别出错: $e");
       AppLogger.appLog('❌ [Diary] 识别出错: $e');
     } finally {
       // 清理缓冲区：识别路径（_recognizeLong）会自己管 stream.free，
@@ -1435,7 +1444,7 @@ $content
         );
         _recognizer!.decode(stream);
         final rawText = _recognizer!.getResult(stream).text;
-        print("原始识别: $rawText");
+        log("原始识别: $rawText");
         AppLogger.appLog('🎤 [Diary] 原始识别: $rawText');
         return rawText;
       } finally {
@@ -1444,7 +1453,9 @@ $content
     }
 
     // 长录音：VAD 切分 + 逐段识别 + 文本拼接
-    print("📦 [长录音保护] 录音 ${_recordingDurationInSeconds}s ≥ ${kLongRecordingThresholdSec}s, 启用 VAD 切分");
+    log(
+      "📦 [长录音保护] 录音 ${_recordingDurationInSeconds}s ≥ ${kLongRecordingThresholdSec}s, 启用 VAD 切分",
+    );
     AppLogger.appLog('📦 [Diary] 启用长录音保护: ${_recordingDurationInSeconds}s');
     return _recognizeWithVad();
   }
@@ -1480,7 +1491,7 @@ $content
       );
 
       final combined = texts.where((t) => t.trim().isNotEmpty).join('');
-      print("📦 [长录音保护] 切出 $segmentCount 段, 拼接结果: $combined");
+      log("📦 [长录音保护] 切出 $segmentCount 段, 拼接结果: $combined");
       AppLogger.appLog('📦 [Diary] 长录音切分: $segmentCount段 - $combined');
 
       // 4. SnackBar 提示（多段时）
@@ -1494,7 +1505,7 @@ $content
       }
       return combined;
     } catch (e) {
-      print('❌ [长录音保护] 失败: $e, 退回整段识别');
+      log('❌ [长录音保护] 失败: $e, 退回整段识别');
       AppLogger.appLog('❌ [Diary] 长录音切分失败: $e');
       // 兜底：失败时退回整段识别（与原行为一致）
       if (_audioBuffer.isEmpty) return '';
@@ -1513,7 +1524,7 @@ $content
       // 5. 释放 VAD（与搬家模式 _exitMoveMode 同构，防 native 内存泄漏）
       VadSingleton.instance.dispose();
       sw.stop();
-      print("🚀 [长录音保护] VAD 切分总耗时: ${sw.elapsedMilliseconds}ms");
+      log("🚀 [长录音保护] VAD 切分总耗时: ${sw.elapsedMilliseconds}ms");
     }
   }
 
@@ -1556,7 +1567,7 @@ $content
       rawText,
       removeSpaces: false,
     );
-    print("修正后文本: $processedText");
+    log("修正后文本: $processedText");
     AppLogger.appLog('📝 [Diary] 修正后文本: $processedText');
 
     String text = processedText; // 使用处理后的文本
@@ -1567,8 +1578,14 @@ $content
       final listResult = extractor.extract(text);
       if (listResult.isList) {
         final markdownContent = listResult.toMarkdown();
-        await widget.dbHelper.insertDiary(markdownContent, audioPath: null, duration: 0);
-        AppLogger.appLog('📋 [Diary] 清单识别: ${listResult.items.length}条 - $text');
+        await widget.dbHelper.insertDiary(
+          markdownContent,
+          audioPath: null,
+          duration: 0,
+        );
+        AppLogger.appLog(
+          '📋 [Diary] 清单识别: ${listResult.items.length}条 - $text',
+        );
         _haptic('click');
         await refreshList();
         return; // 清单已保存，不走日记存储
@@ -1601,7 +1618,7 @@ $content
         }
       } catch (e) {
         // 出错也不要阻塞：保存文字并记录日志
-        print('保存 wav 失败: $e');
+        log('保存 wav 失败: $e');
         await widget.dbHelper.insertDiary(
           text,
           audioPath: null,
@@ -1658,7 +1675,7 @@ $content
           // 强制从磁盘重新读取（原生层写入后 Dart 缓存不会自动更新）
           await p.reload();
           final keepMuted = p.getBool('keep_muted') ?? false;
-          print("🔇 [Diary] 轮询 keep_muted=$keepMuted");
+          log("🔇 [Diary] 轮询 keep_muted=$keepMuted");
           if (keepMuted && mounted) {
             timer.cancel();
             _muteHintTimer = null;
@@ -1671,7 +1688,8 @@ $content
                   style: TextStyle(color: ext2.textPrimary),
                 ),
                 duration: const Duration(milliseconds: 1500),
-                backgroundColor: ext2.surface, // 原 Color(0xE6323232) SnackBar 背景
+                backgroundColor:
+                    ext2.surface, // 原 Color(0xE6323232) SnackBar 背景
                 behavior: SnackBarBehavior.floating,
                 shape: const RoundedRectangleBorder(
                   borderRadius: BorderRadius.all(Radius.circular(20)),
@@ -1685,7 +1703,7 @@ $content
         }
       });
     } catch (e) {
-      print("显示静音提示失败: $e");
+      log("显示静音提示失败: $e");
     }
   }
 
@@ -1710,7 +1728,7 @@ $content
         }
       } catch (e) {
         // 文件删除失败不影响主流程，仅记录日志
-        print('删除录音文件失败: $e');
+        log('删除录音文件失败: $e');
       }
     }
 
@@ -1719,10 +1737,7 @@ $content
       final ext = AppThemeExtension.of(context);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            "日记已删除",
-            style: TextStyle(color: ext.textPrimary),
-          ),
+          content: Text("日记已删除", style: TextStyle(color: ext.textPrimary)),
           duration: const Duration(milliseconds: 1500),
           backgroundColor: ext.surface, // 原 Color(0xCC323232) SnackBar 背景
           behavior: SnackBarBehavior.floating,
@@ -1756,7 +1771,7 @@ $content
         }
       } catch (e) {
         // 文件删除失败不影响主流程，仅记录日志
-        print('删除录音文件失败: $e');
+        log('删除录音文件失败: $e');
       }
     }
 
@@ -1765,10 +1780,7 @@ $content
       final ext = AppThemeExtension.of(context);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            "日记已归档",
-            style: TextStyle(color: ext.textPrimary),
-          ),
+          content: Text("日记已归档", style: TextStyle(color: ext.textPrimary)),
           duration: const Duration(milliseconds: 1500),
           backgroundColor: ext.surface, // 原 Color(0xCC323232) SnackBar 背景
           behavior: SnackBarBehavior.floating,
@@ -1817,15 +1829,15 @@ $content
             mode: LaunchMode.externalApplication,
           );
           if (success) {
-            print("✅ 成功启动 ${selectedApp.name} (scheme): weixin://");
+            log("✅ 成功启动 ${selectedApp.name} (scheme): weixin://");
           } else {
             // scheme 失败，尝试 web URL
             final webUri = Uri.parse(selectedApp.url);
             await launchUrl(webUri, mode: LaunchMode.externalApplication);
-            print("✅ 成功启动 ${selectedApp.name} (web): ${selectedApp.url}");
+            log("✅ 成功启动 ${selectedApp.name} (web): ${selectedApp.url}");
           }
         } catch (e) {
-          print("⚠️ 微信启动失败: $e");
+          log("⚠️ 微信启动失败: $e");
           if (mounted) {
             _showLaunchErrorHint(selectedApp.name);
           }
@@ -1837,11 +1849,11 @@ $content
             androidPackageName: selectedApp.packageName,
             openStore: false,
           );
-          print(
+          log(
             "✅ 成功启动 ${selectedApp.name} (package): ${selectedApp.packageName}",
           );
         } catch (e) {
-          print("⚠️ 启动失败: $e");
+          log("⚠️ 启动失败: $e");
           if (mounted) {
             _showLaunchErrorHint(selectedApp.name);
           }
@@ -1861,11 +1873,11 @@ $content
           );
           if (success) {
             launched = true;
-            print("✅ 成功启动 ${selectedApp.name} (scheme): ${selectedApp.scheme}");
+            log("✅ 成功启动 ${selectedApp.name} (scheme): ${selectedApp.scheme}");
           }
         }
       } catch (e) {
-        print("⚠️ Scheme 启动失败: $e");
+        log("⚠️ Scheme 启动失败: $e");
       }
 
       // 失败则尝试 web URL
@@ -1877,14 +1889,14 @@ $content
             mode: LaunchMode.externalApplication,
           );
           if (success) {
-            print("✅ 成功启动 ${selectedApp.name} (web): ${selectedApp.url}");
+            log("✅ 成功启动 ${selectedApp.name} (web): ${selectedApp.url}");
           } else {
             if (mounted) {
               _showLaunchErrorHint(selectedApp.name);
             }
           }
         } catch (e) {
-          print("⚠️ Web URL 启动失败: $e");
+          log("⚠️ Web URL 启动失败: $e");
           if (mounted) {
             _showLaunchErrorHint(selectedApp.name);
           }
@@ -1900,7 +1912,10 @@ $content
       SnackBar(
         content: Row(
           children: [
-            Icon(Icons.info_outline, color: ext.textOnPrimary), // 原 Colors.white
+            Icon(
+              Icons.info_outline,
+              color: ext.textOnPrimary,
+            ), // 原 Colors.white
             const SizedBox(width: 10),
             Expanded(
               child: Text(
@@ -1923,7 +1938,11 @@ $content
   }
 
   // 底部抽屉编辑
-  void _showEditSheet(int id, String content, {bool isNewEmptyNote = false}) async {
+  void _showEditSheet(
+    int id,
+    String content, {
+    bool isNewEmptyNote = false,
+  }) async {
     _editController.text = content;
     // FocusNode 在 builder 外创建，避免每次重建都新建
     final focusNode = FocusNode();
@@ -1960,7 +1979,9 @@ $content
             height: targetHeight,
             decoration: BoxDecoration(
               color: ext.cardBackground, // 原 Colors.white 编辑抽屉背景
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+              borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(20),
+              ),
             ),
             child: Column(
               mainAxisSize: MainAxisSize.max,
@@ -1971,7 +1992,9 @@ $content
                   width: 40,
                   height: 4,
                   decoration: BoxDecoration(
-                    color: ext.textHint.withValues(alpha: 0.3), // 原 Colors.grey[300] 拖拽指示条
+                    color: ext.textHint.withValues(
+                      alpha: 0.3,
+                    ), // 原 Colors.grey[300] 拖拽指示条
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),
@@ -2017,17 +2040,14 @@ $content
                         ElevatedButton(
                           onPressed: () async {
                             _haptic('tick');
-                            final newContent =
-                                _editController.text.trim();
+                            final newContent = _editController.text.trim();
                             if (newContent.isEmpty) {
                               ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                    content: Text("内容不能为空")),
+                                const SnackBar(content: Text("内容不能为空")),
                               );
                               return;
                             }
-                            await widget.dbHelper.updateDiary(
-                                id, newContent);
+                            await widget.dbHelper.updateDiary(id, newContent);
                             refreshList();
                             // 🔒 锁屏隐私保护：编辑面板关闭时**不**清 flag（与 stopListening 一致），
                             // 由 ACTION_SCREEN_OFF 接收器统一负责
@@ -2042,18 +2062,22 @@ $content
                                   left: 20,
                                   right: 20,
                                   child: Material(
-                                    color: Colors.transparent, // 透明 Material 层，保持不变
+                                    color: Colors
+                                        .transparent, // 透明 Material 层，保持不变
                                     child: Container(
                                       padding: const EdgeInsets.symmetric(
-                                          horizontal: 20, vertical: 12),
+                                        horizontal: 20,
+                                        vertical: 12,
+                                      ),
                                       decoration: BoxDecoration(
-                                        color: ext.primary, // 原 Colors.teal 保存成功提示背景
-                                        borderRadius:
-                                            BorderRadius.circular(24),
+                                        color: ext
+                                            .primary, // 原 Colors.teal 保存成功提示背景
+                                        borderRadius: BorderRadius.circular(24),
                                         boxShadow: [
                                           BoxShadow(
                                             color: Colors.black.withValues(
-                                                alpha: 0.1),
+                                              alpha: 0.1,
+                                            ),
                                             blurRadius: 8,
                                             offset: const Offset(0, 2),
                                           ),
@@ -2063,7 +2087,8 @@ $content
                                         child: Text(
                                           "保存成功",
                                           style: TextStyle(
-                                            color: ext.textOnPrimary, // 原 Colors.white
+                                            color: ext
+                                                .textOnPrimary, // 原 Colors.white
                                             fontSize: 14,
                                             fontWeight: FontWeight.w500,
                                           ),
@@ -2081,7 +2106,8 @@ $content
                           },
                           style: ElevatedButton.styleFrom(
                             backgroundColor: ext.primary, // 原 Colors.teal
-                            foregroundColor: ext.textOnPrimary, // 原 Colors.white
+                            foregroundColor:
+                                ext.textOnPrimary, // 原 Colors.white
                           ),
                           child: const Text("保存"),
                         ),
@@ -2188,31 +2214,36 @@ $content
         if (ChecklistWidget.isChecklist(content))
           ChecklistWidget(
             content: content,
-            onToggle: (lineIndex) => _toggleChecklistItem(diaryId, content, lineIndex),
+            onToggle: (lineIndex) =>
+                _toggleChecklistItem(diaryId, content, lineIndex),
           )
         // 时间高亮文本或普通文本
         else if (timeEntities.isEmpty)
-            Text(
-              content,
-              style: TextStyle(
-                fontSize: 16,
-                height: 1.6,
-                color: isArchived ? ext.textHint : ext.textPrimary, // 原 Colors.grey / Color(0xFF1E293B)
-                decoration: isArchived ? TextDecoration.lineThrough : null,
-              ),
-            )
-          else
-            TimeAwareText(
-              text: content,
-              timeEntities: timeEntities,
-              baseStyle: TextStyle(
-                fontSize: 16,
-                height: 1.6,
-                color: isArchived ? ext.textHint : ext.textPrimary, // 原 Colors.grey / Color(0xFF1E293B)
-                decoration: isArchived ? TextDecoration.lineThrough : null,
-              ),
-              onTimeTap: (entity) => _handleTimeEntityTap(diaryId, entity),
+          Text(
+            content,
+            style: TextStyle(
+              fontSize: 16,
+              height: 1.6,
+              color: isArchived
+                  ? ext.textHint
+                  : ext.textPrimary, // 原 Colors.grey / Color(0xFF1E293B)
+              decoration: isArchived ? TextDecoration.lineThrough : null,
             ),
+          )
+        else
+          TimeAwareText(
+            text: content,
+            timeEntities: timeEntities,
+            baseStyle: TextStyle(
+              fontSize: 16,
+              height: 1.6,
+              color: isArchived
+                  ? ext.textHint
+                  : ext.textPrimary, // 原 Colors.grey / Color(0xFF1E293B)
+              decoration: isArchived ? TextDecoration.lineThrough : null,
+            ),
+            onTimeTap: (entity) => _handleTimeEntityTap(diaryId, entity),
+          ),
         // 答案区域（仅查询类笔记显示，不修改笔记 content）
         if (answer != null)
           Padding(
@@ -2244,13 +2275,19 @@ $content
               children: [
                 Text(
                   dateStr,
-                  style: TextStyle(fontSize: 12, color: ext.textHint), // 原 Colors.grey
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: ext.textHint,
+                  ), // 原 Colors.grey
                 ),
                 if (durationStr.isNotEmpty) ...[
                   const SizedBox(width: 20),
                   Text(
                     durationStr,
-                    style: TextStyle(fontSize: 12, color: ext.textHint), // 原 Colors.grey
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: ext.textHint,
+                    ), // 原 Colors.grey
                   ),
                 ],
               ],
@@ -2300,7 +2337,9 @@ $content
                   child: Icon(
                     Icons.favorite_border,
                     size: 18,
-                    color: ext.textHint.withValues(alpha: 0.2), // 原 Colors.black12 装饰图标
+                    color: ext.textHint.withValues(
+                      alpha: 0.2,
+                    ), // 原 Colors.black12 装饰图标
                   ),
                 ),
               ],
@@ -2323,7 +2362,11 @@ $content
 
     // 按钮颜色逻辑
     Color btnColor = ext.fabReady; // 原 Colors.teal 日记页录音按钮
-    Widget btnChild = Icon(Icons.mic, color: ext.textOnPrimary, size: 40); // 原 Colors.white
+    Widget btnChild = Icon(
+      Icons.mic,
+      color: ext.textOnPrimary,
+      size: 40,
+    ); // 原 Colors.white
     VoidCallback? onBtnPressed = startListening;
 
     // 获取当前屏幕的媒体查询数据
@@ -2335,14 +2378,21 @@ $content
     } else if (isListening) {
       // 正在录音状态：红色背景，停止方块图标
       btnColor = ext.fabRecording; // 原 Colors.redAccent
-      btnChild = Icon(Icons.stop, color: ext.textOnPrimary, size: 40); // 原 Colors.white
+      btnChild = Icon(
+        Icons.stop,
+        color: ext.textOnPrimary,
+        size: 40,
+      ); // 原 Colors.white
     } else if (isProcessing) {
       // 识别中状态：橙色背景，显示转圈圈的 Loading
       btnColor = ext.fabProcessing; // 原 Colors.orangeAccent
       btnChild = SizedBox(
         width: 30,
         height: 30,
-        child: CircularProgressIndicator(color: ext.textOnPrimary, strokeWidth: 3), // 原 Colors.white
+        child: CircularProgressIndicator(
+          color: ext.textOnPrimary,
+          strokeWidth: 3,
+        ), // 原 Colors.white
       );
       onBtnPressed = null; // 处理中禁用按钮
     }
@@ -2362,7 +2412,10 @@ $content
                 gradient: LinearGradient(
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
-                  colors: [ext.scaffoldBackground, ext.scaffoldBackground.withValues(alpha: 0.8)], // 原 Color(0xFFF8FAFC), Color(0xFFE2E8F0)
+                  colors: [
+                    ext.scaffoldBackground,
+                    ext.scaffoldBackground.withValues(alpha: 0.8),
+                  ], // 原 Color(0xFFF8FAFC), Color(0xFFE2E8F0)
                 ),
               ),
             ),
@@ -2379,7 +2432,9 @@ $content
                 shape: BoxShape.circle,
                 boxShadow: [
                   BoxShadow(
-                    color: ext.primary.withValues(alpha: 0.3), // 原 Colors.teal.withValues(alpha: 0.3) 光晕
+                    color: ext.primary.withValues(
+                      alpha: 0.3,
+                    ), // 原 Colors.teal.withValues(alpha: 0.3) 光晕
                     blurRadius: 80,
                     spreadRadius: 40,
                   ),
@@ -2397,7 +2452,9 @@ $content
                 shape: BoxShape.circle,
                 boxShadow: [
                   BoxShadow(
-                    color: ext.timeHighlight.withValues(alpha: 0.25), // 原 Colors.blue.withValues(alpha: 0.25) 光晕
+                    color: ext.timeHighlight.withValues(
+                      alpha: 0.25,
+                    ), // 原 Colors.blue.withValues(alpha: 0.25) 光晕
                     blurRadius: 70,
                     spreadRadius: 35,
                   ),
@@ -2415,7 +2472,9 @@ $content
                 shape: BoxShape.circle,
                 boxShadow: [
                   BoxShadow(
-                    color: ext.primary.withValues(alpha: 0.15), // 原 Colors.purple.withValues(alpha: 0.15) 光晕，映射到 primary
+                    color: ext.primary.withValues(
+                      alpha: 0.15,
+                    ), // 原 Colors.purple.withValues(alpha: 0.15) 光晕，映射到 primary
                     blurRadius: 60,
                     spreadRadius: 30,
                   ),
@@ -2441,10 +2500,13 @@ $content
                           filter: ui.ImageFilter.blur(sigmaX: 8, sigmaY: 8),
                           child: Container(
                             decoration: BoxDecoration(
-                              color: ext.cardBackground.withValues(alpha: 0.4), // 原 Color(0x66FFFFFF) 玻璃拟态搜索框
+                              color: ext.cardBackground.withValues(
+                                alpha: 0.4,
+                              ), // 原 Color(0x66FFFFFF) 玻璃拟态搜索框
                               borderRadius: BorderRadius.circular(24),
                               border: Border.all(
-                                color: Colors.black.withValues(alpha: 0.08), // 原 Color(0x14000000) 极淡黑色边框
+                                color: ext
+                                    .divider, // 浅色主题=black 8%，黑金=white 25%（深底可见）
                                 width: 1,
                               ),
                               boxShadow: [
@@ -2484,13 +2546,15 @@ $content
                         final prefs = await SharedPreferences.getInstance();
                         await prefs.remove(_exportDirPrefKey);
                         await widget.dbHelper.clearAllExportState();
-                        print("🔍 [Diary] 已清除导出目录和导出标记，将重新选择");
+                        log("🔍 [Diary] 已清除导出目录和导出标记，将重新选择");
                         _exportDiariesToMarkdown();
                       },
                       icon: const Icon(Icons.download_rounded),
                       tooltip: '导出为 Markdown（长按重新选择目录）',
                       style: IconButton.styleFrom(
-                        backgroundColor: ext.primary.withValues(alpha: 0.1), // 原 Colors.teal.withValues(alpha: 0.1)
+                        backgroundColor: ext.primary.withValues(
+                          alpha: 0.1,
+                        ), // 原 Colors.teal.withValues(alpha: 0.1)
                         foregroundColor: ext.primary, // 原 Colors.teal
                       ),
                     ),
@@ -2504,7 +2568,9 @@ $content
                     ? Center(
                         child: Text(
                           _isLoadingList ? "加载中..." : "还没有日记，试着说句话吧",
-                          style: TextStyle(color: ext.textHint), // 原 Colors.grey
+                          style: TextStyle(
+                            color: ext.textHint,
+                          ), // 原 Colors.grey
                         ),
                       )
                     : ListView.builder(
@@ -2561,17 +2627,23 @@ $content
                               if (separator != null) separator,
                               SwipeDismissCard(
                                 icon: isArchived ? Icons.delete : Icons.archive,
-                                iconColor: ext.textSecondary, // 原 Colors.grey.shade600
-                                circleColor: ext.textHint, // 原 Colors.grey.shade500
+                                iconColor:
+                                    ext.textSecondary, // 原 Colors.grey.shade600
+                                circleColor:
+                                    ext.textHint, // 原 Colors.grey.shade500
                                 onDismissed: () {
                                   _haptic('click');
-                                  print('[DiaryTab] onDismissed: id=${item['id']}, isArchived=$isArchived, 移除前列表长度=${_diaryList.length}');
+                                  log(
+                                    '[DiaryTab] onDismissed: id=${item['id']}, isArchived=$isArchived, 移除前列表长度=${_diaryList.length}',
+                                  );
                                   setState(() {
                                     _diaryList.removeWhere(
                                       (d) => d['id'] == item['id'],
                                     );
                                   });
-                                  print('[DiaryTab] onDismissed: 移除后列表长度=${_diaryList.length}');
+                                  log(
+                                    '[DiaryTab] onDismissed: 移除后列表长度=${_diaryList.length}',
+                                  );
                                   if (isArchived) {
                                     _deleteItem(item['id']);
                                   } else {
@@ -2600,11 +2672,15 @@ $content
                                         ),
                                         padding: const EdgeInsets.all(16),
                                         decoration: BoxDecoration(
-                                          color: ext.cardBackground.withValues(alpha: 0.7), // 原 Color(0xB3FFFFFF) 玻璃拟态卡片
-                                          borderRadius:
-                                              BorderRadius.circular(16),
+                                          color: ext.cardBackground.withValues(
+                                            alpha: 0.7,
+                                          ), // 原 Color(0xB3FFFFFF) 玻璃拟态卡片
+                                          borderRadius: BorderRadius.circular(
+                                            16,
+                                          ),
                                           border: Border.all(
-                                            color: Colors.black.withValues(alpha: 0.08), // 原 Color(0x14000000) 极淡黑色边框
+                                            color: ext
+                                                .divider, // 浅色主题=black 8%，黑金=white 25%（深底可见）
                                             width: 1,
                                           ),
                                           boxShadow: [

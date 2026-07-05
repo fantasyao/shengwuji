@@ -1,3 +1,4 @@
+import '../app_logger.dart';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../theme/app_theme_extension.dart';
@@ -122,7 +123,7 @@ class _SwipeDismissCardState extends State<SwipeDismissCard>
     final shouldDismiss =
         _dragOffset.abs() >= threshold || _velocityX < -300;
 
-    print('[SwipeDismissCard] dragEnd: offset=${_dragOffset.toStringAsFixed(1)}, '
+    log('[SwipeDismissCard] dragEnd: offset=${_dragOffset.toStringAsFixed(1)}, '
         'threshold=${threshold.toStringAsFixed(1)}, '
         'velocity=${_velocityX.toStringAsFixed(1)}, '
         'shouldDismiss=$shouldDismiss');
@@ -150,7 +151,7 @@ class _SwipeDismissCardState extends State<SwipeDismissCard>
     _isDismissing = true;
     final screenWidth = MediaQuery.of(context).size.width;
 
-    print('[SwipeDismissCard] dismiss started');
+    log('[SwipeDismissCard] dismiss started');
 
     _springAnimation = Tween<double>(
       begin: _dragOffset,
@@ -162,7 +163,7 @@ class _SwipeDismissCardState extends State<SwipeDismissCard>
     _springController.value = 0;
 
     _springController.forward().then((_) {
-      print('[SwipeDismissCard] dismiss animation done → 设置 _dismissCompleted=true → 调用 onDismissed');
+      log('[SwipeDismissCard] dismiss animation done → 设置 _dismissCompleted=true → 调用 onDismissed');
       if (mounted) {
         setState(() {
           _dismissCompleted = true;
@@ -175,7 +176,7 @@ class _SwipeDismissCardState extends State<SwipeDismissCard>
   @override
   Widget build(BuildContext context) {
     if (_dismissCompleted) {
-      print('[SwipeDismissCard] build: _dismissCompleted=true → SizedBox.shrink()');
+      log('[SwipeDismissCard] build: _dismissCompleted=true → SizedBox.shrink()');
       return const SizedBox.shrink();
     }
     final progress = _progress;

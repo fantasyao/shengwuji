@@ -3,6 +3,25 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
+/// 业务日志函数：同时输出控制台 + 写入 [AppLogger] 缓冲区。
+///
+/// **为什么不能用 `print`**：
+/// `main.dart` 用 `runZonedGuarded(zoneSpecification: print: ...)` 拦截 print，
+/// 但 Dart zone 机制对 **async callback / platform channel / Stream.listen**
+/// 注册的回调存在已知限制——这些回调注册时的 zone 是 root zone（不是 runApp
+/// 所在的拦截 zone），运行时 print 会绕过 zoneSpecification，导致日志丢失。
+/// 实测：Switch.onChanged、record.startStream、sherpa_onnx 的回调都属于这类。
+///
+/// **用法**：把原本的 `print('...')` 改为 `log('...')`，签名兼容。
+/// 保留 `print()` 给纯调试场景（不进 AppLogger 的临时输出）。
+void log(Object? message, [Object? arg, Object? arg2, Object? arg3]) {
+  final parts = [message, arg, arg2, arg3].where((e) => e != null).map((e) => e.toString());
+  final msg = parts.join(' ');
+  // ignore: avoid_print
+  print(msg); // 控制台（flutter run 时可见）
+  AppLogger.appLog(msg); // 显式写入缓冲区（不依赖 zone 拦截）
+}
+
 /// 应用运行日志收集器
 /// 自动拦截所有 print 输出，支持导出分享
 class AppLogger {

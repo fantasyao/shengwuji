@@ -1,3 +1,4 @@
+import 'app_logger.dart';
 import 'dart:io';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:path_provider/path_provider.dart';
@@ -39,7 +40,7 @@ class TextProcessor {
       }
       _parseHotwords(hotwordsContent);
     } catch (e) {
-      print("加载配置出错: $e");
+      log("加载配置出错: $e");
     }
   }
 
