@@ -56,7 +56,7 @@ param(
     [string]$CommitMsg = "Initial public release",
     [string]$GitAuthorName = "fantasyao",
     [string]$GitAuthorEmail = "fantasyao@users.noreply.github.com",
-    [string]$GitHubRepo = "fantasyao/my_first_app_release",
+    [string]$GitHubRepo = "fantasyao/shengwuji",
     [switch]$Push,
     [switch]$UploadModel
 )

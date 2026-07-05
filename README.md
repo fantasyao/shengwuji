@@ -51,7 +51,7 @@ flutter test                          # 运行测试
 
 本仓库不含 SenseVoice 语音识别模型（229MB，超 GitHub 单文件限制）。
 
-1. 前往 [Releases 页面](https://github.com/fantasyao/my_first_app_release/releases/latest)
+1. 前往 [Releases 页面](https://github.com/fantasyao/shengwuji/releases/latest)
 2. 下载 `model.int8.onnx`
 3. 放到 `assets/model.int8.onnx`
 4. 运行 `flutter pub get && flutter run`
