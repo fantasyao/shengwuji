@@ -20,7 +20,9 @@
     发布仓库本地路径，默认 S:\CodeProject\my_first_app_release
 
 .PARAMETER CommitMsg
-    发布仓库的 commit message
+    发布仓库的 commit message。默认为空，运行时交互式获取（GUI 对话框优先，
+    预填开发仓最近一次 commit message 并剥离开头 claude: 前缀；GUI 不可用
+    则回退终端 Read-Host）。命令行显式传值则非交互直接使用。
 
 .PARAMETER GitAuthorName
     发布仓库 git 作者名
@@ -48,12 +50,16 @@
 .EXAMPLE
     .\sync-to-release.ps1 -CommitMsg "v1.1.0 更新" -Push
     # 后续更新：仅推送源码
+
+.EXAMPLE
+    .\sync-to-release.ps1
+    # 不传 -CommitMsg，运行时弹对话框确认提交信息（预填最近 commit）
 #>
 
 [CmdletBinding()]
 param(
     [string]$ReleaseRepoPath = "S:\CodeProject\my_first_app_release",
-    [string]$CommitMsg = "Initial public release",
+    [string]$CommitMsg = "",
     [string]$GitAuthorName = "fantasyao",
     [string]$GitAuthorEmail = "fantasyao@users.noreply.github.com",
     [string]$GitHubRepo = "fantasyao/shengwuji",
@@ -63,6 +69,48 @@ param(
 
 $ErrorActionPreference = "Stop"
 $SrcRepoPath = "S:\CodeProject\my_first_app"
+
+# 交互式获取 commit message：GUI InputBox 优先，失败回退终端 Read-Host
+# 返回最终字符串；用户取消则返回 $null
+function Get-CommitMsgInteractive {
+    param(
+        [string]$Prompt,
+        [string]$Title,
+        [string]$Default
+    )
+    # 优先 GUI 对话框（预填默认值，可编辑，可取消）
+    $useGui = $true
+    try {
+        Add-Type -AssemblyName Microsoft.VisualBasic -ErrorAction Stop
+    } catch {
+        $useGui = $false
+        Write-Warning "GUI 程序集不可用，回退到终端输入"
+    }
+
+    if ($useGui) {
+        try {
+            $result = [Microsoft.VisualBasic.Interaction]::InputBox($Prompt, $Title, $Default)
+            # InputBox 取消/关闭返回空字符串，约定空 = 取消
+            if ([string]::IsNullOrEmpty($result)) {
+                return $null
+            }
+            return $result
+        } catch {
+            Write-Warning "GUI 对话框异常，回退到终端输入: $_"
+        }
+    }
+
+    # 终端 fallback（Read-Host 不支持取消，空 = 用默认）
+    Write-Host $Prompt -ForegroundColor Cyan
+    if (-not [string]::IsNullOrEmpty($Default)) {
+        Write-Host "  默认: $Default" -ForegroundColor DarkGray
+    }
+    $line = Read-Host "提交信息 (回车使用默认)"
+    if ([string]::IsNullOrWhiteSpace($line)) {
+        return $Default
+    }
+    return $line
+}
 
 # 输出编码（Windows 中文环境）
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -112,6 +160,56 @@ if ($releaseExists) {
 }
 
 Write-Host "[Phase 0] 前置检查通过" -ForegroundColor Green
+Write-Host ""
+
+# ===== 确定 commit message =====
+Write-Host "[Phase 0.5] 确定 commit message..." -ForegroundColor Yellow
+
+if (-not [string]::IsNullOrEmpty($CommitMsg)) {
+    # 命令行显式传入，非交互直接用
+    Write-Host "使用命令行传入的 commit message: $CommitMsg"
+} else {
+    # 智能推断默认值：取开发仓最近一次 commit 的 subject，剥离 claude: 前缀
+    $recentSubject = ""
+    try {
+        $recentSubject = (git -C $SrcRepoPath log -1 --format='%s' 2>$null)
+        if ($LASTEXITCODE -ne 0) { $recentSubject = "" }
+    } catch { $recentSubject = "" }
+    $defaultMsg = $recentSubject -replace '^claude:\s*', ''
+
+    # 检测开发仓工作区是否有未提交改动（这些也会被 robocopy 同步）
+    $isDirty = $false
+    try {
+        $dirtyOutput = git -C $SrcRepoPath status --porcelain 2>$null
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($dirtyOutput)) {
+            $isDirty = $true
+        }
+    } catch { }
+
+    # 构造对话框提示文案
+    $promptLines = @("请输入本次发布同步的 commit message：")
+    if ($isDirty) {
+        $promptLines += "⚠️ 开发仓有未提交改动，也会一并同步到发布仓。"
+    }
+    if (-not [string]::IsNullOrEmpty($defaultMsg)) {
+        $promptLines += "（已预填最近一次提交，可直接确定或修改）"
+    } else {
+        $promptLines += "（未取到最近提交，请手动输入说明）"
+    }
+    $prompt = $promptLines -join "`r`n"
+
+    Write-Host "默认 commit message: $defaultMsg"
+    if ($isDirty) { Write-Host "⚠️ 开发仓工作区有未提交改动" -ForegroundColor Yellow }
+
+    $finalMsg = Get-CommitMsgInteractive -Prompt $prompt -Title "发布同步 - commit message" -Default $defaultMsg
+
+    if ($null -eq $finalMsg -or [string]::IsNullOrWhiteSpace($finalMsg)) {
+        Write-Host "已取消同步，未做任何改动" -ForegroundColor Cyan
+        exit 0
+    }
+    $CommitMsg = $finalMsg.Trim()
+    Write-Host "本次 commit message: $CommitMsg" -ForegroundColor Green
+}
 Write-Host ""
 
 # ===== Phase A: robocopy 拷贝 =====
