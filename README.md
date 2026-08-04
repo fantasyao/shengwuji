@@ -25,7 +25,7 @@
 
 <p align="center">
   <img src="docs/img/存物品.webp" width="280" alt="语音存物品演示" />
-  &nbsp;&nbsp;
+    
   <img src="docs/img/查物品.webp" width="280" alt="语音查物品演示" />
 </p>
 
@@ -36,12 +36,7 @@
 - **持续录音 + Silero VAD 智能切段**，边放物品边说话，不用来回按按钮；
 - **TTS 语音反馈**：识别成功会朗读「已把牙刷放入绿色箱子」，识别失败有提示音，**不用盯屏幕**；
 - 说「不对 / 撤销」可自动删除上一条记录。
-
-<p align="center">
-  <img src="docs/img/搬家app2.webp" width="300" alt="搬家模式" />
-</p>
-
-▶️ **搬家模式演示视频**（声音较大，注意调低音量）：https://www.bilibili.com/video/BV11yM96nE23/
+- ▶️ **搬家模式演示视频**（声音较大，注意调低音量）：https://www.bilibili.com/video/BV11yM96nE23/
 
 ### ⚡ 闪念胶囊 · 快速记笔记
 
