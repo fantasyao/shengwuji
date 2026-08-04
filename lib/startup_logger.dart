@@ -1,4 +1,4 @@
-import 'app_logger.dart';
+import 'app_logger.dart' as applog;
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
@@ -23,7 +23,7 @@ class StartupLogger {
   static void log(String phase, int elapsedMs, {String? extra}) {
     final line = "$phase: ${elapsedMs}ms${extra != null ? ' ($extra)' : ''}";
     _logs.add(line);
-    log("⏱️ $line");
+    applog.log("⏱️ $line");
   }
 
   /// 记录一条原始文本日志
