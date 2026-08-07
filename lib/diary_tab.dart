@@ -35,8 +35,10 @@ import '../app_logger.dart';
 import 'package:persistent_user_dir_access_android/persistent_user_dir_access_android.dart';
 import '../utils/query_detector.dart';
 import '../utils/item_splitter.dart';
+import '../utils/waveform_extractor.dart';
 import '../widgets/item_transfer_widget.dart';
 import '../widgets/location_answer_widget.dart';
+import '../widgets/diary_play_bar.dart';
 import '../theme/app_theme_extension.dart';
 
 /// 短句阈值：超过此长度的日记不触发转存/查询检测
@@ -56,6 +58,47 @@ class _QueryAnswer {
 
   _QueryAnswer({required this.itemName, required this.matches});
 }
+
+/// 日记卡片播放状态（页面级单 ValueNotifier，~5Hz position 流不触发 setState）。
+///
+/// 三层性能防护：
+/// 1. 高频 onPositionChanged → 只赋值 notifier
+/// 2. 卡片 build 用 ValueListenableBuilder 短路非活动卡（state.id != item.id 时 position 永远 0）
+/// 3. CustomPainter.shouldRepaint 用 identical(peaks) + playedFraction 精细比较
+///
+/// 使用 record 类型 + 扩展 copyWith：record 自带结构化相等性，
+/// 相同值不会触发 ValueListenableBuilder 重建（位置未变时自动去重）。
+typedef PlaybackState = ({
+  int? id,
+  Duration position,
+  Duration duration,
+  bool playing,
+});
+
+/// PlaybackState 的 copyWith 扩展。
+/// 注意：id 是 nullable，但本扩展的 copyWith 不支持把 id 重置为 null
+/// （现有调用点没有此需求，播完归 idle 直接构造 const 字面量）。
+extension PlaybackStateCopy on PlaybackState {
+  PlaybackState copyWith({
+    int? id,
+    Duration? position,
+    Duration? duration,
+    bool? playing,
+  }) => (
+    id: id ?? this.id,
+    position: position ?? this.position,
+    duration: duration ?? this.duration,
+    playing: playing ?? this.playing,
+  );
+}
+
+/// PlaybackState 的初始 idle 值（id=null/position=0/duration=0/playing=false）。
+const PlaybackState _idlePlayback = (
+  id: null,
+  position: Duration.zero,
+  duration: Duration.zero,
+  playing: false,
+);
 
 class DiaryTab extends StatefulWidget {
   final DbHelper dbHelper;
@@ -114,12 +157,35 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
   int? _playingDiaryId;
   bool _isPlaying = false;
 
+  // --- 播放进度（页面级单 ValueNotifier） ---
+  // 故意不订阅 onPlayerStateChanged：audioplayers 在 Android 上 state 流有抖动，自管 bool 更可靠。
+  // ⚠️ 不用 onPositionChanged：实测 Android 上 position 流播放中会回退跳变
+  //    （日志实锤 528ms→233ms），直接透传会让游标"先走再跳回"。改用 Stopwatch 自算
+  //    （单调不回退）+ Timer ticker 驱动，seek 时重置基准。
+  // onDurationChanged 精修 notifier.duration（DB duration 字段做初始 max）。
+  // onPlayerComplete 走 _updateState（低频，归 idle）。
+  StreamSubscription<Duration>? _durSub;
+  StreamSubscription<void>? _completeSub;
+  final ValueNotifier<PlaybackState> _playbackNotifier =
+      ValueNotifier<PlaybackState>(_idlePlayback);
+  // 自算播放位置：播放中 = _basePosition + stopwatch.elapsed，暂停/停止冻结在 _basePosition
+  final Stopwatch _playStopwatch = Stopwatch();
+  Duration _basePosition = Duration.zero;
+  Timer? _posTicker;
+
+  // --- 响度波纹缓存（与 _queryAnswerCache 同模式：懒加载 + Set 守卫 + refreshList 清空） ---
+  final Map<int, List<double>> _peaksCache = {};
+  final Set<int> _parsingPeaksIds = {};
+
   // 使用单例管理器
   final _recognizerManager = RecognizerSingleton.instance;
   sherpa_onnx.OfflineRecognizer? get _recognizer =>
       _recognizerManager.recognizer;
 
   List<double> _audioBuffer = [];
+  // 正在转写的 diary id 集合（内存态，进程重启后清空，所有占位统一显示"可重试"）
+  // 用途：① 卡片渲染时显示"正在转写…"加载圈 ② startListening 入口并发守卫
+  final Set<int> _transcribingIds = <int>{};
   bool isReady = false;
   bool isListening = false;
   bool isProcessing = false;
@@ -214,6 +280,27 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
     // 加载 dismiss 学习数据 + 智能识别开关（与 refreshList 并行，无依赖）
     _loadDismissedSplits();
     _loadSmartSwitches();
+
+    // === 播放器流订阅（一次性，避免原来每次 play 内 onPlayerComplete.listen 的泄漏） ===
+    // 不用 onPositionChanged（Android position 流有回退跳变，进度由 Stopwatch 自算）。
+    // duration 流：WAV 可能不触发，DB duration 字段已在 _togglePlay 设为初始 max，这里只精修
+    _durSub = _audioPlayer.onDurationChanged.listen((dur) {
+      _playbackNotifier.value = _playbackNotifier.value.copyWith(duration: dur);
+    });
+    // 播完：归 idle + 走 _updateState（低频，刷新按钮图标等依赖 _isPlaying 的 UI）
+    _completeSub = _audioPlayer.onPlayerComplete.listen((_) {
+      // 重置自算计时，下次播放从头
+      _playStopwatch
+        ..reset()
+        ..stop();
+      _basePosition = Duration.zero;
+      _stopPosTicker();
+      _playbackNotifier.value = _idlePlayback;
+      _updateState(() {
+        _isPlaying = false;
+        _playingDiaryId = null;
+      });
+    });
   }
 
   /// 加载 dismiss 学习数据（启动时一次性加载到内存）
@@ -407,32 +494,141 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
     return header.buffer.asUint8List();
   }
 
-  void _togglePlay(int id, String? path) async {
+  /// 播放/暂停切换（三分支：同卡播放中→pause / 同卡已暂停→resume / 否则→stop+play 新）。
+  ///
+  /// 关键：暂停后继续用 `resume()` 不重头；切卡时 `stop()` + `play()`。
+  /// 签名加可选 `{int? durationSec}`：DB 字段做初始 duration max，
+  /// 等 onDurationChanged 流精修（WAV 可能不触发 duration 流）。
+  Future<void> _togglePlay(
+    int id,
+    String? path, {
+    int? durationSec,
+  }) async {
     if (path == null) return;
     try {
       if (_playingDiaryId == id && _isPlaying) {
+        // 同卡播放中 → 暂停
         await _audioPlayer.pause();
         _updateState(() {
           _isPlaying = false;
         });
+        // 冻结自算位置：暂停点
+        _basePosition = _computedPosition;
+        _playStopwatch.stop();
+        _stopPosTicker();
+        _playbackNotifier.value = _playbackNotifier.value.copyWith(
+          position: _basePosition,
+          playing: false,
+        );
+      } else if (_playingDiaryId == id && !_isPlaying) {
+        // 同卡已暂停 → 继续（不重头）
+        await _audioPlayer.resume();
+        _updateState(() {
+          _isPlaying = true;
+        });
+        // 从暂停点继续：_basePosition 已在 pause 时冻结为暂停点，
+        // stopwatch 必须 reset 再 start，否则 elapsed 残留暂停前累积量，
+        // position 虚高（实测暂停后续播，进度条跳到"暂停点+已播时长"）。
+        _playStopwatch
+          ..reset()
+          ..start();
+        _startPosTicker();
+        _playbackNotifier.value = _playbackNotifier.value.copyWith(
+          playing: true,
+        );
       } else {
-        // 先停止之前的
+        // 切卡/首次：停旧 + play 新
         await _audioPlayer.stop();
-        final result = await _audioPlayer.play(DeviceFileSource(path));
-        // play 方法在 audioplayers v3 返回一个 PlayerState 或 void，兼容性请以你本地版本为准
+        // 先推 notifier 起点状态（游标归零、图标变暂停态），再 play。
+        // stopwatch/ticker 在 play() 启动后再起，避免把播放器准备期算进进度。
+        _playbackNotifier.value = (
+          id: id,
+          position: Duration.zero,
+          duration: Duration(seconds: durationSec ?? 0),
+          playing: true,
+        );
+        await _audioPlayer.play(DeviceFileSource(path));
         _updateState(() {
           _playingDiaryId = id;
           _isPlaying = true;
         });
-        _audioPlayer.onPlayerComplete.listen((_) {
-          _updateState(() {
-            _isPlaying = false;
-            _playingDiaryId = null;
-          });
-        });
+        _basePosition = Duration.zero;
+        _playStopwatch
+          ..reset()
+          ..start();
+        _startPosTicker();
       }
     } catch (e) {
       log("播放失败: $e");
+    }
+  }
+
+  /// 拖动/单击 seek 入口（只在松手/单击时调一次，不实时 seek）。
+  /// 理由：audioplayers 在 Android 上 seek() 有 50-200ms 延迟，
+  /// 实时 seek 会队列堆积、爆音、游标抖动。
+  Future<void> _seekTo(int id, Duration pos) async {
+    if (_playingDiaryId != id) return;
+    try {
+      await _audioPlayer.seek(pos);
+      // 重置自算基准到目标位置：播放中则从目标继续计时，暂停则冻结在目标
+      _basePosition = pos;
+      if (_isPlaying) {
+        _playStopwatch
+          ..reset()
+          ..start();
+      } else {
+        _playStopwatch
+          ..reset()
+          ..stop();
+      }
+      _playbackNotifier.value = _playbackNotifier.value.copyWith(position: pos);
+    } catch (e) {
+      log("seek 失败: $e");
+    }
+  }
+
+  /// 自算当前位置：播放中 = 基准 + 计时流逝（Stopwatch 单调，无 audioplayers 回退跳变）。
+  Duration get _computedPosition => _basePosition + _playStopwatch.elapsed;
+
+  /// 启动进度 ticker（~20Hz）：播放/恢复时驱动 notifier.position 平滑前进。
+  /// 只赋值 notifier，不调 setState/_updateState（防整列重建）。
+  void _startPosTicker() {
+    _posTicker?.cancel();
+    _posTicker = Timer.periodic(const Duration(milliseconds: 50), (_) {
+      _playbackNotifier.value =
+          _playbackNotifier.value.copyWith(position: _computedPosition);
+    });
+  }
+
+  void _stopPosTicker() {
+    _posTicker?.cancel();
+    _posTicker = null;
+  }
+
+  /// 异步提取响度波纹并写缓存（照 _parseQueryAnswer 模式：守卫→addParsing→extract→mounted→setState）。
+  ///
+  /// 失败/空数组也会写入缓存（const [] 的 identity 稳定），下次 refreshList 前不再触发。
+  Future<void> _parsePeaks(int diaryId, String audioPath) async {
+    if (_peaksCache.containsKey(diaryId) ||
+        _parsingPeaksIds.contains(diaryId)) {
+      return;
+    }
+    _parsingPeaksIds.add(diaryId);
+    try {
+      final peaks = await extractPeaks(audioPath);
+      if (!mounted) return;
+      setState(() {
+        _peaksCache[diaryId] = peaks;
+      });
+    } catch (e) {
+      log("波纹提取失败 diaryId=$diaryId: $e");
+      if (!mounted) return;
+      // 失败也写入空数组占位，避免反复触发
+      setState(() {
+        _peaksCache[diaryId] = const [];
+      });
+    } finally {
+      _parsingPeaksIds.remove(diaryId);
     }
   }
 
@@ -444,6 +640,11 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
     _audioRecorder.dispose();
     // 不再在这里释放识别器，因为它是单例共享的
     _searchController.dispose();
+    // 先 cancel 播放流订阅 + ticker + dispose notifier，再 dispose player（防 player 已释放后回调触发 use-after-free）
+    _posTicker?.cancel();
+    _durSub?.cancel();
+    _completeSub?.cancel();
+    _playbackNotifier.dispose();
     _audioPlayer.dispose();
     _editController.dispose(); // 清理编辑控制器
     super.dispose();
@@ -527,6 +728,9 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
     // 清除物品转存检测缓存（与查询答案缓存同步）
     _itemSplitCache.clear();
     _parsingItemSplitIds.clear();
+    // 清除响度波纹缓存（与上述缓存同步：录新日记/下拉刷新后波纹重新提取）
+    _peaksCache.clear();
+    _parsingPeaksIds.clear();
   }
 
   /// 导出日记为 Markdown 文件
@@ -713,6 +917,8 @@ $content
 
   /// 解析日记内容中的时间实体（添加文本预处理，修复标点符号问题）
   Future<void> _parseTimeEntities(int diaryId, String content) async {
+    // 占位日记 content=''：跳过无意义解析
+    if (content.trim().isEmpty) return;
     if (_parsingDiaryIds.contains(diaryId)) return;
 
     setState(() {
@@ -747,6 +953,8 @@ $content
   /// 解析日记内容中的查询语句，后台查询 items 表并缓存结果。
   /// 与 _parseTimeEntities 同模式：懒加载 + 防重复 + setState 刷新。
   Future<void> _parseQueryAnswer(int diaryId, String content) async {
+    // 占位日记 content=''：跳过无意义解析
+    if (content.trim().isEmpty) return;
     // 开关关闭 → 整个功能禁用（设置页可关）
     if (!_queryAnswerEnabled) return;
 
@@ -798,6 +1006,8 @@ $content
   /// 检测日记内容是否为"物品+位置"模式，缓存结果用于渲染转存横条
   /// 与 _parseQueryAnswer 模式对称：懒加载 + 防重复 + setState 触发重渲染
   void _parseItemSplit(int diaryId, String content) {
+    // 占位日记 content=''：跳过无意义检测
+    if (content.trim().isEmpty) return;
     if (_itemSplitCache.containsKey(diaryId) ||
         _parsingItemSplitIds.contains(diaryId)) {
       return;
@@ -1127,6 +1337,20 @@ $content
       return;
     }
 
+    // 并发守卫（R2）：再次转写期间 _recognizer 单例被占用，禁止开新录音避免状态冲突
+    if (_transcribingIds.isNotEmpty) {
+      log("🔍 [Diary] startListening: 转写进行中（ids=$_transcribingIds），忽略");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('正在转写上一条录音，请稍后再试'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+      return;
+    }
+
     // 如果是锁定模式，设置标志并启用 Wakelock
     if (lockedMode) {
       _isLockedRecording = true;
@@ -1294,6 +1518,36 @@ $content
       log("停止录音失败: $e");
     }
 
+    // === 阶段2.5：先落盘 WAV + 写占位日记拿 id（防止转写崩溃导致录音丢失） ===
+    // 上下游：原设计把 WAV 落盘 + insertDiary 放在识别后（_processRecognizedText 内），
+    // 长录音 VAD 识别耗时数十秒，期间崩溃 = 录音+记录全丢。现在前置到识别前，
+    // 转写只是 updateDiary 回填 content，失败保留占位（content=''），用户可点"再次转写"
+    int? pendingDiaryId;
+    try {
+      final pcmBytes = _pcmBuilder.toBytes();
+      if (pcmBytes.isNotEmpty) {
+        final wavPath = await _writeWavFile(
+          Uint8List.fromList(pcmBytes),
+          sampleRate: 16000,
+        );
+        pendingDiaryId = await widget.dbHelper.insertDiary(
+          '', // 占位空文本，转写完成后 updateDiary 回填
+          audioPath: wavPath,
+          duration: _recordingDurationInSeconds,
+        );
+        AppLogger.appLog(
+          '💾 [Diary] 占位入库 id=$pendingDiaryId wav=$wavPath',
+        );
+      }
+    } catch (e) {
+      log('阶段2.5 落盘失败: $e');
+      AppLogger.appLog('❌ [Diary] 占位落盘失败: $e');
+    }
+    if (pendingDiaryId != null) {
+      _transcribingIds.add(pendingDiaryId);
+      if (mounted) await refreshList(); // 立即让卡片可见（显示"正在转写…"）
+    }
+
     // === 阶段3：先播放转圈动画（避免模型加载阻塞动画） ===
     // 上下游：原设计把模型加载放在 delay 之前，native 同步加载会卡住橙色转圈
     // 重排后先 delay 让用户看到完整动画，再做模型加载（UI 可能卡顿但关键视觉已演完）
@@ -1391,7 +1645,8 @@ $content
     }
 
     // === 阶段5：识别（按钮已是绿色普通态，native 卡顿对用户不可见） ===
-    await _processRecognition();
+    // pendingDiaryId != null 时走回填路径（占位已入库），失败保留占位；否则走兜底路径
+    await _processRecognition(diaryId: pendingDiaryId);
 
     // === 阶段6：清理 statusText，刷新列表（isProcessing 已在阶段3.5 切换为 false） ===
     if (mounted) {
@@ -1409,11 +1664,18 @@ $content
   }
 
   // 执行语音识别的核心逻辑（提取为独立方法）
-  Future<void> _processRecognition() async {
+  // diaryId != null：占位已入库，识别成功后走 updateDiary 回填，失败/为空保留占位
+  // diaryId == null：占位落盘失败兜底，走老的 insertDiary 路径
+  Future<void> _processRecognition({int? diaryId}) async {
     try {
       final rawText = await _recognizeLong();
       if (rawText.isNotEmpty) {
-        await _processRecognizedText(rawText);
+        await _processRecognizedText(rawText, diaryId: diaryId);
+      } else {
+        // 识别为空：保留占位（diaryId 非空时占位行已存在）
+        AppLogger.appLog(
+          'ℹ️ [Diary] 识别为空, 保留占位（diaryId=$diaryId）',
+        );
       }
     } catch (e) {
       log("日记识别出错: $e");
@@ -1423,6 +1685,10 @@ $content
       // 但 _audioBuffer 和 _pcmBuilder 是录音期间累积的，必须在这里清理
       _audioBuffer.clear();
       _pcmBuilder.clear();
+      // 转写结束（无论成功失败），移出"正在转写"集合
+      if (diaryId != null) {
+        _transcribingIds.remove(diaryId);
+      }
     }
   }
 
@@ -1431,38 +1697,38 @@ $content
   Future<String> _recognizeLong() async {
     // _recordingDurationInSeconds 是 nullable（int?），null 视为 0 走短录音原逻辑
     final int durationSec = _recordingDurationInSeconds ?? 0;
+    if (_audioBuffer.isEmpty) return '';
+    // 收口：把 _audioBuffer 转 Float32List 后交给公共路由方法
+    final samples = Float32List.fromList(_audioBuffer);
+    return _recognizeSamplesAutoRoute(samples, durationSec: durationSec);
+  }
+
+  /// 公共识别路由：首次转写和再次转写共用此入口
+  /// durationSec < kLongRecordingThresholdSec 走整段识别，否则走 VAD 切分
+  Future<String> _recognizeSamplesAutoRoute(
+    Float32List samples, {
+    required int durationSec,
+  }) async {
     final bool isLongRecording = durationSec >= kLongRecordingThresholdSec;
-
     if (!isLongRecording) {
-      // 短录音：原整段识别逻辑（保留原行为）
-      if (_audioBuffer.isEmpty) return '';
-      final stream = _recognizer!.createStream();
-      try {
-        stream.acceptWaveform(
-          samples: Float32List.fromList(_audioBuffer),
-          sampleRate: 16000,
-        );
-        _recognizer!.decode(stream);
-        final rawText = _recognizer!.getResult(stream).text;
-        log("原始识别: $rawText");
-        AppLogger.appLog('🎤 [Diary] 原始识别: $rawText');
-        return rawText;
-      } finally {
-        stream.free();
-      }
+      // 短录音：整段识别
+      final rawText = await _recognizeSamplesToText(samples);
+      log("原始识别: $rawText");
+      AppLogger.appLog('🎤 [Diary] 原始识别: $rawText');
+      return rawText;
     }
-
     // 长录音：VAD 切分 + 逐段识别 + 文本拼接
     log(
-      "📦 [长录音保护] 录音 ${_recordingDurationInSeconds}s ≥ ${kLongRecordingThresholdSec}s, 启用 VAD 切分",
+      "📦 [长录音保护] 录音 ${durationSec}s ≥ ${kLongRecordingThresholdSec}s, 启用 VAD 切分",
     );
-    AppLogger.appLog('📦 [Diary] 启用长录音保护: ${_recordingDurationInSeconds}s');
-    return _recognizeWithVad();
+    AppLogger.appLog('📦 [Diary] 启用长录音保护: ${durationSec}s');
+    return _recognizeSamplesWithVad(samples);
   }
 
   /// 长录音 VAD 切分核心：分块喂 VAD（避免 30s 环形缓冲溢出），逐段识别后拼接
   /// 失败时兜底退回整段识别（与原行为一致）
-  Future<String> _recognizeWithVad() async {
+  /// 改造为接收 samples 参数，消除对实例缓冲区 _audioBuffer 的依赖（支持再次转写从文件回读）
+  Future<String> _recognizeSamplesWithVad(Float32List samples) async {
     // 1. 确保 VAD 就绪（懒加载，与 record_tab.dart搬家模式 _enterMoveMode 同构）
     await VadSingleton.instance.initialize();
 
@@ -1471,12 +1737,16 @@ $content
     final sw = Stopwatch()..start();
 
     try {
-      // 2. 分块喂 VAD（每块 5 秒 = 80000 samples，远小于 30s 环形缓冲）
-      const int sampleRate = 16000;
-      const int chunkSize = sampleRate * 5;
-      for (int i = 0; i < _audioBuffer.length; i += chunkSize) {
-        final end = min(i + chunkSize, _audioBuffer.length);
-        final chunk = Float32List.fromList(_audioBuffer.sublist(i, end));
+      // 2. 分块喂 VAD：每次喂 1 个 Silero 窗口（512 samples = 32ms）
+      //    ⚠️ 不能用大块！sherpa_onnx AcceptWaveform 把一次调用里所有窗口聚合成
+      //    1 个 is_speech 决策，start_ = Tail - 0.36s（相对批次尾部）。
+      //    大块（如 5s）会让长静音后的短语音 start_ 错位到语音之后，语音被静默丢弃。
+      //    （C++ 源码注释：Please don't use a very large n.）
+      //    bufferSizeInSeconds:30 不是元凶——CircularBuffer 自动扩容不丢数据。
+      const int chunkSize = 512; // = Silero v4 windowSize（16kHz 固定）
+      for (int i = 0; i < samples.length; i += chunkSize) {
+        final end = min(i + chunkSize, samples.length);
+        final chunk = Float32List.fromList(samples.sublist(i, end));
         VadSingleton.instance.vad!.acceptWaveform(chunk);
         segmentCount += await _drainAndCollect(
           vad: VadSingleton.instance.vad!,
@@ -1508,13 +1778,10 @@ $content
       log('❌ [长录音保护] 失败: $e, 退回整段识别');
       AppLogger.appLog('❌ [Diary] 长录音切分失败: $e');
       // 兜底：失败时退回整段识别（与原行为一致）
-      if (_audioBuffer.isEmpty) return '';
+      if (samples.isEmpty) return '';
       final stream = _recognizer!.createStream();
       try {
-        stream.acceptWaveform(
-          samples: Float32List.fromList(_audioBuffer),
-          sampleRate: 16000,
-        );
+        stream.acceptWaveform(samples: samples, sampleRate: 16000);
         _recognizer!.decode(stream);
         return _recognizer!.getResult(stream).text;
       } finally {
@@ -1559,9 +1826,11 @@ $content
     }
   }
 
-  /// 处理已识别文本：热词纠错 → 清单检测 → WAV 生成 → insertDiary
+  /// 处理已识别文本：热词纠错 → 清单检测 → 入库
+  /// diaryId != null：占位行已存在（带真实 audio_path + duration），走 updateDiary 回填
+  /// diaryId == null：兜底路径（占位落盘失败时保留老的 insertDiary 行为）
   /// 共用入口：整段识别 + 长录音 VAD 切分拼接 后都走这里
-  Future<void> _processRecognizedText(String rawText) async {
+  Future<void> _processRecognizedText(String rawText, {int? diaryId}) async {
     // 应用热词替换（日记模式保留空格，不去除英文单词之间的空格）
     final processedText = widget.processor.process(
       rawText,
@@ -1578,14 +1847,23 @@ $content
       final listResult = extractor.extract(text);
       if (listResult.isList) {
         final markdownContent = listResult.toMarkdown();
-        await widget.dbHelper.insertDiary(
-          markdownContent,
-          audioPath: null,
-          duration: 0,
-        );
-        AppLogger.appLog(
-          '📋 [Diary] 清单识别: ${listResult.items.length}条 - $text',
-        );
+        if (diaryId != null) {
+          // 占位行已带真实 audio_path + duration，清单也受崩溃保护
+          await widget.dbHelper.updateDiary(diaryId, markdownContent);
+          AppLogger.appLog(
+            '📋 [Diary] 清单回填: ${listResult.items.length}条 - $text (id=$diaryId)',
+          );
+        } else {
+          // 兜底：占位未入库时走老的 insertDiary 路径
+          await widget.dbHelper.insertDiary(
+            markdownContent,
+            audioPath: null,
+            duration: 0,
+          );
+          AppLogger.appLog(
+            '📋 [Diary] 清单识别: ${listResult.items.length}条 - $text',
+          );
+        }
         _haptic('click');
         await refreshList();
         return; // 清单已保存，不走日记存储
@@ -1594,36 +1872,43 @@ $content
 
     // 简单处理：去掉末尾多余标点
     if (text.isNotEmpty) {
-      // 1) 生成 wav 文件（使用 _pcmBuilder 中的原始 PCM16 bytes）
-      try {
-        final pcmBytes = _pcmBuilder.toBytes();
-        if (pcmBytes.isNotEmpty) {
-          final wavPath = await _writeWavFile(
-            Uint8List.fromList(pcmBytes),
-            sampleRate: 16000,
-          );
-          await widget.dbHelper.insertDiary(
-            text,
-            audioPath: wavPath,
-            duration: _recordingDurationInSeconds,
-          );
-          AppLogger.appLog('💾 [Diary] 保存日记: $text');
-        } else {
-          // 没有采集到原始 bytes（异常情况），仍然保存文字
+      if (diaryId != null) {
+        // 占位已入库：updateDiary 回填 content（WAV 已在阶段 2.5 落盘）
+        await widget.dbHelper.updateDiary(diaryId, text);
+        AppLogger.appLog('💾 [Diary] 回填日记: $text (id=$diaryId)');
+      } else {
+        // 兜底：占位落盘失败的边界场景，保留老的"先写盘再 insertDiary"逻辑
+        // 1) 生成 wav 文件（使用 _pcmBuilder 中的原始 PCM16 bytes）
+        try {
+          final pcmBytes = _pcmBuilder.toBytes();
+          if (pcmBytes.isNotEmpty) {
+            final wavPath = await _writeWavFile(
+              Uint8List.fromList(pcmBytes),
+              sampleRate: 16000,
+            );
+            await widget.dbHelper.insertDiary(
+              text,
+              audioPath: wavPath,
+              duration: _recordingDurationInSeconds,
+            );
+            AppLogger.appLog('💾 [Diary] 保存日记: $text');
+          } else {
+            // 没有采集到原始 bytes（异常情况），仍然保存文字
+            await widget.dbHelper.insertDiary(
+              text,
+              audioPath: null,
+              duration: _recordingDurationInSeconds,
+            );
+          }
+        } catch (e) {
+          // 出错也不要阻塞：保存文字并记录日志
+          log('保存 wav 失败: $e');
           await widget.dbHelper.insertDiary(
             text,
             audioPath: null,
             duration: _recordingDurationInSeconds,
           );
         }
-      } catch (e) {
-        // 出错也不要阻塞：保存文字并记录日志
-        log('保存 wav 失败: $e');
-        await widget.dbHelper.insertDiary(
-          text,
-          audioPath: null,
-          duration: _recordingDurationInSeconds,
-        );
       }
       // 震动移到外部处理，避免阻塞动画
     }
@@ -1637,6 +1922,144 @@ $content
       float32Data[i] = int16Data[i] / 32768.0;
     }
     return float32Data;
+  }
+
+  // --- 占位日记（转写未完成）判定 ---
+  // content=='' && audio_path 存在且文件还在 = 占位日记（崩溃/识别为空/用户主动重试前）
+  bool _isPlaceholder(Map<String, dynamic> item) {
+    final content = (item['content'] as String?) ?? '';
+    if (content.isNotEmpty) return false;
+    final audioPath = item['audio_path'] as String?;
+    if (audioPath == null || audioPath.isEmpty) return false;
+    try {
+      return File(audioPath).existsSync();
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // 是否存在可重新转写的录音文件（占位日记 + 已识别但有录音的日记都算）
+  // 用于决定「再次转写」按钮是否显示——任何有录音的日记都允许重新转写
+  bool _hasAudioFile(Map<String, dynamic> item) {
+    final audioPath = item['audio_path'] as String?;
+    if (audioPath == null || audioPath.isEmpty) return false;
+    try {
+      return File(audioPath).existsSync();
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // 当前 diary 是否正在转写（内存态，重启后清空 → 所有占位统一显示"可重试"）
+  bool _isTranscribing(int id) => _transcribingIds.contains(id);
+
+  /// 再次转写：从已落盘的 WAV 文件回读 PCM → 识别 → 热词/清单 → updateDiary 回填
+  /// 失败/识别为空：保留占位 + SnackBar 提示，用户可继续重试
+  Future<void> _retranscribeDiary(
+    int id,
+    String audioPath,
+    int durationSec,
+  ) async {
+    // 防重入：已在转写则提示
+    if (_transcribingIds.contains(id)) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('正在转写中…'),
+            duration: Duration(seconds: 1),
+          ),
+        );
+      }
+      return;
+    }
+    // 模型懒加载：重启后首次重试时模型可能未加载
+    if (!isReady || !_recognizerManager.isReady) {
+      if (mounted) {
+        widget.onLoadingChanged?.call(true, message: '正在加载语音模型…');
+      }
+      try {
+        await initEngine();
+      } catch (e) {
+        log('再次转写：模型加载失败: $e');
+        if (mounted) {
+          widget.onLoadingChanged?.call(false);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('模型加载失败: $e')),
+          );
+        }
+        return;
+      } finally {
+        if (mounted) widget.onLoadingChanged?.call(false);
+      }
+      if (!isReady) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('⚠️ 模型未就绪，请稍后重试')),
+          );
+        }
+        return;
+      }
+    }
+
+    _transcribingIds.add(id);
+    if (mounted) {
+      setState(() {}); // 卡片切到"正在转写…"态
+      widget.onLoadingChanged?.call(true, message: '正在转写…');
+    }
+
+    try {
+      // 1. 读 WAV 字节，跳过 44 字节 header（_writeWavFile 生成标准 44 字节 header）
+      final bytes = await File(audioPath).readAsBytes();
+      if (bytes.length <= 44) {
+        // 异常：文件太短，没有有效 PCM
+        AppLogger.appLog('⚠️ [Diary] 再次转写：WAV 过短 (${bytes.length}B), id=$id');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('录音文件异常，无法转写')),
+          );
+        }
+        return;
+      }
+      // 兜底校验 RIFF 头（防 header 实际不是 44 字节的情况）
+      if (bytes[0] != 'R'.codeUnitAt(0) || bytes[1] != 'I'.codeUnitAt(0)) {
+        AppLogger.appLog('⚠️ [Diary] 再次转写：非 RIFF WAV, id=$id');
+      }
+      final pcmBytes = bytes.sublist(44);
+      final samples = _convertBytesToFloat32(pcmBytes);
+
+      // 2. 识别（公共路由，按 duration 自动选短/长路径）
+      final rawText = await _recognizeSamplesAutoRoute(
+        samples,
+        durationSec: durationSec,
+      );
+
+      // 3. 热词纠错 + 清单检测 + 回填（复用 _processRecognizedText）
+      if (rawText.isNotEmpty) {
+        await _processRecognizedText(rawText, diaryId: id);
+      } else {
+        AppLogger.appLog('ℹ️ [Diary] 再次转写：识别为空, 保留占位 id=$id');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('识别为空，录音已保留，可重试')),
+          );
+        }
+      }
+      await refreshList();
+    } catch (e) {
+      log('再次转写失败: $e');
+      AppLogger.appLog('❌ [Diary] 再次转写失败 id=$id: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('转写失败，录音已保留，可重试')),
+        );
+      }
+    } finally {
+      _transcribingIds.remove(id);
+      if (mounted) {
+        widget.onLoadingChanged?.call(false);
+        setState(() {});
+      }
+    }
   }
 
   /// 显示静音提示（可在设置中关闭）
@@ -1715,12 +2138,14 @@ $content
       orElse: () => <String, dynamic>{},
     );
     final audioPath = diary['audio_path'] as String?;
+    // R1：占位日记（content 空）时跳过文件删除——保留 audio 让用户可从备份/孤儿清理之外恢复
+    final content = (diary['content'] as String?) ?? '';
 
     // 2. 删除数据库记录
     await widget.dbHelper.deleteDiary(id);
 
-    // 3. 删除对应的录音文件
-    if (audioPath != null && audioPath.isNotEmpty) {
+    // 3. 删除对应的录音文件（占位日记跳过：plan R1）
+    if (audioPath != null && audioPath.isNotEmpty && content.isNotEmpty) {
       try {
         final file = File(audioPath);
         if (await file.exists()) {
@@ -1730,6 +2155,11 @@ $content
         // 文件删除失败不影响主流程，仅记录日志
         log('删除录音文件失败: $e');
       }
+    } else if (audioPath != null &&
+        audioPath.isNotEmpty &&
+        content.isEmpty) {
+      log('R1: 占位日记 id=$id 删除：保留 audio 文件 $audioPath');
+      AppLogger.appLog('ℹ️ [Diary] R1 占位删除保留 audio: id=$id path=$audioPath');
     }
 
     refreshList();
@@ -1758,12 +2188,14 @@ $content
       orElse: () => <String, dynamic>{},
     );
     final audioPath = diary['audio_path'] as String?;
+    // R1：占位日记（content 空）时跳过文件删除——归档后用户仍可恢复/重试转写
+    final content = (diary['content'] as String?) ?? '';
 
     // 2. 归档数据库记录
     await widget.dbHelper.archiveDiary(id);
 
-    // 3. 删除对应的录音文件
-    if (audioPath != null && audioPath.isNotEmpty) {
+    // 3. 删除对应的录音文件（占位日记跳过：plan R1）
+    if (audioPath != null && audioPath.isNotEmpty && content.isNotEmpty) {
       try {
         final file = File(audioPath);
         if (await file.exists()) {
@@ -1773,6 +2205,11 @@ $content
         // 文件删除失败不影响主流程，仅记录日志
         log('删除录音文件失败: $e');
       }
+    } else if (audioPath != null &&
+        audioPath.isNotEmpty &&
+        content.isEmpty) {
+      log('R1: 占位日记 id=$id 归档：保留 audio 文件 $audioPath');
+      AppLogger.appLog('ℹ️ [Diary] R1 占位归档保留 audio: id=$id path=$audioPath');
     }
 
     refreshList();
@@ -2160,7 +2597,7 @@ $content
     final isArchived = item['is_archived'] == 1;
     final date = DateTime.tryParse(item['created_at']) ?? DateTime.now();
     final dateStr =
-        "${date.month}月${date.day}日 ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}";
+        "${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}";
 
     // 格式化音频时长：例如 0:05、3:13
     String durationStr = '';
@@ -2201,17 +2638,78 @@ $content
         _parseItemSplit(diaryId, content);
       });
     }
+    // 响度波纹提取（与上述缓存并列触发，仅对有 audio_path 的卡片有意义）
+    final audioPathForPeaks = item['audio_path'] as String?;
+    if (audioPathForPeaks != null &&
+        audioPathForPeaks.isNotEmpty &&
+        !_peaksCache.containsKey(diaryId) &&
+        !_parsingPeaksIds.contains(diaryId)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _parsePeaks(diaryId, audioPathForPeaks);
+      });
+    }
     final answer = _queryAnswerCache[diaryId];
     // 物品转存检测结果（命中"物品+位置"模式时非 null）
     final itemSplit = _itemSplitCache[diaryId];
+    // 响度波纹（null=未提取完，const []=提取失败/空，非空=正常）
+    final peaks = _peaksCache[diaryId];
 
     final timeEntities = _timeEntitiesCache[diaryId] ?? [];
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // 日期 + 时长（移至卡片顶部，腾出底部按钮空间）
+        Padding(
+          padding: const EdgeInsets.only(bottom: 6),
+          child: Row(
+            children: [
+              Text(
+                dateStr,
+                style: TextStyle(fontSize: 12, color: ext.textHint),
+              ),
+              if (durationStr.isNotEmpty) ...[
+                const SizedBox(width: 20),
+                Text(
+                  durationStr,
+                  style: TextStyle(fontSize: 12, color: ext.textHint),
+                ),
+              ],
+            ],
+          ),
+        ),
+        // 占位日记（content='' && audio_path 文件存在）：转写未完成状态
+        // 优先级高于清单/文本渲染，避免空 content 走 Text 分支显示空文本
+        if (_isPlaceholder(item))
+          Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Row(
+              children: [
+                if (_isTranscribing(diaryId))
+                  SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: ext.primary,
+                    ),
+                  )
+                else
+                  Icon(Icons.cloud_off, size: 18, color: ext.textHint),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    _isTranscribing(diaryId)
+                        ? '正在转写…'
+                        : '转写未完成，点击右上角 ⟳ 重试',
+                    style: TextStyle(fontSize: 14, color: ext.textHint),
+                  ),
+                ),
+              ],
+            ),
+          )
         // 清单渲染分支：检测到 markdown 任务列表格式时使用 ChecklistWidget
-        if (ChecklistWidget.isChecklist(content))
+        else if (ChecklistWidget.isChecklist(content))
           ChecklistWidget(
             content: content,
             onToggle: (lineIndex) =>
@@ -2267,36 +2765,47 @@ $content
             ),
           ),
         const SizedBox(height: 10),
+        // 底部按钮行：左 = 播放进度条（响度波纹叠加），右 = 重试/AI/心形三按钮
+        // crossAxisAlignment.center 让按钮与进度条垂直居中对齐
         Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            // 左侧：日期 + 时长
-            Row(
-              children: [
-                Text(
-                  dateStr,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: ext.textHint,
-                  ), // 原 Colors.grey
-                ),
-                if (durationStr.isNotEmpty) ...[
-                  const SizedBox(width: 20),
-                  Text(
-                    durationStr,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: ext.textHint,
-                    ), // 原 Colors.grey
-                  ),
-                ],
-              ],
-            ),
-            // 右侧：播放按钮 + 分享按钮 + 爱心
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
+                // 左侧：播放/暂停 + 进度条 + 响度波纹（取代原圆形大按钮）
+                // 仅对有 audio_path 且未归档的卡片渲染；否则用 Spacer 占位保持右对齐
                 if (item['audio_path'] != null && !isArchived)
+                  Expanded(
+                    child: ValueListenableBuilder<PlaybackState>(
+                      valueListenable: _playbackNotifier,
+                      builder: (ctx, state, _) {
+                        final isActive = state.id == item['id'];
+                        return DiaryPlayBar(
+                          isActive: isActive,
+                          position: isActive ? state.position : Duration.zero,
+                          duration: isActive
+                              ? state.duration
+                              : Duration(
+                                  seconds: (item['duration'] as int?) ?? 0,
+                                ),
+                          isPlaying: isActive && state.playing,
+                          peaks: peaks,
+                          onSeek: (pos) => _seekTo(item['id'], pos),
+                          onTogglePlay: () => _togglePlay(
+                            item['id'],
+                            item['audio_path'],
+                            durationSec: (item['duration'] as int?) ?? 0,
+                          ),
+                          onHapticTick: () => _haptic('tick'),
+                        );
+                      },
+                    ),
+                  )
+                else
+                  const Spacer(),
+                // 重试按钮：任何有 audio_path 且文件存在的日记都显示
+                // （占位日记 + 已识别/识别失败的日记都可重新转写，覆盖当前 content）
+                // 转写中变灰禁用（文字区已有"正在转写…"提示，按钮不再转圈，保持 40×40 占位）
+                if (_hasAudioFile(item)) ...[
+                  const SizedBox(width: 8),
                   SizedBox(
                     width: 40,
                     height: 40,
@@ -2304,31 +2813,53 @@ $content
                       iconSize: 18,
                       padding: EdgeInsets.zero,
                       icon: Icon(
-                        _playingDiaryId == item['id'] && _isPlaying
-                            ? Icons.pause_circle_filled
-                            : Icons.play_circle_fill,
-                        color: ext.primary, // 原 Colors.teal 播放按钮
+                        Icons.autorenew,
+                        // 转写中变灰（复用原 loading 圈的 ext.textHint 色）；空闲时与 play 同色
+                        color: _isTranscribing(diaryId)
+                            ? ext.textHint
+                            : ext.primary,
                       ),
-                      onPressed: () =>
-                          _togglePlay(item['id'], item['audio_path']),
+                      tooltip: _isTranscribing(diaryId)
+                          ? "正在转写…"
+                          : "再次转写（覆盖当前内容）",
+                      // 转写中置 null 禁用（防重复触发，_retranscribeDiary 另有 _transcribingIds 兜底）
+                      onPressed: _isTranscribing(diaryId)
+                          ? null
+                          : () {
+                              final audioPath =
+                                  item['audio_path'] as String?;
+                              final duration =
+                                  (item['duration'] as int?) ?? 0;
+                              if (audioPath != null && audioPath.isNotEmpty) {
+                                _haptic('tick');
+                                _retranscribeDiary(
+                                  diaryId,
+                                  audioPath,
+                                  duration,
+                                );
+                              }
+                            },
                     ),
                   ),
-                const SizedBox(width: 8),
-                // AI 应用分享按钮
-                SizedBox(
-                  width: 40,
-                  height: 40,
-                  child: IconButton(
-                    iconSize: 18,
-                    padding: EdgeInsets.zero,
-                    icon: const Icon(
-                      Icons.chat_bubble_outline,
-                      color: Colors.green, // AI 分享按钮品牌色，保留
+                ],
+                // AI 应用分享按钮：占位（空 content）和已归档不渲染（避免分享空文本到 AI）
+                if ((item['content'] as String).isNotEmpty && !isArchived) ...[
+                  const SizedBox(width: 8),
+                  SizedBox(
+                    width: 40,
+                    height: 40,
+                    child: IconButton(
+                      iconSize: 18,
+                      padding: EdgeInsets.zero,
+                      icon: const Icon(
+                        Icons.chat_bubble_outline,
+                        color: Colors.green, // AI 分享按钮品牌色，保留
+                      ),
+                      onPressed: () => _shareToAI(item['content']),
+                      tooltip: "分享到 AI 应用",
                     ),
-                    onPressed: () => _shareToAI(item['content']),
-                    tooltip: "分享到 AI 应用",
                   ),
-                ),
+                ],
                 const SizedBox(width: 8),
                 // 喜欢图标（包在同样大小的容器中）
                 SizedBox(
@@ -2342,8 +2873,6 @@ $content
                     ), // 原 Colors.black12 装饰图标
                   ),
                 ),
-              ],
-            ),
           ],
         ),
       ],
@@ -2651,10 +3180,19 @@ $content
                                   }
                                 },
                                 child: GestureDetector(
-                                  onTap: () =>
-                                      _copyToClipboard(item['content']),
-                                  onDoubleTap: () =>
-                                      _shareToAI(item['content']), // 新增：双击分享
+                                  // 占位日记 content=''：单击不复制空文本、双击不分享空文本
+                                  onTap: () {
+                                    final c = item['content'] as String;
+                                    if (c.trim().isNotEmpty) {
+                                      _copyToClipboard(c);
+                                    }
+                                  },
+                                  onDoubleTap: () {
+                                    final c = item['content'] as String;
+                                    if (c.trim().isNotEmpty) {
+                                      _shareToAI(c); // 新增：双击分享
+                                    }
+                                  },
                                   onLongPress: () => _startEditing(
                                     item['id'],
                                     item['content'],

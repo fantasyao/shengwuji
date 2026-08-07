@@ -24,12 +24,14 @@ class RecordTab extends StatefulWidget {
   final TextProcessor processor;
   final DbHelper dbHelper;
   final Function(bool show, {String? message})? onLoadingChanged;
+  final VoidCallback? onStateChanged; // 状态变化通知 main.dart 重建外层按钮栏（仿 ListTab）
 
   const RecordTab({
     super.key,
     required this.processor,
     required this.dbHelper,
     this.onLoadingChanged,
+    this.onStateChanged,
   });
 
   @override
@@ -62,6 +64,18 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
   bool _isInitializing = false; // 是否正在初始化
   String _statusText = "按住录音";
 
+  // 暴露给 main.dart 外层 Stack 的钉底按钮栏使用（仿 ListTab getter 模式）
+  // 按钮已搬到 main.dart _buildRecordBottomBar，这里只提供只读状态 + 方法入口
+  bool get isReady => _isReady;
+  bool get isListening => _isListening;
+  bool get isProcessing => _isProcessing;
+  bool get isMoveMode =>
+      _isMoveMode; // 搬家模式时 main.dart 外层录音/保存按钮栏不显示（避免与搬家撤销按钮重叠）
+  String get statusText => _statusText;
+  void startListening() => _startListening();
+  void stopListening() => _stopListening();
+  void saveData() => _saveData();
+
   // ── 搬家模式字段 ──
   bool _isMoveMode = false; // 搬家模式总开关
   bool _isTtsPlaying = false; // TTS 播报中（回采屏蔽三层防御的标志位）
@@ -73,6 +87,9 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
   // 每条记录保存 rowid + 预览文字，用于列表内撤销（替代旧的 SnackBar 撤销）
   final List<_MoveSaveRecord> _recentSaves = [];
   StreamSubscription? _moveStreamSub; // PCM 流订阅（手动管理，dispose 时 cancel）
+  String? _moveSplitError; // 搬家模式智能分割失败提示文本（非 null 时底部显示可左滑消除的提示条）
+  Timer? _splitErrorTimer; // 提示条 8s 自动消失计时器
+  int _splitErrorSeq = 0; // 提示条 Dismissible key 序号（每次新错误自增，保证 key 唯一）
 
   // ── 搬家模式：屏幕常亮 + 闲置降亮 ──
   // 设计意图：搬家过程持续录音不能黑屏（wakelock 保活），但全亮刺眼+耗电，
@@ -143,7 +160,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
 
     // 🆕 如果单例已经初始化过，直接同步状态
     if (_recognizerManager.hasEverInitialized) {
-      setState(() => _statusText = "正在檢查引擎...");
+      setState(() => _statusText = "正在检查引擎...");
       await _initEngine();
       return;
     }
@@ -382,7 +399,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
     );
     setState(() {
       _isListening = true;
-      _statusText = "正在錄音...";
+      _statusText = "正在录音›...";
     });
     stream.listen(
       (data) =>
@@ -601,7 +618,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
       setState(() => _statusText = "✅ 已保存");
       FocusScope.of(context).unfocus();
     } else {
-      setState(() => _statusText = "⚠️ 請完善物品和位置");
+      setState(() => _statusText = "⚠️ 请完善物品和位置");
     }
   }
 
@@ -879,7 +896,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
           _statusText = '没分出物品+位置: $processed';
         });
         _playFailure();
-        _showSplitFailureSnackBar(processed);
+        _showSplitErrorBar(processed);
         return;
       }
       final id = await widget.dbHelper.insertItemReturningId(
@@ -933,6 +950,16 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
       _statusText = '已撤销，本场共 $_moveSavedCount 条';
     });
     log('↩️ [搬家模式] 已撤销 id=$id');
+  }
+
+  /// 钉底「撤销最近」按钮回调：撤销最近一条 + 震动反馈
+  //  与卡片撤销按钮(下面 _buildRecentSaveCard 内)同语义：直接调 _undoSave，不走语音撤销的
+  //  10s 窗口判断(_handleUndoCommand)和 TTS 播报——手动按钮 = 明确意图，UI 已刷新可见。
+  //  空态由 onPressed: null 自动 disable，这里仍防御性判空。
+  Future<void> _undoLastManually() async {
+    if (_recentSaves.isEmpty) return; // 防御性判空（onPressed 已守卫）
+    _vibrate(duration: 40, amplitude: 80); // 中等强度，撤销确认（比保存轻震稍强）
+    await _undoSave(_recentSaves.last.id); // 复用现成删除：DB 删行 + 列表移除 + 计数-1 + 状态文案
   }
 
   /// 撤销场景的纯文本播报（不走"已保存X到Y"模板）
@@ -1013,45 +1040,56 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
     await _speakRaw('已撤销');
   }
 
-  /// 智能分割失败 SnackBar：让用户决定是否手动保存（无位置）
-  void _showSplitFailureSnackBar(String rawText) {
+  /// 智能分割失败：显示底部可左滑消除的提示条（替代原 SnackBar）
+  //  原方案用 SnackBar，但 SnackBar 默认只能下滑消除，搬家模式下手势不便。
+  //  改为 Stack 内自定义 Dismissible 提示条，支持左滑消除 + 手动保存按钮。
+  void _showSplitErrorBar(String rawText) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-      ..clearSnackBars()
-      ..showSnackBar(
-        SnackBar(
-          content: Text('没分出物品+位置: "$rawText"'),
-          duration: const Duration(seconds: 8), // 给用户多点时间决定
-          behavior: SnackBarBehavior.floating,
-          action: SnackBarAction(
-            label: '手动保存',
-            onPressed: () async {
-              final id = await widget.dbHelper.insertItemReturningId(
-                rawText,
-                '',
-              );
-              setState(() {
-                _recentSaves.add(
-                  _MoveSaveRecord(
-                    id: id,
-                    item: rawText,
-                    location: '（未指定位置）',
-                    timeLabel: '刚刚',
-                    savedAt: DateTime.now(),
-                  ),
-                );
-                if (_recentSaves.length > 5) {
-                  _recentSaves.removeAt(0);
-                }
-                _moveSavedCount++;
-                _statusText = '已保存 $_moveSavedCount 条';
-              });
-              _playSuccess();
-              log('📝 [搬家模式] 手动保存（无位置）: $rawText');
-            },
-          ),
+    _splitErrorTimer?.cancel();
+    _splitErrorSeq++;
+    setState(() {
+      _moveSplitError = rawText;
+    });
+    _splitErrorTimer = Timer(const Duration(seconds: 8), () {
+      if (mounted) _hideSplitErrorBar();
+    });
+  }
+
+  /// 隐藏分割失败提示条
+  void _hideSplitErrorBar() {
+    _splitErrorTimer?.cancel();
+    _splitErrorTimer = null;
+    if (mounted) {
+      setState(() {
+        _moveSplitError = null;
+      });
+    }
+  }
+
+  /// 分割失败提示条的「手动保存」按钮回调：无位置保存 + 清提示条
+  Future<void> _handleManualSaveSplitError() async {
+    final rawText = _moveSplitError;
+    if (rawText == null) return;
+    _hideSplitErrorBar();
+    final id = await widget.dbHelper.insertItemReturningId(rawText, '');
+    setState(() {
+      _recentSaves.add(
+        _MoveSaveRecord(
+          id: id,
+          item: rawText,
+          location: '（未指定位置）',
+          timeLabel: '刚刚',
+          savedAt: DateTime.now(),
         ),
       );
+      if (_recentSaves.length > 5) {
+        _recentSaves.removeAt(0);
+      }
+      _moveSavedCount++;
+      _statusText = '已保存 $_moveSavedCount 条';
+    });
+    _playSuccess();
+    log('📝 [搬家模式] 手动保存（无位置）: $rawText');
   }
 
   /// 退出搬家模式：清理录音 + 处理 VAD 尾部 + 释放资源
@@ -1072,6 +1110,9 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
       _idleDimTimer?.cancel();
       _idleDimTimer = null;
       if (_isDimmed) _isDimmed = false;
+      _splitErrorTimer?.cancel();
+      _splitErrorTimer = null;
+      _moveSplitError = null;
       try {
         await WakelockPlus.disable();
       } catch (e) {
@@ -1150,51 +1191,21 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
   }
 
   @override
+  void setState(VoidCallback fn) {
+    super.setState(fn);
+    // 录音/保存按钮栏在 main.dart 外层 Stack（_buildRecordBottomBar），RecordTab 内部
+    // setState 不会触发 main.dart 重建。这里统一通知，让外层按钮颜色/状态/搬家显隐同步刷新。
+    // 仿 ListTab.onStateChanged；RecordTab 状态变化点太多（~20 处散落录音/识别/搬家分支），逐点加易漏，故在 setState 重写里统一通知。
+    widget.onStateChanged?.call();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final ext = AppThemeExtension.of(context);
 
     // 如果正在初始化，返回空白容器，避免显示未初始化的UI
     if (_isInitializing) {
       return const SizedBox.shrink();
-    }
-
-    Color btnColor;
-    Widget btnChild;
-
-    if (_isMoveMode) {
-      // ── 搬家模式：颜色随 VAD 状态联动 ──
-      btnColor = _moveButtonColor(ext);
-      btnChild = _moveButtonChild(ext);
-    } else {
-      // ── 非搬家模式：原有染色逻辑 ──
-      btnColor = ext.fabReady; // 原 Colors.teal
-      btnChild = Icon(
-        Icons.mic,
-        color: ext.textOnPrimary,
-        size: 55,
-      ); // 原 Colors.white
-
-      if (!_isReady && !RecognizerSingleton.hasModel) {
-        // 模型文件不存在 → 禁用按钮（灰色）
-        btnColor = ext.fabDisabled; // 原 Colors.grey
-      } else if (_isListening) {
-        btnColor = ext.fabRecording; // 原 Colors.redAccent
-        btnChild = Icon(
-          Icons.fiber_manual_record,
-          color: ext.textOnPrimary,
-          size: 55,
-        ); // 原 Colors.white
-      } else if (_isProcessing) {
-        btnColor = ext.fabProcessing; // 原 Colors.orangeAccent
-        btnChild = SizedBox(
-          width: 45,
-          height: 45,
-          child: CircularProgressIndicator(
-            color: ext.textOnPrimary,
-            strokeWidth: 4,
-          ), // 原 Colors.white
-        );
-      }
     }
 
     return Listener(
@@ -1348,14 +1359,17 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
                           ],
                           // ── 非搬家模式：保留原录入页交互 ──
                           if (!_isMoveMode) ...[
-                            const SizedBox(height: 40),
+                            // 物品名称上方间距加大（40→120），让物品名/存放位置整体下移约 80dp，
+                            // 便于单手拇指够到物品名输入框。搬家模式不渲染此分支，不受影响。
+                            const SizedBox(height: 120),
                             _buildModernField(
                               controller: _itemController,
-                              hint: "物品名稱",
+                              hint: "物品名称",
                               icon: Icons.inventory_2_rounded,
                               accentColor: ext.primary, // 原 Colors.blueAccent
                             ),
-                            const SizedBox(height: 20),
+                            // 物品名与存放位置的间距翻倍（20→40）
+                            const SizedBox(height: 40),
                             _buildModernField(
                               controller: _locationController,
                               hint: "存放位置",
@@ -1363,80 +1377,18 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
                               accentColor:
                                   ext.warningText, // 原 Colors.orangeAccent
                             ),
-                            const SizedBox(height: 80),
-                            // 这是录音按钮和确认保存按钮上方的间距。增大这个 100 就能把按钮整体往下移。
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                              children: [
-                                // 语音按钮（搬家模式下此分支不渲染，手势回调加守卫更健壮）
-                                GestureDetector(
-                                  onLongPressStart: _isMoveMode
-                                      ? null
-                                      : (_) => _startListening(),
-                                  onLongPressEnd: _isMoveMode
-                                      ? null
-                                      : (_) => _stopListening(),
-                                  onTap: _isMoveMode ? _exitMoveMode : null,
-                                  child: AnimatedContainer(
-                                    duration: const Duration(milliseconds: 200),
-                                    decoration: BoxDecoration(
-                                      shape: BoxShape.circle,
-                                      boxShadow: [
-                                        BoxShadow(
-                                          color: btnColor.withValues(
-                                            alpha: 0.3,
-                                          ),
-                                          blurRadius: 25,
-                                          spreadRadius: 5,
-                                        ),
-                                      ],
-                                    ),
-                                    child: CircleAvatar(
-                                      radius: 50,
-                                      backgroundColor: btnColor,
-                                      child: btnChild,
-                                    ),
-                                  ),
-                                ),
-                                // 确认保存按钮
-                                SizedBox(
-                                  width: 140,
-                                  height: 100,
-                                  child: ElevatedButton(
-                                    onPressed: _saveData,
-                                    style: ElevatedButton.styleFrom(
-                                      backgroundColor:
-                                          ext.primary, // 原 Colors.teal
-                                      foregroundColor:
-                                          ext.textOnPrimary, // 原 Colors.white
-                                      elevation: 0,
-                                      shape: RoundedRectangleBorder(
-                                        borderRadius: BorderRadius.circular(18),
-                                      ),
-                                    ),
-                                    child: const Text(
-                                      "確認保存",
-                                      style: TextStyle(
-                                        fontSize: 18,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
                           ],
                           // ── 搬家模式：移除原录音按钮（Switch 已是开关），改用列表内撤销 ──
-                          const SizedBox(height: 20),
-                          Text(
-                            _statusText,
-                            style: TextStyle(
-                              // 搬家模式下放大字号，让用户在房间走动时一眼可见状态
-                              fontSize: _isMoveMode ? 18 : 15,
-                              fontWeight: FontWeight.w500,
-                              color: ext.textSecondary, // 原 Colors.black45
+                          if (_isMoveMode)
+                            Text(
+                              _statusText,
+                              style: TextStyle(
+                                // 搬家模式下放大字号，让用户在房间走动时一眼可见状态
+                                fontSize: 18,
+                                fontWeight: FontWeight.w500,
+                                color: ext.textSecondary,
+                              ),
                             ),
-                          ),
                           // 搬家模式：5 条记录列表（最新在底部，像聊天记录）
                           // ⚠️ 历史踩坑：
                           //    1) ListView.builder+reverse → setState 频繁触发 !semantics.parentDataDirty
@@ -1476,9 +1428,12 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
                                   ],
                                 ),
                               ),
-                            const SizedBox(height: 40),
+                            // 搬家模式底部留白加大：防最后一张卡片被钉底「撤销最近」按钮遮挡
+                            // （下方 Stack 最顶层会钉一个 56 高按钮 + bottom:12 + SafeArea）
+                            const SizedBox(height: 120),
                           ] else
-                            const SizedBox(height: 40),
+                            // 非搬家模式：底部预留 ~按钮栏高度，防止滚动内容被钉底按钮遮挡
+                            const SizedBox(height: 140),
                         ],
                       ),
                     ),
@@ -1498,6 +1453,114 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
               child: IgnorePointer(
                 child: ColoredBox(
                   color: Colors.black.withValues(alpha: _kDimOpacity),
+                ),
+              ),
+            ),
+          // ── 搬家模式：分割失败提示条（可左滑消除，替代原 SnackBar）──
+          // 渲染在降亮遮罩之上（全亮可见）、撤销最近按钮之上（z-index 最高）
+          if (_isMoveMode && _moveSplitError != null)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 100, // 在「撤销最近」按钮上方（按钮 bottom:12 + SafeArea + height:56 ≈ 80-92）
+              child: SafeArea(
+                top: false,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 24.0),
+                  child: Dismissible(
+                    key: ValueKey('split_error_$_splitErrorSeq'),
+                    direction: DismissDirection.endToStart,
+                    onDismissed: (_) => _hideSplitErrorBar(),
+                    background: Container(
+                      alignment: Alignment.centerRight,
+                      padding: const EdgeInsets.only(right: 20),
+                      child: const Icon(Icons.delete_sweep, color: Colors.white54),
+                    ),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                      decoration: BoxDecoration(
+                        color: ext.primaryDark,
+                        borderRadius: BorderRadius.circular(10),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.3),
+                            blurRadius: 8,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              '没分出物品+位置: "$_moveSplitError"',
+                              style: const TextStyle(color: Colors.white, fontSize: 13),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          TextButton(
+                            onPressed: _handleManualSaveSplitError,
+                            style: TextButton.styleFrom(
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(horizontal: 8),
+                            ),
+                            child: const Text(
+                              '手动保存',
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          // ── 搬家模式：钉底「撤销最近」按钮（最高层级，永远全亮不被卡片/遮罩遮挡）──
+          // 放在降亮遮罩之后：遮罩 IgnorePointer 穿透事件，按钮自身可点；
+          //   且按钮渲染在遮罩之上，降亮期间保持全亮可见（用户随时可撤销）。
+          //   用户点按钮时，外层 Listener.onPointerDown(record_tab.dart:1204 附近) 先恢复全亮。
+          if (_isMoveMode)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 12,
+              child: SafeArea(
+                top: false,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 24.0),
+                  child: SizedBox(
+                    width: double.infinity,
+                    height: 56, // 稍大便于按，≥48 满足无障碍触控目标
+                    child: ElevatedButton.icon(
+                      onPressed: _recentSaves.isEmpty
+                          ? null
+                          : _undoLastManually,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: ext
+                            .warningText, // 暖橙，撤销/可逆操作语义（与 ItemTransferWidget 同款）
+                        foregroundColor: ext.textOnPrimary,
+                        disabledBackgroundColor: ext.warningText.withValues(
+                          alpha: 0.35,
+                        ),
+                        disabledForegroundColor: ext.textOnPrimary.withValues(
+                          alpha: 0.6,
+                        ),
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(18),
+                        ),
+                      ),
+                      icon: const Icon(Icons.undo),
+                      label: const Text(
+                        '撤销最近',
+                        style: TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
               ),
             ),

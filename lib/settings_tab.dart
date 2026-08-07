@@ -18,6 +18,7 @@ import '../startup_logger.dart';
 import '../app_logger.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import '../widgets/pro_unlock_dialog.dart';
+import '../widgets/license_dialog.dart'; // 开源字体许可证查看弹窗（设置→关于）
 import '../theme/app_theme_extension.dart';
 import '../theme/app_theme.dart'; // AppThemes / AppThemeDefinition（Phase 3 主题选择）
 import '../main.dart'; // AppRoot.themeNotifier（Phase 3 主题切换）
@@ -1459,6 +1460,18 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                   ),
                   children: [
                     _buildChangelogItem(
+                      version: "v1.0.15",
+                      date: "2026-08-07",
+                      changes:
+                          "日记卡片改版（日期/时长移至顶部 + 补全年份与时分格式 + 播放按钮升级为带响度波纹的可拖动进度条，支持拖动跳转/暂停继续 + 转写中按钮区禁用态 + 修复进度条游标『先走再跳回』与暂停后续播虚高，弃用 position 流改 Stopwatch 自算）+ 搬家模式智能分割失败提示改为可左滑消除的自绘提示条（含手动保存按钮，替代手势不便的 SnackBar）",
+                    ),
+                    _buildChangelogItem(
+                      version: "v1.0.14",
+                      date: "2026-08",
+                      changes:
+                          "主题系统改版（4 套皮肤预设 + Android 桌面图标包切换，Pro 门禁）+ 搬家模式增强（TTS 语音播报 + 说『不对/撤销』语音撤销 + 屏幕常亮省电遮罩）+ 录音防丢失（先落盘再转写，失败可重新转写）+ 长录音 VAD 自动切分保护 + 清单触发词门禁（『代办/待办』开头才识别，避免正常说话误判）+ 锁屏隐私保护与音量键键盘修复 + 物品列表浮动语音查询按钮 + Pro 弹窗接入真实付款码 + 录入/日记页按钮钉底便于单手操作 + 修复窄屏卡片底部信息栏溢出 + 补齐霞鹜文楷字体 OFL 开源协议",
+                    ),
+                    _buildChangelogItem(
                       version: "v1.0.13",
                       date: "2026-06",
                       changes:
@@ -1535,6 +1548,9 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                 ),
                 const SizedBox(height: 16),
                 _buildTextBtn('导出运行日志', Icons.bug_report, () => _exportLog()),
+                const SizedBox(height: 8),
+                _buildTextBtn(
+                    '开源字体许可证', Icons.description, () => LicenseDialog.show(context)),
               ],
             ),
           ),

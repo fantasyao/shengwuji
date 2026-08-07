@@ -1,0 +1,80 @@
+=== 应用运行日志 ===
+导出时间: 2026-08-06T19:00:55.270743
+设备: android BP2A.250605.031.A3
+日志条数: 75
+
+[18:58:39.480] 📍 [Singleton] 内置模型已存在于本地: /data/user/0/com.shengwuji.app/app_flutter/bundled_model (228.2MB)
+[18:58:39.480] ⏱️ 内置模型已存在(跳过拷贝): 0ms (228.2MB)
+[18:58:39.480] 📍 [Singleton] preloadModelPath: 使用内置模型, path=/data/user/0/com.shengwuji.app/app_flutter/bundled_model, hasModel=true
+[18:58:39.554] 📍 [Singleton] 内置模型已存在于本地: /data/user/0/com.shengwuji.app/app_flutter/bundled_model (228.2MB)
+[18:58:39.554] 📍 [Singleton] 内置模型已存在于本地: /data/user/0/com.shengwuji.app/app_flutter/bundled_model (228.2MB)
+[18:58:39.554] ⏱️ 内置模型已存在(跳过拷贝): 0ms (228.2MB)
+[18:58:39.554] ⏱️ 内置模型已存在(跳过拷贝): 0ms (228.2MB)
+[18:58:39.554] 📍 [Singleton] preloadModelPath: 使用内置模型, path=/data/user/0/com.shengwuji.app/app_flutter/bundled_model, hasModel=true
+[18:58:39.554] 📍 [Singleton] preloadModelPath: 使用内置模型, path=/data/user/0/com.shengwuji.app/app_flutter/bundled_model, hasModel=true
+[18:58:39.554] ⏱️ [Splash] preloadModelPath 耗时: 72ms
+[18:58:39.554] ⏱️ [Splash] preloadModelPath 耗时: 72ms
+[18:58:39.554] ⏱️ preloadModelPath: 72ms
+[18:58:39.554] ⏱️ preloadModelPath: 72ms
+[18:58:39.558] 🎤 [Splash] 麦克风权限状态: PermissionStatus.granted
+[18:58:39.558] 🎤 [Splash] 麦克风权限状态: PermissionStatus.granted
+[18:58:39.575] 🔄 开始加载模型: /data/user/0/com.shengwuji.app/app_flutter/bundled_model/model.int8.onnx
+[18:58:39.575] 线程数: 1
+[18:58:39.575] 线程数: 1
+[18:58:40.361] ⏱️ [Singleton] 模型加载到内存 耗时: 786ms
+[18:58:40.361] ⏱️ [Singleton] 模型加载到内存 耗时: 786ms
+[18:58:40.361] ⏱️ 模型加载到内存: 786ms
+[18:58:40.361] ⏱️ 模型加载到内存: 786ms
+[18:58:40.361] ✅ 模型加载完成
+[18:58:40.361] 🔍 [ListTab] initEngine: 初始化结果, success=true
+[18:58:40.361] 🔍 [ListTab] initEngine: 初始化结果, success=true
+[18:58:40.370] [DbHelper] 已加载 1 条 dismissed 记录到内存
+[18:58:40.370] [DbHelper] 已加载 1 条 dismissed 记录到内存
+[18:58:40.401] 🕐 Dart Chrono 解析到 1 个时间实体: [TimeEntity(text: 今天, start: 0, end: 2, value: 2026-08-06T18:58:00.000)]
+[18:58:40.401] 🕐 Dart Chrono 解析到 1 个时间实体: [TimeEntity(text: 今天, start: 0, end: 2, value: 2026-08-06T18:58:00.000)]
+[18:58:41.094] 📍 [Diary] 启动页已加载模型，同步状态
+[18:58:41.114] 🕐 Dart Chrono 解析到 1 个时间实体: [TimeEntity(text: 今天, start: 0, end: 2, value: 2026-08-06T18:58:00.000)]
+[18:58:41.114] 🕐 Dart Chrono 解析到 1 个时间实体: [TimeEntity(text: 今天, start: 0, end: 2, value: 2026-08-06T18:58:00.000)]
+[18:58:47.563] 📦 [长录音保护] 录音 99s ≥ 60s, 启用 VAD 切分
+[18:58:47.563] 📦 [Diary] 启用长录音保护: 99s
+[18:58:47.563] 📍 [VAD] 模型已存在于本地: /data/user/0/com.shengwuji.app/app_flutter/bundled_model/silero_vad.onnx (1765.2KB)
+[18:58:47.563] 🚀 [VAD] 初始化 VoiceActivityDetector, model=/data/user/0/com.shengwuji.app/app_flutter/bundled_model/silero_vad.onnx
+[18:58:47.593] ⏱️ [VAD] VoiceActivityDetector 创建耗时: 30ms
+[18:58:47.593] ✅ [VAD] 初始化成功
+[18:58:49.655] 📦 [长录音保护] 切出 4 段, 拼接结果: 我大概要录个3分钟，然后把它杀掉，还是说先录个一分钟，，先把百年孤独给下了吧。增加一个录音时长。。。
+[18:58:49.655] 📦 [Diary] 长录音切分: 4段 - 我大概要录个3分钟，然后把它杀掉，还是说先录个一分钟，，先把百年孤独给下了吧。增加一个录音时长。。。
+[18:58:49.660] 🧹 [VAD] 已释放
+[18:58:49.660] 🚀 [长录音保护] VAD 切分总耗时: 2066ms
+[18:58:49.660] 修正后文本: 我大概要录个3分钟，然后把它杀掉，还是说先录个一分钟，，先把百年孤独给下了吧。增加一个录音时长。。。
+[18:58:49.660] 📝 [Diary] 修正后文本: 我大概要录个3分钟，然后把它杀掉，还是说先录个一分钟，，先把百年孤独给下了吧。增加一个录音时长。。。
+[18:58:49.660] [ListExtractor] 预处理后: "我大概要录个3分钟，然后把它杀掉，还是说先录个一分钟，，先把百年孤独给下了吧。增加一个录音时长。。。"
+[18:58:49.660] [ListExtractor] 未命中触发词"代办/待办"，跳过清单提取
+[18:58:49.661] 💾 [Diary] 回填日记: 我大概要录个3分钟，然后把它杀掉，还是说先录个一分钟，，先把百年孤独给下了吧。增加一个录音时长。。。 (id=98)
+[18:58:49.681] 🕐 Dart Chrono 解析到 1 个时间实体: [TimeEntity(text: 今天, start: 0, end: 2, value: 2026-08-06T18:58:00.000)]
+[18:58:49.681] 🕐 Dart Chrono 解析到 1 个时间实体: [TimeEntity(text: 今天, start: 0, end: 2, value: 2026-08-06T18:58:00.000)]
+[19:00:14.773] 🔍 [生命周期] 录入页状态变化: null → AppLifecycleState.inactive, _isReady=false, _wasInBackground=false
+[19:00:14.773] 🔍 [生命周期] 日记页状态变化: null → AppLifecycleState.inactive, isReady=true, _wasInBackground=false
+[19:00:19.095] 🔍 [生命周期] 录入页状态变化: AppLifecycleState.inactive → AppLifecycleState.resumed, _isReady=false, _wasInBackground=false
+[19:00:19.095] 🔍 [生命周期] 日记页状态变化: AppLifecycleState.inactive → AppLifecycleState.resumed, isReady=true, _wasInBackground=false
+[19:00:44.247] 🔍 [生命周期] 录入页状态变化: AppLifecycleState.resumed → AppLifecycleState.inactive, _isReady=false, _wasInBackground=false
+[19:00:44.247] 🔍 [生命周期] 日记页状态变化: AppLifecycleState.resumed → AppLifecycleState.inactive, isReady=true, _wasInBackground=false
+[19:00:46.856] 🔍 [生命周期] 录入页状态变化: AppLifecycleState.inactive → AppLifecycleState.hidden, _isReady=false, _wasInBackground=false
+[19:00:46.856] 录入页：进入后台，记录时间戳: 2026-08-06 19:00:46.856364
+[19:00:46.856] 🔍 [生命周期] 日记页状态变化: AppLifecycleState.inactive → AppLifecycleState.hidden, isReady=true, _wasInBackground=false
+[19:00:46.856] 日记页：进入后台，记录时间戳: 2026-08-06 19:00:46.856392
+[19:00:46.856] 🔍 [生命周期] 录入页状态变化: AppLifecycleState.hidden → AppLifecycleState.paused, _isReady=false, _wasInBackground=true
+[19:00:46.856] 录入页：进入后台，记录时间戳: 2026-08-06 19:00:46.856411
+[19:00:46.856] 🔍 [生命周期] 日记页状态变化: AppLifecycleState.hidden → AppLifecycleState.paused, isReady=true, _wasInBackground=true
+[19:00:46.856] 日记页：进入后台，记录时间戳: 2026-08-06 19:00:46.856424
+[19:00:53.855] 🔍 [生命周期] 录入页状态变化: AppLifecycleState.paused → AppLifecycleState.hidden, _isReady=false, _wasInBackground=true
+[19:00:53.855] 录入页：进入后台，记录时间戳: 2026-08-06 19:00:53.855041
+[19:00:53.855] 🔍 [生命周期] 日记页状态变化: AppLifecycleState.paused → AppLifecycleState.hidden, isReady=true, _wasInBackground=true
+[19:00:53.855] 日记页：进入后台，记录时间戳: 2026-08-06 19:00:53.855052
+[19:00:53.855] 🔍 [生命周期] 录入页状态变化: AppLifecycleState.hidden → AppLifecycleState.inactive, _isReady=false, _wasInBackground=true
+[19:00:53.855] 🔍 [生命周期] 日记页状态变化: AppLifecycleState.hidden → AppLifecycleState.inactive, isReady=true, _wasInBackground=true
+[19:00:53.910] 🔍 [生命周期] 录入页状态变化: AppLifecycleState.inactive → AppLifecycleState.resumed, _isReady=false, _wasInBackground=true
+[19:00:53.910] 🔍 [生命周期] 日记页状态变化: AppLifecycleState.inactive → AppLifecycleState.resumed, isReady=true, _wasInBackground=true
+[19:00:53.910] 日记页：从后台恢复，后台时长: 0秒，是否短时间后台: true
+[19:00:53.910] 日记页：短时间后台恢复，静默预热
+[19:00:53.981] 日记引擎预热完成
+[19:00:53.981] 日记页：静默预热完成

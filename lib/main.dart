@@ -292,6 +292,8 @@ class _MainScaffoldState extends State<MainScaffold>
                       hideGlobalLoading();
                     }
                   },
+                  // 按钮栏在 main.dart 外层 Stack，RecordTab 状态变化（录音/处理/搬家）需通知此处重建
+                  onStateChanged: () => setState(() {}),
                 ),
                 // [修改] 传入回调，让列表页状态变化时，外层也跟着刷新按钮 UI
                 ListTab(
@@ -389,6 +391,8 @@ class _MainScaffoldState extends State<MainScaffold>
           if (_currentIndex == 2) _buildFloatingDiaryButton(),
           // 【物品列表页浮动按钮】：与日记页同款外层 Stack 模式，键盘弹起不上浮
           if (_currentIndex == 1) _buildFloatingListButton(),
+          // 【录入页钉底按钮栏】：在外层 Stack 才不受键盘挤压
+          if (_currentIndex == 0) _buildRecordBottomBar(),
           // 闹钟响铃横幅
           if (_isAlarmRinging) _buildAlarmRingingBanner(),
           // 全局模糊loading遮罩
@@ -677,6 +681,136 @@ class _MainScaffoldState extends State<MainScaffold>
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  // ⚠️ 【录入页钉底按钮栏（录音 + 确认保存）】
+  // 必须放在 main.dart 外层 Stack（Scaffold 之外），才不受 resizeToAvoidBottomInset 影响。
+  // RecordTab 自己的 Stack 嵌在 IndexedStack(main.dart:281) 里会被键盘挤压，
+  // 按钮放这里才能"键盘弹起原地不动、被覆盖不上浮"（用户已确认接受此行为）。
+  // 仿 _buildFloatingListButton 模式。颜色状态机复现自 record_tab.dart 原非搬家逻辑。
+  Widget _buildRecordBottomBar() {
+    final state = _recordTabKey.currentState;
+    if (state == null) return const SizedBox.shrink();
+    // 搬家模式有自己的钉底「撤销最近」按钮，不渲染这组录音/保存按钮（否则两者重叠）
+    if (state.isMoveMode) return const SizedBox.shrink();
+
+    final ext = AppThemeExtension.of(context);
+
+    // 颜色/图标状态机（复现 record_tab.dart 原非搬家模式染色）
+    Color btnColor = ext.fabReady; // 原 Colors.teal
+    Widget btnChild = Icon(
+      Icons.mic,
+      color: ext.textOnPrimary, // 原 Colors.white
+      size: 55,
+    );
+
+    if (!state.isReady && !RecognizerSingleton.hasModel) {
+      // 模型文件不存在 → 禁用按钮（灰色）
+      btnColor = ext.fabDisabled; // 原 Colors.grey
+    } else if (state.isListening) {
+      btnColor = ext.fabRecording; // 原 Colors.redAccent
+      btnChild = Icon(
+        Icons.fiber_manual_record,
+        color: ext.textOnPrimary,
+        size: 55,
+      );
+    } else if (state.isProcessing) {
+      btnColor = ext.fabProcessing; // 原 Colors.orangeAccent
+      btnChild = SizedBox(
+        width: 45,
+        height: 45,
+        child: CircularProgressIndicator(
+          color: ext.textOnPrimary,
+          strokeWidth: 3,
+        ),
+      );
+    }
+
+    return Positioned(
+      left: 0,
+      right: 0,
+      // ⚠️ 坐标系：按钮在 main.dart 外层 Stack，bottom 是距【屏幕物理底部】的距离，
+      // 不是距 BottomNav 顶部。搬到外层 Stack（修键盘挤压）后，同样数值视觉低了约一个
+      // BottomNav 高度（~80px）。155 ≈ 旧 record_tab 时代 bottom:75 的视觉（BottomNav 上方约 99px）。微调改这里。
+      bottom: 155,
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // 状态文字（固定高度 22 容器防抖动，仿 main.dart 浮动按钮）
+              SizedBox(
+                height: 22,
+                child: Center(
+                  child: Text(
+                    state.statusText,
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w500,
+                      color: ext.textSecondary, // 原 Colors.black45
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  // 语音按钮（长按开始录音 / 松开停止）
+                  GestureDetector(
+                    onLongPressStart: (_) => state.startListening(),
+                    onLongPressEnd: (_) => state.stopListening(),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 200),
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        boxShadow: [
+                          BoxShadow(
+                            color: btnColor.withValues(alpha: 0.3),
+                            blurRadius: 25,
+                            spreadRadius: 5,
+                          ),
+                        ],
+                      ),
+                      child: CircleAvatar(
+                        radius: 50,
+                        backgroundColor: btnColor,
+                        child: btnChild,
+                      ),
+                    ),
+                  ),
+                  // 确认保存按钮
+                  SizedBox(
+                    width: 140,
+                    height: 100,
+                    child: ElevatedButton(
+                      onPressed: state.saveData,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: ext.primary, // 原 Colors.teal
+                        foregroundColor: ext.textOnPrimary, // 原 Colors.white
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(18),
+                        ),
+                      ),
+                      child: const Text(
+                        "确认保存",
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

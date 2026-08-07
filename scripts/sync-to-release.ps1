@@ -15,6 +15,7 @@
     - 大模型文件（assets/model.int8.onnx，229MB，超 GitHub 单文件限制）
 
     模型文件单独走 GitHub Release 上传（用 -UploadModel 开关）。
+    APK 产物走 GitHub Release 上传（用 -UploadApk 开关），每个版本独立 tag。
 
 .PARAMETER ReleaseRepoPath
     发布仓库本地路径，默认 S:\CodeProject\my_first_app_release
@@ -39,6 +40,18 @@
 .PARAMETER UploadModel
     加此开关上传 model.int8.onnx 到 GitHub Release（自动创建 v1.0.0 tag）
 
+.PARAMETER UploadApk
+    加此开关上传 APK 产物到 GitHub Release（每个版本独立 tag，自动从 pubspec.yaml 读 version 拼 vX.Y.Z）
+
+.PARAMETER ApkPath
+    APK 文件路径，默认空 = 自动找 build/app/outputs/apk/release/app-arm64-v8a-release.apk
+
+.PARAMETER VersionTag
+    Release tag 名称，默认空 = 自动从 pubspec.yaml 读 version: X.Y.Z 拼成 vX.Y.Z
+
+.PARAMETER ApkLabel
+    APK 规范文件名里的「功能备注」段，如「晴空蓝主题版」。空则文件名省略备注段
+
 .EXAMPLE
     .\sync-to-release.ps1
     # 干跑，仅生成发布仓库本地副本
@@ -46,6 +59,10 @@
 .EXAMPLE
     .\sync-to-release.ps1 -Push -UploadModel
     # 首次发布：推送源码 + 上传模型
+
+.EXAMPLE
+    .\sync-to-release.ps1 -Push -UploadApk -ApkLabel "晴空蓝主题版"
+    # 同步源码+推送+上传当前版本 APK
 
 .EXAMPLE
     .\sync-to-release.ps1 -CommitMsg "v1.1.0 更新" -Push
@@ -64,7 +81,11 @@ param(
     [string]$GitAuthorEmail = "fantasyao@users.noreply.github.com",
     [string]$GitHubRepo = "fantasyao/shengwuji",
     [switch]$Push,
-    [switch]$UploadModel
+    [switch]$UploadModel,
+    [switch]$UploadApk,
+    [string]$ApkPath = "",          # 空=自动找 build/app/outputs/apk/release/app-arm64-v8a-release.apk
+    [string]$VersionTag = "",       # 空=自动从 pubspec.yaml 读 version: X.Y.Z 拼成 vX.Y.Z
+    [string]$ApkLabel = ""          # APK 规范文件名里的「功能备注」，如「晴空蓝主题版」。空则文件名省略备注段
 )
 
 $ErrorActionPreference = "Stop"
@@ -482,6 +503,108 @@ try {
         Write-Host "[Phase F] 跳过模型上传（未指定 -UploadModel）" -ForegroundColor DarkGray
     }
 
+    # ===== Phase G: 可选上传 APK 到 GitHub Release =====
+    if ($UploadApk) {
+        Write-Host "[Phase G] 上传 APK 到 GitHub Release..." -ForegroundColor Yellow
+
+        # 解析 ApkPath：空=默认 build/app/outputs/apk/release/app-arm64-v8a-release.apk；相对路径基于 $SrcRepoPath 拼绝对
+        if ([string]::IsNullOrEmpty($ApkPath)) {
+            $resolvedApkPath = Join-Path $SrcRepoPath "build\app\outputs\apk\release\app-arm64-v8a-release.apk"
+        } elseif (-not (Split-Path $ApkPath -IsAbsolute)) {
+            $resolvedApkPath = Join-Path $SrcRepoPath $ApkPath
+        } else {
+            $resolvedApkPath = $ApkPath
+        }
+        if (-not (Test-Path $resolvedApkPath)) {
+            Write-Warning "APK 不存在: $resolvedApkPath"
+            Write-Warning "请先执行 flutter build apk --split-per-abi 生成"
+        } else {
+            # 解析 VersionTag：空=读 pubspec.yaml 的 version: X.Y.Z 拼 vX.Y.Z
+            $resolvedTag = $VersionTag
+            if ([string]::IsNullOrEmpty($resolvedTag)) {
+                $pubspecPath = Join-Path $SrcRepoPath "pubspec.yaml"
+                $pubspecVer = ""
+                if (Test-Path $pubspecPath) {
+                    try {
+                        $pubspecContent = Get-Content $pubspecPath -Raw -Encoding utf8
+                        if ($pubspecContent -match 'version:\s*(\d+\.\d+\.\d+)') {
+                            $pubspecVer = $matches[1]
+                        }
+                    } catch {
+                        Write-Warning "读取 pubspec.yaml 失败: $_"
+                    }
+                }
+                if ([string]::IsNullOrEmpty($pubspecVer)) {
+                    Write-Warning "未能从 pubspec.yaml 解析版本号，跳过 APK 上传"
+                } else {
+                    $resolvedTag = "v$pubspecVer"
+                }
+            }
+
+            if (-not [string]::IsNullOrEmpty($resolvedTag)) {
+                # 组装规范文件名：声物记_vX.Y.Z_功能备注_arm64.apk 或 声物记_vX.Y.Z_arm64.apk
+                if ([string]::IsNullOrEmpty($ApkLabel)) {
+                    $apkFileName = "声物记_${resolvedTag}_arm64.apk"
+                } else {
+                    $apkFileName = "声物记_${resolvedTag}_${ApkLabel}_arm64.apk"
+                }
+
+                # 复制到 TEMP 用规范名重命名（不污染原 build 目录）
+                $tempApk = Join-Path $env:TEMP $apkFileName
+                try {
+                    Copy-Item $resolvedApkPath $tempApk -Force
+                    Write-Host "源 APK: $resolvedApkPath"
+                    Write-Host "临时副本: $tempApk"
+
+                    # 生成默认 release notes：取最近 15 条 commit subject，剥离开头 claude: 前缀
+                    $recentCommits = @()
+                    try {
+                        $rawCommits = git -C $SrcRepoPath log --oneline -15 2>$null
+                        if ($LASTEXITCODE -eq 0 -and $rawCommits) {
+                            foreach ($line in $rawCommits) {
+                                # git --oneline 格式："<sha> <subject>"，先剥离 sha 前缀再去 claude: 前缀
+                                $subjectOnly = ($line -replace '^[0-9a-f]+\s+', '') -replace '^claude:\s*', ''
+                                $recentCommits += $subjectOnly
+                            }
+                        }
+                    } catch { }
+                    if ($recentCommits.Count -gt 0) {
+                        $releaseNotes = $recentCommits -join "`n"
+                    } else {
+                        $releaseNotes = "声物记 $resolvedTag"
+                    }
+
+                    $ghCmd = Get-Command gh -ErrorAction SilentlyContinue
+                    if (-not $ghCmd) {
+                        Write-Warning "未找到 gh CLI，请手动上传:"
+                        Write-Warning "  gh release create $resolvedTag `"$tempApk`" --repo $GitHubRepo --title `"声物记 $resolvedTag`" --notes `"...`""
+                        Write-Warning "  或访问 https://github.com/$GitHubRepo/releases 网页上传"
+                    } else {
+                        Write-Host "上传 $tempApk 到 Release $resolvedTag ..."
+                        gh release create $resolvedTag $tempApk --repo $GitHubRepo --title "声物记 $resolvedTag" --notes $releaseNotes
+                        if ($LASTEXITCODE -eq 0) {
+                            Write-Host "[Phase G] APK 已上传到 Release $resolvedTag" -ForegroundColor Green
+                        } else {
+                            Write-Warning "gh release create 失败（退出码 $LASTEXITCODE）"
+                            Write-Warning "可能 Release 已存在，改用 gh release upload:"
+                            Write-Warning "  gh release upload $resolvedTag `"$tempApk`" --repo $GitHubRepo --clobber"
+                            gh release upload $resolvedTag $tempApk --repo $GitHubRepo --clobber
+                            if ($LASTEXITCODE -eq 0) {
+                                Write-Host "[Phase G] APK 已上传到 Release $resolvedTag（fallback upload 成功）" -ForegroundColor Green
+                            } else {
+                                Write-Warning "gh release upload 失败（退出码 $LASTEXITCODE）"
+                            }
+                        }
+                    }
+                } finally {
+                    Remove-Item $tempApk -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    } else {
+        Write-Host "[Phase G] 跳过 APK 上传（未指定 -UploadApk）" -ForegroundColor DarkGray
+    }
+
 } finally {
     Pop-Location
 }
@@ -499,6 +622,9 @@ if (-not $Push) {
 }
 if (-not $UploadModel) {
     Write-Host "  - 上传模型: 重新运行加 -UploadModel"
+}
+if (-not $UploadApk) {
+    Write-Host "  - 上传 APK: 重新运行加 -UploadApk"
 }
 Write-Host "  - 在 GitHub 创建空仓库: https://github.com/new （名称 $GitHubRepo）"
 Write-Host ""
