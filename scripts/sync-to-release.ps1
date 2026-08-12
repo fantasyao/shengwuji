@@ -251,7 +251,8 @@ $excludeDirs = @(
     ".gradle",
     ".cxx",
     "Pods",
-    "Flutter"
+    "Flutter",
+    "image"
 )
 
 # 排除文件（robocopy /XF 支持通配符）
@@ -263,6 +264,9 @@ $excludeFiles = @(
     "nul",
     "fix_icon_background.py",
     "*.bak",
+    "*.stackdump",
+    "app_log_*.txt",
+    "*.srt",
     "todo",
     "CLAUDE.md",
     "*.iml",
