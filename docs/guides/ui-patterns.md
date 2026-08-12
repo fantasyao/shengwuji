@@ -59,9 +59,10 @@
 
 #### Settings Tab（设置标签）
 - 模型管理（内置状态 + 可选导入）
-- 热词编辑
+- 热词编辑（动态热词替换，已并入全量备份/恢复，不再单独提供导入/导出按钮）
 - 备份与恢复
 - AI 应用选择
+- 外观设置：主题/皮肤选择 + Android 图标包切换（均支持 Pro 门禁）
 - 无障碍服务开关 + 音量键监听配置
 - **支持作者分区**：Pro 付费解锁入口（诊断区与关于区之间）
 
@@ -74,10 +75,14 @@
 - [lib/list_tab.dart](../lib/list_tab.dart) - 物品列表界面
 - [lib/diary_tab.dart](../lib/diary_tab.dart) - 语音日记界面
 - [lib/settings_tab.dart](../lib/settings_tab.dart) - 设置界面
+- [lib/theme/app_theme.dart](../lib/theme/app_theme.dart) - 主题定义注册表（4 套预设）
+- [lib/theme/app_theme_extension.dart](../lib/theme/app_theme_extension.dart) - 语义化色槽 ThemeExtension
+- [lib/utils/icon_pack_switcher.dart](../lib/utils/icon_pack_switcher.dart) - Android 图标包切换 MethodChannel 桥接
 - [lib/widgets/checklist_widget.dart](../lib/widgets/checklist_widget.dart) - 清单 markdown 渲染组件
 - [lib/widgets/swipe_dismiss_card.dart](../lib/widgets/swipe_dismiss_card.dart) - 侧滑删除组件（圆圈闭合动画）
 - [lib/widgets/location_answer_widget.dart](../lib/widgets/location_answer_widget.dart) - 查询答案预填区组件（3 种状态）
-- [lib/widgets/pro_unlock_dialog.dart](../lib/widgets/pro_unlock_dialog.dart) - Pro 付费解锁弹窗（金边 Dialog + 二维码占位 + 解锁按钮）
+- [lib/widgets/item_transfer_widget.dart](../lib/widgets/item_transfer_widget.dart) - 物品转存横条组件（浅橙）
+- [lib/widgets/pro_unlock_dialog.dart](../lib/widgets/pro_unlock_dialog.dart) - Pro 付费解锁弹窗（金边 Dialog + 微信/支付宝真实付款码）
 - [lib/utils/query_detector.dart](../lib/utils/query_detector.dart) - 查询语句检测器（正则+填充词剥离）
 
 ### AI 应用选择
@@ -241,9 +246,64 @@
 - **库**: `wakelock_plus: ^1.2.8`
 - 保持录制过程中屏幕常亮
 
+## 外观设置
+
+设置页"外观"分区集中管理主题皮肤和 Android 桌面图标包，均支持 Pro 门禁。
+
+### 主题 / 皮肤系统
+
+- **4 套预设**：默认青（Teal）、暖橙（Warm Orange）、墨绿（Forest Green）、黑金（Black Gold，Pro）
+- **实现**：`AppThemeExtension`（25 个语义化色槽）+ `AppThemeDefinition` 注册表 + `AppRoot.themeNotifier` 全局切换
+- **持久化**：`selected_theme`（SharedPreferences），冷启动恢复
+- **Pro 门禁**：黑金主题未解锁时点击调起 `ProUnlockDialog`
+
+### Android 图标包切换
+
+- **4 套图标包**：默认、暖色、节日红（Pro）、极简白（Pro）
+- **实现**：`activity-alias` 声明在 `AndroidManifest.xml`，`IconPackSwitcher` 通过 MethodChannel 调用原生 `setComponentEnabledSetting` 切换
+- **持久化**：由 Android 系统持久化，`getCurrentIconPack()` 反查；prefs 中的 `selected_icon_pack` 仅用于 UI 显示
+- **注意**：切换后 Android 会在 1-3 秒内杀死 APP 进程，UI 需明确告知用户此现象
+
+### 关键文件
+- [lib/theme/app_theme.dart](../lib/theme/app_theme.dart) - 主题定义注册表
+- [lib/theme/app_theme_extension.dart](../lib/theme/app_theme_extension.dart) - 语义化色槽
+- [lib/utils/icon_pack_switcher.dart](../lib/utils/icon_pack_switcher.dart) - 图标包 MethodChannel 桥接
+- [lib/utils/pro_gate.dart](../lib/utils/pro_gate.dart) - Pro 门禁工具
+- [android/app/src/main/AndroidManifest.xml](../android/app/src/main/AndroidManifest.xml) - activity-alias 声明
+
+## 系统分享接收
+
+从其他 Android App（如浏览器、微信、备忘录等）选中文字 → 系统"分享"菜单 → 选择「声物记」→ 直接保存为日记文本笔记。
+
+### 触发条件
+
+MainActivity + 3 个 `activity-alias` 均声明 `ACTION_SEND` / `text/plain` intent-filter。
+
+### 处理流程
+
+```
+系统分享菜单 → MainActivity.onCreate/onNewIntent
+           → handleShareIntent() 解析 EXTRA_TEXT + 来源应用
+           → MethodChannel "onReceiveSharedText" → MainScaffold
+           → 切换到日记页（索引 2）
+           → DiaryTab.saveSharedTextNote(text, source)
+           → 写入 diary 表（audio_path = null）
+```
+
+### 来源应用名（仅日志记录，不再附加正文）
+
+原生层仍通过 `EXTRA_PACKAGE_NAME` → `getReferrer()` → `getCallingPackage()` 三级回退尝试获取来源包名并转为应用标签名，经 MethodChannel 传给 Flutter，仅写入运行日志（`source=...`），**不再附加到日记正文**。
+
+> 历史：曾有"展示分享来源"开关（`append_share_source`）控制是否在正文前加 `"来自XXX："`。2026-08-11 移除——经系统分享面板（ChooserActivity）转发的 App（酷安/微信/QQ 等绝大多数），Android 出于隐私设计会抹空来源包名，三级回退全为 null，开关时灵时不灵（仅直接 startActivity 的如 Via 才能拿到），体验割裂。为行为一致，对所有来源停用附加。
+
+### 关键文件
+- [android/app/src/main/java/com/shengwuji/app/MainActivity.kt](../android/app/src/main/java/com/shengwuji/app/MainActivity.kt) - Intent 解析与 MethodChannel 通知
+- [lib/main.dart](../lib/main.dart) - MethodChannel 监听与页面切换
+- [lib/diary_tab.dart](../lib/diary_tab.dart) - `saveSharedTextNote()`
+
 ## Pro 付费解锁弹窗
 
-设置页"支持作者"分区入口（诊断区与关于区之间），点击调起金边 Dialog。**当前只做 UI + 状态持久化，付费功能本身待规划**——后续加功能门禁时直接读 `SharedPreferences.is_pro_unlocked`。
+设置页"支持作者"分区入口（诊断区与关于区之间），点击调起金边 Dialog。弹窗展示作者寄语 + 微信/支付宝真实付款码缩略图 + 解锁按钮。已接入 Pro 功能门禁：主题/皮肤系统中的黑金主题、图标包切换中的节日红/极简白为 Pro 专属，未解锁时点击会调起弹窗。
 
 ### 组件
 - **ProUnlockDialog** (`lib/widgets/pro_unlock_dialog.dart`) - `showDialog` + 自定义 Container（不用 AlertDialog，便于做精致金边）
@@ -255,7 +315,7 @@
 | 徽章 | 圆形 60×60，浅金底 `#FFF8E7`，`workspace_premium` 图标 |
 | 标题 | "解锁 Pro"，17pt 粗体 blueGrey |
 | 正文 | 作者寄语 4 句，13pt 黑 0.87 透明度，行高 1.7，居中 |
-| 二维码占位 | 120×120 浅金底 + 暖金边框，`local_cafe` 图标 + "扫码请我喝咖啡" |
+| 付款码 | 两张 90×90 金边圆角缩略图并排（微信 + 支付宝），点击放大，长按保存到相册 |
 | 解锁按钮 | 暖金 `#D4A437` 白字，已解锁后变灰禁用 |
 | 关闭按钮 | TextButton 灰字 |
 
@@ -268,6 +328,5 @@
 - **重启行为**：杀掉 APP 重进，按钮仍是"Pro 已解锁 ✓"（持久化生效）
 
 ### 后续扩展点
-- **付费功能门禁**：读 `is_pro_unlocked` 控制具体 Pro 功能可用性
-- **真实二维码**：用户提供收款码图片放 `assets/` 后，替换占位 Container 为 `Image.asset(...)`
+- **更多付费功能门禁**：读 `is_pro_unlocked` 控制具体 Pro 功能可用性
 

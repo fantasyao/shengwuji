@@ -53,6 +53,12 @@
                 <action android:name="com.shengwuji.app.ACTION_QUICK_TEXT_NOTE"/>
                 <category android:name="android.intent.category.DEFAULT"/>
             </intent-filter>
+            <!-- 接收系统分享文本 -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="text/plain"/>
+            </intent-filter>
             <!-- 静态快捷方式：供第三方 App（微动手势等）发现 -->
             <meta-data
                 android:name="android.app.shortcuts"
@@ -80,6 +86,12 @@
                 <action android:name="com.shengwuji.app.ACTION_QUICK_TEXT_NOTE"/>
                 <category android:name="android.intent.category.DEFAULT"/>
             </intent-filter>
+            <!-- 接收系统分享文本 -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="text/plain"/>
+            </intent-filter>
             <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
         </activity-alias>
 
@@ -102,6 +114,12 @@
                 <action android:name="com.shengwuji.app.ACTION_QUICK_TEXT_NOTE"/>
                 <category android:name="android.intent.category.DEFAULT"/>
             </intent-filter>
+            <!-- 接收系统分享文本 -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="text/plain"/>
+            </intent-filter>
             <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
         </activity-alias>
 
@@ -123,6 +141,12 @@
                 <action android:name="com.shengwuji.app.ACTION_QUICK_RECORD"/>
                 <action android:name="com.shengwuji.app.ACTION_QUICK_TEXT_NOTE"/>
                 <category android:name="android.intent.category.DEFAULT"/>
+            </intent-filter>
+            <!-- 接收系统分享文本 -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="text/plain"/>
             </intent-filter>
             <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
         </activity-alias>

@@ -35,8 +35,9 @@ SplashScreen(child: MainScaffold())
   - `refreshEngine()` - 刷新语音识别引擎
   - `refreshList()` - 刷新日记列表
   - `startNewTextNote()` - 新建空白文本笔记（音量键双击触发）
+  - `saveSharedTextNote(text, {source})` - 保存系统分享文本为日记文本笔记
   - `isLockedRecording` - 是否处于锁定录音模式
-  - 负责语音日记录音、播放、编辑、归档和导出
+  - 负责语音日记录音、播放、编辑、归档、导出和分享接收
 
 ### 跨 Tab 跳转：DiaryTab → ListTab（预填搜索）
 

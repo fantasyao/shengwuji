@@ -15,7 +15,10 @@
 8. **日记导出** - 增量导出为 Markdown 文件到用户指定目录
 9. **语音查找物品** - 日记页说"XX在哪儿"自动查询 items 表，卡片下方展示物品位置答案
 10. **搬家模式** - 搬家场景双手占用时持续录音 + Silero VAD 自动切段 + 自动识别保存 + TTS 播报确认；10 秒窗口内说"不对"/"撤销"自动删除上一条 + TTS 回显"已撤销"
-11. **Pro 付费解锁** - 设置页"支持作者"入口，金边弹窗展示作者寄语 + 二维码占位 + 解锁按钮，解锁状态持久化（SharedPreferences key `is_pro_unlocked`）
+11. **Pro 付费解锁** - 设置页"支持作者"入口，金边弹窗展示作者寄语 + 二维码 + 解锁按钮，解锁状态持久化（SharedPreferences key `is_pro_unlocked`）
+12. **系统分享接收** - 从其他 App 分享文本到声物记，保存为日记文本笔记
+13. **主题/皮肤系统** - 4 套预设主题（青/暖橙/墨绿/黑金），基于 ThemeExtension，支持 Pro 门禁
+14. **Android 图标包切换** - 4 套桌面图标包（默认/暖色/节日红/极简白），activity-alias 实现，支持 Pro 门禁
 
 ## 技术栈
 
@@ -67,7 +70,7 @@ main() → RecognizerSingleton.preloadModelPath()
 1. **Record Tab** - 录制语音，追踪物品位置，支持清单提取
 2. **List Tab** - 查看所有物品，支持搜索和过滤
 3. **Diary Tab** - 语音日记录音/播放，文本编辑，归档/删除，Markdown 导出，AI 分享，语音查找物品
-4. **Settings Tab** - 内置模型管理（可选导入），热词编辑，备份恢复，无障碍服务配置
+4. **Settings Tab** - 内置模型管理（可选导入），热词编辑，备份恢复（含热词配置），无障碍服务配置，外观设置（主题 + Android 图标包），系统分享接收开关
 
 ### 原生集成（Android）
 - **VolumeKeyAccessibilityService** - 无障碍服务，监听音量键事件
@@ -132,7 +135,8 @@ flutter pub run flutter_launcher_icons
 
 ### 语音识别配置
 - [assets/rules.txt](../assets/rules.txt) - 正则纠错规则（只读）
-- [assets/hotwords.txt](../assets/hotwords.txt) - 热词纠错（可编辑）
+- [assets/hotwords.txt](../assets/hotwords.txt) - 热词纠错（可编辑，首次启动内置）
+- `user_hotwords.txt`（应用文档目录）- 运行时动态热词配置，已纳入全量备份/恢复
 
 ### 内置模型
 - [assets/model.int8.onnx](../assets/model.int8.onnx) - SenseVoice 模型权重

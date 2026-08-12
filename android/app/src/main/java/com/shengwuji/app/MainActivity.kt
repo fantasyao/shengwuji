@@ -47,6 +47,9 @@ class MainActivity: FlutterActivity() {
         // 延迟执行，确保 Flutter 引擎已初始化
         savedInstanceState ?: handleShortcutIntentOnColdStart(intent)
 
+        // 处理冷启动时的系统分享文本
+        savedInstanceState ?: handleShareIntentOnColdStart(intent)
+
         // 🔒 锁屏隐私保护：监听屏幕熄灭，清除 sticky 锁屏 flag
         // 覆盖场景 D（录音中直接按电源键锁屏），避免点亮屏幕后绕过锁屏界面
         //
@@ -240,6 +243,7 @@ class MainActivity: FlutterActivity() {
         applyLockScreenFlagsIfNeeded(intent)
 
         handleShortcutIntent(intent)
+        handleShareIntent(intent)
     }
 
     private fun handleShortcutIntent(intent: Intent?) {
@@ -285,6 +289,77 @@ class MainActivity: FlutterActivity() {
         flutterEngine?.let { engine ->
             MethodChannel(engine.dartExecutor.binaryMessenger, CHANNEL)
                 .invokeMethod("onShortcutLaunch", shortcutType)
+        }
+    }
+
+    // ==================== 接收系统分享文本 ====================
+
+    private fun handleShareIntentOnColdStart(intent: Intent?) {
+        if (intent?.action == Intent.ACTION_SEND && intent.type == "text/plain") {
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                handleShareIntent(intent)
+            }, 100)
+        }
+    }
+
+    private fun handleShareIntent(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_SEND || intent.type != "text/plain") return
+
+        val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)?.trim() ?: return
+        if (sharedText.isEmpty()) return
+
+        val source = getShareSource(intent)
+        println("📝 [MainActivity] 接收到分享文本: ${sharedText.take(100)}, source=$source")
+        notifyFlutterSharedText(sharedText, source)
+
+        // 防止重建时重复处理
+        intent.action = Intent.ACTION_MAIN
+        intent.removeExtra(Intent.EXTRA_TEXT)
+    }
+
+    private fun getShareSource(intent: Intent?): String? {
+        return try {
+            var packageName: String? = null
+
+            // 1. 优先 EXTRA_PACKAGE_NAME
+            packageName = intent?.getStringExtra(Intent.EXTRA_PACKAGE_NAME)
+            println("📝 [MainActivity] EXTRA_PACKAGE_NAME: $packageName")
+
+            // 2. 其次 getReferrer()
+            if (packageName == null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
+                packageName = getReferrer()?.authority
+                println("📝 [MainActivity] getReferrer(): $packageName")
+            }
+
+            // 3. 最后 getCallingPackage()
+            if (packageName == null) {
+                packageName = getCallingPackage()
+                println("📝 [MainActivity] getCallingPackage(): $packageName")
+            }
+
+            // 4. 包名转应用名
+            if (packageName != null) {
+                try {
+                    val appInfo = packageManager.getApplicationInfo(packageName, 0)
+                    packageManager.getApplicationLabel(appInfo).toString()
+                } catch (e: PackageManager.NameNotFoundException) {
+                    println("📝 [MainActivity] 包名解析失败: $packageName, ${e.message}")
+                    null
+                }
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            println("📝 [MainActivity] 获取分享来源失败: ${e.message}")
+            null
+        }
+    }
+
+    private fun notifyFlutterSharedText(text: String, source: String?) {
+        flutterEngine?.let { engine ->
+            val args = mapOf("text" to text, "source" to source)
+            MethodChannel(engine.dartExecutor.binaryMessenger, CHANNEL)
+                .invokeMethod("onReceiveSharedText", args)
         }
     }
 

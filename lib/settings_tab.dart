@@ -18,7 +18,6 @@ import '../startup_logger.dart';
 import '../app_logger.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import '../widgets/pro_unlock_dialog.dart';
-import '../widgets/license_dialog.dart'; // 开源字体许可证查看弹窗（设置→关于）
 import '../theme/app_theme_extension.dart';
 import '../theme/app_theme.dart'; // AppThemes / AppThemeDefinition（Phase 3 主题选择）
 import '../main.dart'; // AppRoot.themeNotifier（Phase 3 主题切换）
@@ -50,6 +49,7 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
   String _currentIconPackId = 'default'; // 当前图标包 ID（从原生层读取，不依赖 prefs），Phase 4
   bool _itemTransferEnabled = true; // 日记智能识别物品+位置开关（默认开启）
   bool _queryAnswerEnabled = true; // 日记智能查询物品位置开关（默认开启）
+  bool _swapTapLongPress = false; // 日记卡片单击/长按交换开关
 
   /// 启动耗时诊断 UI 开关（暂时隐藏，需要时改为 true）
   static const bool _kShowStartupDiagnostics = false;
@@ -123,6 +123,8 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
             prefs.getBool('diary_item_transfer_enabled') ?? true;
         _queryAnswerEnabled =
             prefs.getBool('diary_query_answer_enabled') ?? true;
+        _swapTapLongPress =
+            prefs.getBool('diary_card_swap_tap_longpress') ?? false;
       });
     }
   }
@@ -369,39 +371,6 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
     );
   }
 
-  // --- 热词导入导出逻辑 ---
-  Future<void> _exportHotwords() async {
-    String content = _hotwordController.text;
-    if (content.isEmpty) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text("没有可导出的热词")));
-      return;
-    }
-    String timestamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
-    await FilePicker.platform.saveFile(
-      fileName: 'hotwords_config_$timestamp.txt',
-      bytes: utf8.encode(content),
-    );
-  }
-
-  Future<void> _importHotwords() async {
-    FilePickerResult? res = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: ['txt'],
-    );
-    if (res != null) {
-      final file = File(res.files.single.path!);
-      String content = await file.readAsString();
-      setState(() => _hotwordController.text = content);
-      await widget.processor.saveContent(content);
-      if (mounted)
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text("热词配置已导入并生效")));
-    }
-  }
-
   // --- 全量备份导入导出逻辑 ---
 
   // 导出完整备份（ZIP格式）
@@ -482,6 +451,16 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
       final readme = _generateReadme();
       archive.addFile(
         ArchiveFile('README.txt', readme.length, utf8.encode(readme)),
+      );
+
+      // 6.5 添加热词配置文件
+      final hotwordsContent = await widget.processor.getLocalContent();
+      archive.addFile(
+        ArchiveFile(
+          'user_hotwords.txt',
+          hotwordsContent.length,
+          utf8.encode(hotwordsContent),
+        ),
       );
 
       // 7. 压缩ZIP
@@ -612,6 +591,7 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
 - items.csv: 物品位置数据
 - diary.csv: 日记记录数据
 - audio/: 日记音频文件
+- user_hotwords.txt: 动态热词替换配置
 
 导入说明:
 请通过设置页的"导入全量备份"功能恢复此数据。
@@ -671,10 +651,12 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
       final zipFile = File(result.files.single.path!);
       final zipBytes = await zipFile.readAsBytes();
       final archive = ZipDecoder().decodeBytes(zipBytes);
+      log('[备份导入] 开始，ZIP: ${result.files.single.name}, ${zipBytes.length} 字节');
 
       // 2. 提取并验证文件
       ArchiveFile? itemsCsv;
       ArchiveFile? diaryCsv;
+      ArchiveFile? hotwordsFile;
       List<ArchiveFile> audioFiles = [];
 
       for (var file in archive) {
@@ -682,6 +664,8 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
           itemsCsv = file;
         } else if (file.name == 'diary.csv') {
           diaryCsv = file;
+        } else if (file.name == 'user_hotwords.txt') {
+          hotwordsFile = file;
         } else if (file.name.startsWith('audio/')) {
           audioFiles.add(file);
         }
@@ -690,6 +674,9 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
       if (itemsCsv == null || diaryCsv == null) {
         throw Exception("备份文件格式错误：缺少必要的CSV文件");
       }
+
+      log('[备份导入] 解析: items=有, diary=有, '
+          '有热词=${hotwordsFile != null}, 音频=${audioFiles.length}个');
 
       // 3. 解析items.csv
       final itemsContent = utf8.decode(itemsCsv.content as List<int>);
@@ -765,18 +752,42 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
         await widget.dbHelper.batchInsertDiaries(newDiaries);
       }
 
-      // 8. 检查是否有新数据
+      // 8. 恢复热词配置（如备份中包含）—— 必须在"无新数据 early return"之前，
+      // 否则当 items/diary 全部命中去重时热词永远无法恢复（2026-08-11 修复）
+      bool hotwordsRestored = false;
+      if (hotwordsFile != null) {
+        final hotwordsContent = utf8.decode(hotwordsFile.content as List<int>);
+        final ruleCount = hotwordsContent
+            .split('\n')
+            .where((l) => l.contains('=') && !l.trim().startsWith('#'))
+            .length;
+        log('[备份导入] 恢复热词: ${hotwordsContent.length} 字符, $ruleCount 条规则');
+        await widget.processor.saveContent(hotwordsContent);
+        log('[备份导入] 热词已写入并生效');
+        if (mounted) {
+          setState(() => _hotwordController.text = hotwordsContent);
+        }
+        hotwordsRestored = true;
+      } else {
+        log('[备份导入] 备份中无 user_hotwords.txt，跳过热词恢复');
+      }
+
+      // 9. 检查是否有新数据（热词已在上一步独立恢复，不受此 return 影响）
       if (newItems.isEmpty && newDiaries.isEmpty) {
+        log('[备份导入] 无新数据 early return (hotwordsRestored=$hotwordsRestored)');
         if (mounted) {
           Navigator.pop(context); // 关闭加载对话框
+          final msg = hotwordsRestored
+              ? "✅ 热词配置已恢复（无其他新数据）"
+              : "⚠️ 备份文件中没有新数据";
           ScaffoldMessenger.of(
             context,
-          ).showSnackBar(const SnackBar(content: Text("⚠️ 备份文件中没有新数据")));
+          ).showSnackBar(SnackBar(content: Text(msg)));
         }
         return;
       }
 
-      // 8. 恢复音频文件
+      // 10. 恢复音频文件
       final audioDir = Directory(p.join(appDocDir.path, 'diary_audio'));
 
       // 确保音频目录存在
@@ -799,16 +810,21 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
         }
       }
 
-      // 8. 关闭加载对话框
+      // 11. 关闭加载对话框
       if (mounted) Navigator.pop(context);
 
-      // 9. 显示成功消息
+      // 12. 显示成功消息
       if (mounted) {
         String message =
             "✅ 增量导入成功：${newItems.length}个新物品，${newDiaries.length}条新日记";
         if (restoredAudioCount > 0) {
           message += "，$restoredAudioCount个新音频";
         }
+        if (hotwordsRestored) {
+          message += "，热词配置已恢复";
+        }
+        log('[备份导入] 完成: 新物品=${newItems.length}, 新日记=${newDiaries.length}, '
+            '新音频=$restoredAudioCount, 热词恢复=$hotwordsRestored');
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text(message)));
@@ -1004,22 +1020,7 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
           const SizedBox(height: 24),
 
           // --- 热词管理部分 ---
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              _buildSectionTitle("动态热词替换"),
-              Row(
-                children: [
-                  _buildTextBtn(
-                    "导入",
-                    Icons.drive_folder_upload,
-                    _importHotwords,
-                  ),
-                  _buildTextBtn("导出", Icons.drive_file_move, _exportHotwords),
-                ],
-              ),
-            ],
-          ),
+          _buildSectionTitle("动态热词替换"),
           _buildCard(
             padding: EdgeInsets.zero,
             child: Column(
@@ -1298,6 +1299,32 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
           ),
           const SizedBox(height: 24),
 
+          // --- 日记交互区域 ---
+          // 日记卡片单击/长按交互交换开关，prefs key 与 DiaryTab._loadSmartSwitches 一致
+          _buildSectionTitle("日记交互"),
+          _buildCard(
+            child: Column(
+              children: [
+                SwitchListTile(
+                  title: const Text('交换单击与长按', style: TextStyle(fontSize: 13)),
+                  subtitle: Text(
+                    '开启后：单击=编辑、长按=复制（默认：单击=复制、长按=编辑）。修改后需重启 App 生效',
+                    style: TextStyle(fontSize: 11, color: ext.textHint),
+                  ),
+                  value: _swapTapLongPress,
+                  onChanged: (v) async {
+                    setState(() => _swapTapLongPress = v);
+                    final prefs = await SharedPreferences.getInstance();
+                    await prefs.setBool('diary_card_swap_tap_longpress', v);
+                  },
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  controlAffinity: ListTileControlAffinity.leading,
+                ),
+              ],
+            ),
+          ),
+
           // 启动耗时诊断区域：暂时隐藏，恢复时把 _kShowStartupDiagnostics 改为 true
           if (_kShowStartupDiagnostics) ...[
             _buildSectionTitle("诊断"),
@@ -1460,88 +1487,118 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                   ),
                   children: [
                     _buildChangelogItem(
+                      version: "v1.0.16",
+                      date: "2026-08-12",
+                      changes: [
+                        "随手记 / 日记归档后可一键恢复（新增恢复入口）",
+                        "日记卡片「单击 / 长按」交互支持自定义交换",
+                        "接收系统分享：从其他 App 选文字分享到声物记，存为笔记",
+                        "热词配置纳入全量备份 / 恢复",
+                      ],
+                    ),
+                    _buildChangelogItem(
                       version: "v1.0.15",
                       date: "2026-08-07",
-                      changes:
-                          "日记卡片改版（日期/时长移至顶部 + 补全年份与时分格式 + 播放按钮升级为带响度波纹的可拖动进度条，支持拖动跳转/暂停继续 + 转写中按钮区禁用态 + 修复进度条游标『先走再跳回』与暂停后续播虚高，弃用 position 流改 Stopwatch 自算）+ 搬家模式智能分割失败提示改为可左滑消除的自绘提示条（含手动保存按钮，替代手势不便的 SnackBar）",
+                      changes: [
+                        "日记卡片改版：日期/时长移至顶部，补全年份与时分格式",
+                        "播放按钮升级为带响度波纹的可拖动进度条（拖动跳转/暂停继续）",
+                        "转写中按钮区禁用态；修复进度条游标『先走再跳回』与暂停后续播虚高",
+                        "搬家模式智能分割失败提示改为可左滑消除的自绘提示条（含手动保存按钮）",
+                      ],
                     ),
                     _buildChangelogItem(
                       version: "v1.0.14",
                       date: "2026-08",
-                      changes:
-                          "主题系统改版（4 套皮肤预设 + Android 桌面图标包切换，Pro 门禁）+ 搬家模式增强（TTS 语音播报 + 说『不对/撤销』语音撤销 + 屏幕常亮省电遮罩）+ 录音防丢失（先落盘再转写，失败可重新转写）+ 长录音 VAD 自动切分保护 + 清单触发词门禁（『代办/待办』开头才识别，避免正常说话误判）+ 锁屏隐私保护与音量键键盘修复 + 物品列表浮动语音查询按钮 + Pro 弹窗接入真实付款码 + 录入/日记页按钮钉底便于单手操作 + 修复窄屏卡片底部信息栏溢出 + 补齐霞鹜文楷字体 OFL 开源协议",
+                      changes: [
+                        "主题系统改版（4 套皮肤预设 + Android 桌面图标包切换，Pro 门禁）",
+                        "搬家模式增强（TTS 语音播报 + 说『不对/撤销』语音撤销 + 屏幕常亮省电遮罩）",
+                        "录音防丢失（先落盘再转写，失败可重新转写）",
+                        "长录音 VAD 自动切分保护",
+                        "清单触发词门禁（『代办/待办』开头才识别，避免正常说话误判）",
+                        "锁屏隐私保护与音量键键盘修复",
+                        "物品列表浮动语音查询按钮",
+                        "Pro 弹窗接入真实付款码",
+                        "录入/日记页按钮钉底便于单手操作",
+                        "修复窄屏卡片底部信息栏溢出",
+                        "补齐霞鹜文楷字体 OFL 开源协议",
+                      ],
                     ),
                     _buildChangelogItem(
                       version: "v1.0.13",
                       date: "2026-06",
-                      changes:
-                          "日记一键转物品（浅橙横条转存按钮）+ 设置页新增 Pro 付费解锁弹窗（支持作者）+ 录音按钮样式统一 + 修复双击音量键键盘抖动",
+                      changes: [
+                        "日记一键转物品（浅橙横条转存按钮）",
+                        "设置页新增 Pro 付费解锁弹窗（支持作者）",
+                        "录音按钮样式统一",
+                        "修复双击音量键键盘抖动",
+                      ],
                     ),
                     _buildChangelogItem(
                       version: "v1.0.12",
                       date: "2026-06",
-                      changes:
-                          "日记页语音查找物品：说\"游戏机在哪儿\"自动在卡片下方展示物品位置答案，多匹配显示+N 跳转列表",
+                      changes: [
+                        "日记页语音查找物品：说\"游戏机在哪儿\"自动在卡片下方展示物品位置答案，多匹配显示+N 跳转列表",
+                      ],
                     ),
                     _buildChangelogItem(
                       version: "v1.0.11",
                       date: "2026-06",
-                      changes: "日记页首次启动内置 7 条功能说明卡片",
+                      changes: ["日记页首次启动内置 7 条功能说明卡片"],
                     ),
                     _buildChangelogItem(
                       version: "v1.0.10",
                       date: "2026-06",
-                      changes: "应用改名「东西放哪儿了→声物记」，包名更新为 com.shengwuji.app",
+                      changes: ["应用改名「东西放哪儿了→声物记」，包名更新为 com.shengwuji.app"],
                     ),
                     _buildChangelogItem(
                       version: "v1.0.9",
                       date: "2026-06",
-                      changes: "清单合并到日记表(v8)、侧滑圆圈闭合动画、闹钟到点循环响铃、时间识别蓝色高亮设闹钟",
+                      changes: ["清单合并到日记表(v8)、侧滑圆圈闭合动画、闹钟到点循环响铃、时间识别蓝色高亮设闹钟"],
                     ),
                     _buildChangelogItem(
                       version: "v1.0.8",
                       date: "2026-06",
-                      changes: "清单功能迁移到日记页，新增子弹列表展示",
+                      changes: ["清单功能迁移到日记页，新增子弹列表展示"],
                     ),
                     _buildChangelogItem(
                       version: "v1.0.7",
                       date: "2026-06",
-                      changes: "设置页新增版本更新日志、启动页权限说明、录音按钮调优",
+                      changes: ["设置页新增版本更新日志、启动页权限说明、录音按钮调优"],
                     ),
                     _buildChangelogItem(
                       version: "v1.0.6",
                       date: "2026-06",
-                      changes: "震感改为原生 VibrationEffect API 驱动线性马达",
+                      changes: ["震感改为原生 VibrationEffect API 驱动线性马达"],
                     ),
                     _buildChangelogItem(
                       version: "v1.0.5",
                       date: "2026-06",
-                      changes: "日记页震感替换为系统 HapticFeedback",
+                      changes: ["日记页震感替换为系统 HapticFeedback"],
                     ),
                     _buildChangelogItem(
                       version: "v1.0.4",
                       date: "2026-06",
-                      changes: "启动页去掉模型加载，恢复延迟加载模式",
+                      changes: ["启动页去掉模型加载，恢复延迟加载模式"],
                     ),
                     _buildChangelogItem(
                       version: "v1.0.3",
                       date: "2026-06",
-                      changes: "修复快捷方式进入时录音卡死不转写的问题",
+                      changes: ["修复快捷方式进入时录音卡死不转写的问题"],
                     ),
                     _buildChangelogItem(
                       version: "v1.0.2",
                       date: "2026-05",
-                      changes: "归档系统、侧滑归档/删除",
+                      changes: ["归档系统、侧滑归档/删除"],
                     ),
                     _buildChangelogItem(
                       version: "v1.0.1",
                       date: "2026-05",
-                      changes: "日记导出为 Markdown",
+                      changes: ["日记导出为 Markdown"],
                     ),
                     _buildChangelogItem(
                       version: "v1.0.0",
                       date: "2026-05",
-                      changes: "初始版本，支持离线语音识别",
+                      changes: ["初始版本，支持离线语音识别"],
                       isLast: true,
                     ),
                   ],
@@ -1550,7 +1607,24 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                 _buildTextBtn('导出运行日志', Icons.bug_report, () => _exportLog()),
                 const SizedBox(height: 8),
                 _buildTextBtn(
-                    '开源字体许可证', Icons.description, () => LicenseDialog.show(context)),
+                  '开放源代码许可',
+                  Icons.description,
+                  () => showLicensePage(
+                    context: context,
+                    applicationName: '声物记',
+                    applicationVersion:
+                        _appVersion.isNotEmpty ? 'v$_appVersion' : null,
+                    applicationLegalese: '© 2026 声物记',
+                    applicationIcon: Padding(
+                      padding: const EdgeInsets.all(10),
+                      child: Image.asset(
+                        'assets/icon/app_icon.png',
+                        width: 48,
+                        height: 48,
+                      ),
+                    ),
+                  ),
+                ),
               ],
             ),
           ),
@@ -2256,7 +2330,7 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
   Widget _buildChangelogItem({
     required String version,
     required String date,
-    required String changes,
+    required List<String> changes,
     bool isLast = false,
   }) {
     final ext = AppThemeExtension.of(context);
@@ -2317,13 +2391,40 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 2),
-                  Text(
-                    changes,
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: ext.textSecondary, // 原 Colors.black54
-                    ),
+                  const SizedBox(height: 4),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      for (int i = 0; i < changes.length; i++) ...[
+                        if (i > 0) const SizedBox(height: 4),
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Padding(
+                              padding: const EdgeInsets.only(top: 7),
+                              child: Container(
+                                width: 4,
+                                height: 4,
+                                decoration: BoxDecoration(
+                                  color: ext.textSecondary,
+                                  shape: BoxShape.circle,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 7),
+                            Expanded(
+                              child: Text(
+                                changes[i],
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: ext.textSecondary,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ],
                   ),
                 ],
               ),

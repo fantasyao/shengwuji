@@ -261,6 +261,7 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
   /// 智能识别开关（默认开启，用户可在设置页关闭）
   bool _itemTransferEnabled = true; // 日记智能识别物品+位置 → 显示转存横条
   bool _queryAnswerEnabled = true; // 日记智能查询"XX在哪儿" → 显示答案区
+  bool _swapTapLongPress = false; // 日记卡片单击/长按交换开关（默认关闭=单击复制/长按编辑）
 
   // SAF 持久化目录导出
   final PersistentUserDirAccessAndroid _safDir =
@@ -317,6 +318,8 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
       _itemTransferEnabled =
           prefs.getBool('diary_item_transfer_enabled') ?? true;
       _queryAnswerEnabled = prefs.getBool('diary_query_answer_enabled') ?? true;
+      _swapTapLongPress =
+          prefs.getBool('diary_card_swap_tap_longpress') ?? false;
     });
   }
 
@@ -664,6 +667,37 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
     await refreshList();
     if (mounted) {
       _showEditSheet(newId, '', isNewEmptyNote: true);
+    }
+  }
+
+  /// 保存从系统分享菜单传入的文本为日记文本笔记
+  /// 供 MainScaffold 通过 GlobalKey 调用
+  Future<void> saveSharedTextNote(String text, {String? source}) async {
+    _haptic('tick');
+    final trimmedText = text.trim();
+    if (trimmedText.isEmpty) {
+      log("📝 [Diary] 接收到空分享文本，忽略");
+      return;
+    }
+
+    // 来源前缀功能已移除（2026-08-11）：Android 系统分享面板（ChooserActivity）会刻意抹空
+    // 来源包名，导致经分享面板的 App（酷安/微信/QQ 等绝大多数）拿不到来源，开关时灵时不灵
+    // 体验割裂，故撤掉整个"展示分享来源"开关。source 参数仍由原生层传入并记录在日志里，
+    // 便于将来诊断/恢复，但不再用于拼接正文。
+    final String finalContent = trimmedText;
+
+    final newId = await widget.dbHelper.insertDiary(
+      finalContent,
+      audioPath: null,
+      duration: null,
+    );
+    log("📝 [Diary] 保存分享文本笔记, id=$newId, source=$source");
+    await refreshList();
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("已保存为文本笔记")),
+      );
     }
   }
 
@@ -2230,6 +2264,28 @@ $content
     }
   }
 
+  void _restoreItem(int id) async {
+    _haptic('tick');
+    await widget.dbHelper.restoreDiary(id);
+    refreshList();
+
+    if (mounted) {
+      final ext = AppThemeExtension.of(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("日记已恢复", style: TextStyle(color: ext.textPrimary)),
+          duration: const Duration(milliseconds: 1500),
+          backgroundColor: ext.surface,
+          behavior: SnackBarBehavior.floating,
+          shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(20)),
+          ),
+          margin: const EdgeInsets.symmetric(horizontal: 60),
+        ),
+      );
+    }
+  }
+
   // --- 复制和编辑功能 ---
 
   // 复制到剪贴板
@@ -2860,6 +2916,24 @@ $content
                     ),
                   ),
                 ],
+                // 恢复按钮：仅已归档卡片显示
+                if (isArchived) ...[
+                  const SizedBox(width: 8),
+                  SizedBox(
+                    width: 40,
+                    height: 40,
+                    child: IconButton(
+                      iconSize: 18,
+                      padding: EdgeInsets.zero,
+                      icon: Icon(
+                        Icons.unarchive,
+                        color: ext.primary,
+                      ),
+                      tooltip: "恢复日记",
+                      onPressed: () => _restoreItem(item['id']),
+                    ),
+                  ),
+                ],
                 const SizedBox(width: 8),
                 // 喜欢图标（包在同样大小的容器中）
                 SizedBox(
@@ -3180,23 +3254,40 @@ $content
                                   }
                                 },
                                 child: GestureDetector(
-                                  // 占位日记 content=''：单击不复制空文本、双击不分享空文本
+                                  // 占位日记 content=''：复制路径不处理空文本（编辑空笔记合法）
+                                  // _swapTapLongPress=true 时交换：单击=编辑、长按=复制
                                   onTap: () {
-                                    final c = item['content'] as String;
-                                    if (c.trim().isNotEmpty) {
-                                      _copyToClipboard(c);
+                                    if (_swapTapLongPress) {
+                                      _startEditing(
+                                        item['id'],
+                                        item['content'],
+                                      );
+                                    } else {
+                                      final c = item['content'] as String;
+                                      if (c.trim().isNotEmpty) {
+                                        _copyToClipboard(c);
+                                      }
                                     }
                                   },
                                   onDoubleTap: () {
                                     final c = item['content'] as String;
                                     if (c.trim().isNotEmpty) {
-                                      _shareToAI(c); // 新增：双击分享
+                                      _shareToAI(c); // 新增：双击分享（不受交换开关影响）
                                     }
                                   },
-                                  onLongPress: () => _startEditing(
-                                    item['id'],
-                                    item['content'],
-                                  ),
+                                  onLongPress: () {
+                                    if (_swapTapLongPress) {
+                                      final c = item['content'] as String;
+                                      if (c.trim().isNotEmpty) {
+                                        _copyToClipboard(c);
+                                      }
+                                    } else {
+                                      _startEditing(
+                                        item['id'],
+                                        item['content'],
+                                      );
+                                    }
+                                  },
                                   child: ClipRRect(
                                     borderRadius: BorderRadius.circular(16),
                                     child: BackdropFilter(

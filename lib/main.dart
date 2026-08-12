@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart'; // LicenseRegistry / LicenseEntryWithLineBreaks（开放源代码许可页登记字体 OFL）
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa_onnx;
@@ -19,6 +20,20 @@ import 'theme/app_theme_extension.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // 注册霞鹜文楷字体的 OFL 协议到 LicenseRegistry，让设置→关于→「开放源代码许可」
+  // 页（Flutter 官方 showLicensePage）能展示字体协议全文。
+  // 说明：showLicensePage 只会自动收集 pub 依赖的 LICENSE，字体以 asset 形式打包、
+  // 不属于任何 pub 包，故在此手动登记（此处只注册 stream 工厂，开销可忽略）。
+  LicenseRegistry.addLicense(() async* {
+    final ofl =
+        await rootBundle.loadString('assets/licenses/OFL-LXGWWenKai.txt');
+    yield LicenseEntryWithLineBreaks(
+      <String>['霞鹜文楷 (LXGW WenKai Mono GB Screen)'],
+      ofl,
+    );
+  });
+
   sherpa_onnx.initBindings();
 
   // 预读模型路径，使 hasModel 在模型未加载时也能正确判断
@@ -149,6 +164,11 @@ class _MainScaffoldState extends State<MainScaffold>
         } else if (shortcutType == 'quick_text_note') {
           _handleQuickTextNote();
         }
+      } else if (call.method == 'onReceiveSharedText') {
+        final args = call.arguments as Map<dynamic, dynamic>;
+        final text = args['text'] as String;
+        final source = args['source'] as String?;
+        await _handleReceiveSharedText(text, source: source);
       }
     });
   }
@@ -221,6 +241,23 @@ class _MainScaffoldState extends State<MainScaffold>
     if (diaryState != null) {
       await diaryState.startNewTextNote();
     }
+  }
+
+  /// 处理系统分享菜单传入的文本
+  Future<void> _handleReceiveSharedText(String text, {String? source}) async {
+    // 🔍 诊断分享来源：确认原生层经 MethodChannel 传来的 source 是否为 null
+    // （若这里 source=null，问题在原生层 getShareSource；若 source 有值但日记没前缀，问题在 diary_tab 拼接）
+    log('📝 [Share] MainScaffold 收到分享, source="$source", source类型=${source.runtimeType}, text长度=${text.length}');
+    // 切换到日记页（索引2）
+    _currentIndex = 2;
+    setState(() {});
+
+    final diaryState = _diaryTabKey.currentState;
+    if (diaryState == null) {
+      log('📝 [Share] ⚠️ diaryState 为 null，分享文本无法保存');
+      return;
+    }
+    await diaryState.saveSharedTextNote(text, source: source);
   }
 
   // 显示全局loading

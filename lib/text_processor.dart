@@ -59,6 +59,7 @@ class TextProcessor {
     final file = await _localFile;
     await file.writeAsString(content); // 写入手机硬盘
     _parseHotwords(content); // 同时更新当前正在运行的程序，让它立即生效
+    log('热词已保存: ${content.length} 字符, ${_hotwordMap.length} 条规则生效');
   }
 
   // 解析逻辑（保持不变）

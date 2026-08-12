@@ -303,6 +303,17 @@ class DbHelper {
     );
   }
 
+  // 恢复日记（将 is_archived 标记为 0）
+  Future<int> restoreDiary(int id) async {
+    final dbClient = await db;
+    return await dbClient.update(
+      'diary',
+      {'is_archived': 0},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
   // 4. 更新日记内容
   Future<int> updateDiary(int id, String content) async {
     final dbClient = await db;
