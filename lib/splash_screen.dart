@@ -1,6 +1,7 @@
 import 'app_logger.dart';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'db_helper.dart';
 import 'recognizer_singleton.dart';
 import 'startup_logger.dart';
 import 'theme/app_theme_extension.dart';
@@ -47,6 +48,14 @@ class _SplashScreenState extends State<SplashScreen> {
       sw1.stop();
       log("⏱️ [Splash] preloadModelPath 耗时: ${sw1.elapsedMilliseconds}ms");
       StartupLogger.log("preloadModelPath", sw1.elapsedMilliseconds);
+
+      // 版本更新后为老用户补充插入新的说明卡片（新装用户首次建库也统一走此增量通道，
+      // onCreate 的 8 条基础卡 + 这里插入 v18+ 新卡）。失败不阻塞启动。
+      try {
+        await DbHelper().seedVersionedTutorials();
+      } catch (e) {
+        log("🌱 [Splash] 说明卡片增量插入失败: $e");
+      }
 
       // 检查当前权限状态：已授权则直接跳过按钮，继续初始化
       final status = await Permission.microphone.status;

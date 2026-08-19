@@ -2100,7 +2100,10 @@ $content
   Future<void> _showMuteHintIfNeeded() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      // 检查开关
+      // 检查「按音量减保持静音」总开关
+      final keepMutedEnabled = prefs.getBool('keep_muted_on_volume_down') ?? true;
+      if (!keepMutedEnabled) return;
+      // 检查静音提示子开关
       final hintEnabled = prefs.getBool('mute_hint_enabled') ?? true;
       if (!hintEnabled) return;
       // 显示提示
@@ -2935,16 +2938,19 @@ $content
                   ),
                 ],
                 const SizedBox(width: 8),
-                // 喜欢图标（包在同样大小的容器中）
-                SizedBox(
-                  width: 40,
-                  height: 40,
-                  child: Icon(
-                    Icons.favorite_border,
-                    size: 18,
-                    color: ext.textHint.withValues(
-                      alpha: 0.2,
-                    ), // 原 Colors.black12 装饰图标
+                // 喜欢图标（功能未实现，先隐藏）
+                Visibility(
+                  visible: false,
+                  child: SizedBox(
+                    width: 40,
+                    height: 40,
+                    child: Icon(
+                      Icons.favorite_border,
+                      size: 18,
+                      color: ext.textHint.withValues(
+                        alpha: 0.2,
+                      ), // 原 Colors.black12 装饰图标
+                    ),
                   ),
                 ),
           ],

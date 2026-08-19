@@ -43,6 +43,7 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
   bool _isAccessibilityEnabled = false; // 无障碍服务是否已开启
   String _volumeKeyMode = 'down'; // 音量键监听模式：off/up/down/both
   bool _doubleClickTextNoteEnabled = true; // 双击音量键新建文本笔记开关，默认开启
+  bool _keepMutedOnVolumeDownEnabled = true; // 按音量减保持静音开关，默认开启
   String _appVersion = ''; // 版本号，来自 package_info_plus
   bool _isProUnlocked =
       false; // Pro 功能是否已解锁，持久化在 SharedPreferences 的 is_pro_unlocked
@@ -62,6 +63,7 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
     _loadAIAppPreference(); // 新增：加载 AI 应用偏好
     _loadVolumeKeyMode(); // 加载音量键监听偏好
     _loadDoubleClickTextNote(); // 加载双击文本笔记开关
+    _loadKeepMutedOnVolumeDown(); // 加载按音量减保持静音开关
     _loadAppVersion(); // 加载应用版本号
     _loadProUnlockStatus(); // 加载 Pro 解锁状态
     _loadCurrentIconPack(); // Phase 4：从原生层加载当前图标包状态
@@ -232,6 +234,30 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
     setState(() {
       _doubleClickTextNoteEnabled = enabled;
     });
+  }
+
+  // --- 按音量减保持静音开关 ---
+  Future<void> _loadKeepMutedOnVolumeDown() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) {
+      setState(() {
+        _keepMutedOnVolumeDownEnabled =
+            prefs.getBool('keep_muted_on_volume_down') ?? true;
+      });
+    }
+  }
+
+  Future<void> _saveKeepMutedOnVolumeDown(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('keep_muted_on_volume_down', enabled);
+    if (!enabled) {
+      await prefs.setBool('mute_hint_enabled', false);
+    }
+    if (mounted) {
+      setState(() {
+        _keepMutedOnVolumeDownEnabled = enabled;
+      });
+    }
   }
 
   // --- 应用版本号 ---
@@ -675,8 +701,10 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
         throw Exception("备份文件格式错误：缺少必要的CSV文件");
       }
 
-      log('[备份导入] 解析: items=有, diary=有, '
-          '有热词=${hotwordsFile != null}, 音频=${audioFiles.length}个');
+      log(
+        '[备份导入] 解析: items=有, diary=有, '
+        '有热词=${hotwordsFile != null}, 音频=${audioFiles.length}个',
+      );
 
       // 3. 解析items.csv
       final itemsContent = utf8.decode(itemsCsv.content as List<int>);
@@ -777,9 +805,7 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
         log('[备份导入] 无新数据 early return (hotwordsRestored=$hotwordsRestored)');
         if (mounted) {
           Navigator.pop(context); // 关闭加载对话框
-          final msg = hotwordsRestored
-              ? "✅ 热词配置已恢复（无其他新数据）"
-              : "⚠️ 备份文件中没有新数据";
+          final msg = hotwordsRestored ? "✅ 热词配置已恢复（无其他新数据）" : "⚠️ 备份文件中没有新数据";
           ScaffoldMessenger.of(
             context,
           ).showSnackBar(SnackBar(content: Text(msg)));
@@ -823,8 +849,10 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
         if (hotwordsRestored) {
           message += "，热词配置已恢复";
         }
-        log('[备份导入] 完成: 新物品=${newItems.length}, 新日记=${newDiaries.length}, '
-            '新音频=$restoredAudioCount, 热词恢复=$hotwordsRestored');
+        log(
+          '[备份导入] 完成: 新物品=${newItems.length}, 新日记=${newDiaries.length}, '
+          '新音频=$restoredAudioCount, 热词恢复=$hotwordsRestored',
+        );
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text(message)));
@@ -1211,6 +1239,43 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                     contentPadding: EdgeInsets.zero,
                     controlAffinity: ListTileControlAffinity.leading,
                   ),
+                  SwitchListTile(
+                    title: const Text(
+                      '按音量减保持静音',
+                      style: TextStyle(fontSize: 13),
+                    ),
+                    subtitle: Text(
+                      '快捷录音期间按音量减键，录音结束后继续保持静音',
+                      style: TextStyle(fontSize: 11, color: ext.textHint),
+                    ),
+                    value: _keepMutedOnVolumeDownEnabled,
+                    onChanged: (val) => _saveKeepMutedOnVolumeDown(val),
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    controlAffinity: ListTileControlAffinity.leading,
+                  ),
+                  const SizedBox(height: 8),
+                  FutureBuilder<bool>(
+                    future: SharedPreferences.getInstance().then(
+                      (prefs) => prefs.getBool('mute_hint_enabled') ?? true,
+                    ),
+                    builder: (context, snapshot) {
+                      return SwitchListTile(
+                        title: const Text('静音提示'),
+                        subtitle: const Text('快速录音静音时显示提示文案'),
+                        value: snapshot.data ?? true,
+                        onChanged: _keepMutedOnVolumeDownEnabled
+                            ? (value) async {
+                                final prefs =
+                                    await SharedPreferences.getInstance();
+                                await prefs.setBool('mute_hint_enabled', value);
+                                // 触发重建以更新UI
+                                setState(() {});
+                              }
+                            : null,
+                      );
+                    },
+                  ),
                 ],
                 const SizedBox(height: 12),
                 _buildMainBtn(
@@ -1226,28 +1291,6 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                     fontSize: 11,
                   ), // 原 Colors.blueGrey
                 ),
-                // 静音提示开关
-                if (_isAccessibilityEnabled) ...[
-                  const SizedBox(height: 8),
-                  FutureBuilder<bool>(
-                    future: SharedPreferences.getInstance().then(
-                      (prefs) => prefs.getBool('mute_hint_enabled') ?? true,
-                    ),
-                    builder: (context, snapshot) {
-                      return SwitchListTile(
-                        title: const Text('静音提示'),
-                        subtitle: const Text('快速录音静音时显示提示文案'),
-                        value: snapshot.data ?? true,
-                        onChanged: (value) async {
-                          final prefs = await SharedPreferences.getInstance();
-                          await prefs.setBool('mute_hint_enabled', value);
-                          // 触发重建以更新UI
-                          setState(() {});
-                        },
-                      );
-                    },
-                  ),
-                ],
               ],
             ),
           ),
@@ -1301,7 +1344,7 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
 
           // --- 日记交互区域 ---
           // 日记卡片单击/长按交互交换开关，prefs key 与 DiaryTab._loadSmartSwitches 一致
-          _buildSectionTitle("日记交互"),
+          _buildSectionTitle("日记卡片交互习惯"),
           _buildCard(
             child: Column(
               children: [
@@ -1487,6 +1530,16 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                   ),
                   children: [
                     _buildChangelogItem(
+                      version: "v1.0.17",
+                      date: "2026-08-18",
+                      changes: [
+                        "日记页录音按钮支持上滑-快速新建文本笔记",
+                        "设置页将『静音提示』开关与『按音量减保持静音』开关整合在一起",
+                        "原生无障碍服务与日记页联动响应 keep_muted_on_volume_down 开关",
+                        "隐藏日记卡片底部未实现的爱心图标，等待后续功能完善",
+                      ],
+                    ),
+                    _buildChangelogItem(
                       version: "v1.0.16",
                       date: "2026-08-12",
                       changes: [
@@ -1612,8 +1665,9 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                   () => showLicensePage(
                     context: context,
                     applicationName: '声物记',
-                    applicationVersion:
-                        _appVersion.isNotEmpty ? 'v$_appVersion' : null,
+                    applicationVersion: _appVersion.isNotEmpty
+                        ? 'v$_appVersion'
+                        : null,
                     applicationLegalese: '© 2026 声物记',
                     applicationIcon: Padding(
                       padding: const EdgeInsets.all(10),

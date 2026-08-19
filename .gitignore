@@ -1,4 +1,4 @@
-﻿# Flutter
+# Flutter
 .dart_tool/
 build/
 .flutter-plugins
@@ -22,13 +22,13 @@ ios/build/
 .idea/
 *.iml
 
-# 大模型文件（走 GitHub Release，不进 git）
+# 大模型文件（走 GitHub Release）
 assets/model.int8.onnx
 
 # 日志/临时
 *.log
 logs/
 build_output.log
-
-# 备份
+*.tmp
+*.stackdump
 *.bak

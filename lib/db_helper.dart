@@ -1,5 +1,7 @@
 import 'app_logger.dart';
 import 'dart:convert';
+import 'package:package_info_plus/package_info_plus.dart'; // 读取 build number 判断版本化说明卡片
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 
@@ -177,6 +179,85 @@ class DbHelper {
     }
     await batch.commit(noResult: true);
     log("[DbHelper] 已内置 ${tutorials.length} 条说明卡片");
+  }
+
+  // ====================================================================
+  // 版本化说明卡片（增量插入机制）
+  // ====================================================================
+  // 背景：_seedTutorialDiaries 只在首次建库时跑一次，老用户升级后看不到
+  //       新版本附带的新功能说明。此机制由 SplashScreen 启动时调用，
+  //       按 build number 对比 prefs 记录，为老用户补充插入新增卡片。
+  //
+  // 发布新版本附带新说明卡片时：只需在 _versionedTutorials 追加条目
+  // （key 用 pubspec.yaml 的 version: x.y.z+N 中的 build number N）。
+  //
+  // 设计：onCreate 的 8 条基础卡保持不变，v18+ 的新卡统一只走本增量通道——
+  //       新装用户 = onCreate 8 条 + 首次 seedVersionedTutorials 增量 1 条，
+  //       单一事实来源，文案不需两处维护。
+
+  /// v1.0.18(+18) 新增：上滑麦克风按钮新建文本笔记（配合 2026-08-19 上线的
+  /// 「按钮固定 + Aa 拉出反馈」上滑交互）
+  static const String _kTutorialSwipeFabText =
+      '⌨️ 上滑建文本笔记\n在日记页按住底部麦克风圆钮向上滑动，拉出「Aa」标记后松手，即刻新建一条空白文本笔记，直接打字，无需语音。';
+
+  /// 版本化说明卡片注册表：build number → 该版本新增的说明卡片文案
+  /// ⚠️ key 必须用 int 的 build number（不能用版本字符串比较：
+  ///    '1.0.9' > '1.0.17' 按字符串序为 true，会误判）
+  static const Map<int, List<String>> _versionedTutorials = {
+    18: [_kTutorialSwipeFabText], // v1.0.18：上滑麦克风新建文本笔记
+  };
+
+  /// prefs 键：已 seed 到的 build number
+  static const String _kSeedBuildKey = 'tutorial_seed_build';
+
+  /// 启动时调用（SplashScreen._doInit）：版本更新后补充插入新增的说明卡片
+  ///
+  /// 规则：
+  /// - prefs 无记录（老用户首次升到引入此机制的版本）→ 插入注册表全部条目
+  /// - prefs 有记录 → 只插入 build > 记录值 的条目（支持跨版本跳级升级）
+  /// - 已是当前版本 → 跳过（用户手动删掉卡片后同版本不会重生，
+  ///   下个大版本更新才会再出现，这是预期行为）
+  Future<void> seedVersionedTutorials() async {
+    final prefs = await SharedPreferences.getInstance();
+    final info = await PackageInfo.fromPlatform();
+    final currentBuild = int.tryParse(info.buildNumber) ?? 0;
+    final seededBuild = prefs.getInt(_kSeedBuildKey);
+    if (seededBuild != null && seededBuild >= currentBuild) return; // 已同步
+
+    final newTutorials = <String>[];
+    for (final entry in _versionedTutorials.entries) {
+      if (seededBuild == null || entry.key > seededBuild) {
+        newTutorials.addAll(entry.value);
+      }
+    }
+
+    if (newTutorials.isNotEmpty) {
+      final dbClient = await db;
+      // created_at 取 now+10s：保证排在 onCreate 那 8 条基础卡
+      // （baseTime+1~8s）之上，出现在列表最顶部；相对时间显示上无感
+      final createdAt = DateTime.now()
+          .add(const Duration(seconds: 10))
+          .toIso8601String();
+      final batch = dbClient.batch();
+      for (final content in newTutorials) {
+        batch.insert('diary', {
+          'content': content,
+          'created_at': createdAt,
+          'audio_path': null,
+          'duration': 0,
+          'is_archived': 0,
+          'exported_at': null,
+        });
+      }
+      await batch.commit(noResult: true);
+      log(
+        "[DbHelper] 版本更新（seed=$seededBuild → $currentBuild），"
+        "补充插入 ${newTutorials.length} 条说明卡片",
+      );
+    }
+
+    // 无论是否插入都更新标记（无新增卡片的版本也要推进记录值）
+    await prefs.setInt(_kSeedBuildKey, currentBuild);
   }
 
   // 插入数据

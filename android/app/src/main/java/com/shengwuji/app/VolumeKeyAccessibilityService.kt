@@ -152,9 +152,12 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
         // 如果正在录音静音中，用户按了音量减，标记为保持静音
         if (direction == AudioManager.ADJUST_LOWER) {
             val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
-            if (prefs.contains("flutter.saved_media_volume")) {
+            val keepMutedEnabled = prefs.getBoolean("flutter.keep_muted_on_volume_down", true)
+            if (keepMutedEnabled && prefs.contains("flutter.saved_media_volume")) {
                 prefs.edit().putBoolean("flutter.keep_muted", true).apply()
                 println("🔇 [Accessibility] 用户按音量减，标记保持静音")
+            } else if (!keepMutedEnabled) {
+                println("🔇 [Accessibility] 按音量减保持静音已关闭，不标记 keep_muted")
             }
         }
         println("🔑 [Accessibility] 短按手动调音量: keyCode=$keyCode")
