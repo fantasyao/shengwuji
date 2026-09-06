@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.17+17
+version: 1.1.0+21
 
 environment:
   sdk: ^3.10.3
@@ -30,6 +30,8 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_localizations:
+    sdk: flutter  # 日期转轮选择器中文文案（悬浮窗闹钟 CalendarConfirmSheet）
 
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
@@ -58,6 +60,7 @@ dependencies:
   persistent_user_dir_access_android: ^0.0.1  # SAF 持久化目录写入
   package_info_plus: ^9.0.1  # 读取应用版本号
   gal: ^2.3.1  # 保存付款码图片到相册（Pro 解锁弹窗）
+  flutter_overlay_window: ^0.5.0  # 系统级悬浮窗（闪念胶囊）
 
 dev_dependencies:
   flutter_test:

@@ -113,8 +113,7 @@ class _SplashScreenState extends State<SplashScreen> {
 
   /// 完成初始化流程（权限已获得后调用）
   Future<void> _finishInit() async {
-    // 🆕 不再在启动时加载模型，恢复延迟加载模式
-    // 模型将在用户第一次录音时由 diary_tab/record_tab 的 stopListening 加载
+    // 启动时不加载模型（延迟加载）：首次录音时由 diary_tab/record_tab 触发加载
 
     if (mounted) {
       setState(() {

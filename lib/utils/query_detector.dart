@@ -101,8 +101,7 @@ class QueryDetector {
   ///   - 命中反向查询时 isQuery=true, type=locationQuery, locationName 为位置名
   ///   - 未命中时 isQuery=false，itemName 和 locationName 均为空字符串
   ///
-  /// 关键约束：保持原有 detect() 签名向后兼容（DiaryTab 调用方只读 isQuery/itemName，
-  /// 新的 type/locationName 字段有默认值，不影响旧调用方）。
+  /// 兼容性：type/locationName 有默认值，只读 isQuery/itemName 的旧调用方不受影响
   static QueryResult detect(String text) {
     if (text.isEmpty) return const QueryResult();
 
@@ -119,7 +118,7 @@ class QueryDetector {
   /// 对单个子句跑检测逻辑（正向优先，反向兜底）
   /// 私有静态方法，仅供 detect 内部分句后调用
   static QueryResult _detectSingle(String text) {
-    // 1. 先跑正向查询（保持原有行为不变）
+    // 1. 先跑正向查询
     final forwardResult = _detectForward(text);
     if (forwardResult.isQuery) return forwardResult;
 
@@ -127,7 +126,7 @@ class QueryDetector {
     return _detectReverse(text);
   }
 
-  /// 正向查询：原有的"XX在哪里"检测逻辑（正则匹配 + 填充词剥离 + 标点清理）
+  /// 正向查询："XX在哪里" 检测逻辑（正则匹配 + 填充词剥离 + 标点清理）
   static QueryResult _detectForward(String text) {
     // 遍历所有正向模式，命中第一个返回
     for (final pattern in _patterns) {

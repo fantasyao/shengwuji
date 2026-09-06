@@ -9,7 +9,6 @@ import 'package:flutter/material.dart';
 /// - 命名按"用途"而非"颜色"，例如 positiveAccent（积极反馈背景）
 ///   而非 lightTeal（浅青色）
 /// - 一个语义槽对应一个 UI 用途，避免不同组件复用同一槽导致联动改色
-/// - 与现有硬编码颜色一对一映射，迁移期可安全共存
 @immutable
 class AppThemeExtension extends ThemeExtension<AppThemeExtension> {
   // ============ 基础语义 ============

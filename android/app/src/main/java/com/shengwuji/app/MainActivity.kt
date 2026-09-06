@@ -15,7 +15,6 @@ import android.os.Vibrator
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
-import android.media.AudioManager
 import android.provider.AlarmClock
 import android.provider.CalendarContract
 import android.view.WindowManager
@@ -27,6 +26,23 @@ class MainActivity: FlutterActivity() {
     private var flutterEngine: FlutterEngine? = null
     // 锁屏隐私保护：监听屏幕熄灭，清除 sticky 锁屏 flag + 退到后台
     private var screenOffReceiver: BroadcastReceiver? = null
+
+    companion object {
+        // 常驻 Flutter 通道引用：闹钟广播接收器（AlarmReceiver 等）没有 Activity 上下文，
+        // 响铃开始/停止时经此向 Flutter 推事件（onAlarmRinging / onAlarmStopped），
+        // 替代 Dart 侧 2 秒轮询 SharedPreferences（性能审查 Top5）。
+        // Receiver 与本 Activity 同进程（Manifest 未声明 android:process），静态可达；
+        // ⚠️ invokeMethod 必须在主线程调用（Receiver.onReceive / 超时 Handler 回调均在主线程）。
+        @Volatile
+        var flutterChannel: MethodChannel? = null
+
+        fun notifyFlutterAlarm(ringing: Boolean, alarmId: Int) {
+            flutterChannel?.invokeMethod(
+                if (ringing) "onAlarmRinging" else "onAlarmStopped",
+                mapOf("alarm_id" to alarmId)
+            )
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -71,6 +87,8 @@ class MainActivity: FlutterActivity() {
     }
 
     override fun onDestroy() {
+        // 引擎随 Activity 销毁，置空防悬挂引用（重建时 configureFlutterEngine 重新注册）
+        flutterChannel = null
         screenOffReceiver?.let {
             unregisterReceiver(it)
             screenOffReceiver = null
@@ -134,7 +152,11 @@ class MainActivity: FlutterActivity() {
 
     private fun handleShortcutIntentOnColdStart(intent: Intent?) {
         val shortcutType = extractShortcutType(intent)
-        if (shortcutType != null) {
+        if (shortcutType == "show_overlay") {
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                notifyFlutterShowOverlay()
+            }, 100)
+        } else if (shortcutType != null) {
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                 notifyFlutterShortcut(shortcutType)
             }, 100)
@@ -145,7 +167,8 @@ class MainActivity: FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         this.flutterEngine = flutterEngine
 
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
+        val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
+        channel.setMethodCallHandler { call, result ->
             when (call.method) {
                 "moveTaskToBack" -> {
                     moveTaskToBack(true)
@@ -161,7 +184,9 @@ class MainActivity: FlutterActivity() {
                     val timestamp = call.argument<Long>("timestamp") ?: 0L
                     val title = call.argument<String>("title") ?: "提醒"
                     val enableAlarm = call.argument<Boolean>("enableAlarm") ?: true
-                    val success = addCalendarEvent(timestamp, title, enableAlarm)
+                    // 日历逻辑在 CalendarEventHelper（与无障碍 Service 侧悬浮窗
+                    // 闹钟共用，见该文件头注释——两个 FlutterEngine 通道不通）
+                    val success = CalendarEventHelper.addCalendarEvent(this, timestamp, title, enableAlarm)
                     result.success(success)
                 }
                 "isAccessibilityServiceEnabled" -> {
@@ -179,33 +204,13 @@ class MainActivity: FlutterActivity() {
                     performHaptic(type)
                     result.success(true)
                 }
+                // 静音逻辑在 MediaMuteHelper（悬浮窗录音共用同一份，见该文件头注释）
                 "muteMedia" -> {
-                    val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-                    val currentVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
-                    // 保存到 SharedPreferences（与 Flutter 共享）
-                    getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
-                        .edit()
-                        .putInt("flutter.saved_media_volume", currentVolume)
-                        .putBoolean("flutter.keep_muted", false)
-                        .apply()
-                    // 静音
-                    audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, 0, 0)
-                    println("🔇 [Audio] 静音媒体: 保存音量=$currentVolume, 已设为0")
+                    MediaMuteHelper.mute(this)
                     result.success(true)
                 }
                 "restoreMedia" -> {
-                    val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
-                    val keepMuted = prefs.getBoolean("flutter.keep_muted", false)
-                    if (!keepMuted) {
-                        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-                        val savedVolume = prefs.getInt("flutter.saved_media_volume", 0)
-                        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, savedVolume, 0)
-                        println("🔇 [Audio] 恢复媒体音量: $savedVolume")
-                    } else {
-                        println("🔇 [Audio] 用户按了音量减，保持静音")
-                    }
-                    // 清理标记
-                    prefs.edit().remove("flutter.keep_muted").remove("flutter.saved_media_volume").apply()
+                    MediaMuteHelper.restore(this)
                     result.success(true)
                 }
                 "stopAlarmRingtone" -> {
@@ -225,6 +230,8 @@ class MainActivity: FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+        // 注册进静态引用：供 AlarmReceiver 等无 Activity 上下文的组件推事件
+        flutterChannel = channel
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -248,8 +255,10 @@ class MainActivity: FlutterActivity() {
 
     private fun handleShortcutIntent(intent: Intent?) {
         val shortcutType = extractShortcutType(intent)
-        if (shortcutType != null) {
-            notifyFlutterShortcut(shortcutType)
+        when (shortcutType) {
+            "show_overlay" -> notifyFlutterShowOverlay()
+            null -> Unit
+            else -> notifyFlutterShortcut(shortcutType)
         }
     }
 
@@ -272,11 +281,20 @@ class MainActivity: FlutterActivity() {
             return "quick_text_note"
         }
 
+        // 长按音量上键触发的悬浮窗快捷方式
+        if (intent.dataString == "show_overlay") {
+            return "show_overlay"
+        }
+
         // 动态快捷方式（quick_actions 插件）
         val extras = intent.extras
         if (extras != null) {
             val type = extras.getString("type")
             if (type == "action_quick_record") return "quick_record"
+            // 悬浮窗闹钟缺日历权限：无障碍 Service 拉起主 App 时携带
+            // （VolumeKeyAccessibilityService requestCalendarPermission），
+            // Dart 侧收到后自动弹系统授权框
+            if (type == "grant_calendar") return "grant_calendar"
 
             val shortcutType = extras.getString("shortcutType")
             if (shortcutType == "action_quick_record") return "quick_record"
@@ -289,6 +307,14 @@ class MainActivity: FlutterActivity() {
         flutterEngine?.let { engine ->
             MethodChannel(engine.dartExecutor.binaryMessenger, CHANNEL)
                 .invokeMethod("onShortcutLaunch", shortcutType)
+        }
+    }
+
+    private fun notifyFlutterShowOverlay() {
+        flutterEngine?.let { engine ->
+            println("🪟 [MainActivity] 通知 Flutter 显示悬浮窗")
+            MethodChannel(engine.dartExecutor.binaryMessenger, CHANNEL)
+                .invokeMethod("showOverlay", null)
         }
     }
 
@@ -464,194 +490,9 @@ class MainActivity: FlutterActivity() {
         return false
     }
 
-    /**
-     * 通过 Calendar Provider 静默写入日历事件 + 提醒
-     * 替代 ACTION_SET_ALARM，绕过三星等设备的闹钟权限限制
-     *
-     * 注意事项：
-     * 1. 必须获取有效的 CALENDAR_ID（不能硬编码 1）
-     * 2. EVENT_TIMEZONE 是必填字段
-     * 3. 提醒必须单独插入 Reminders 表
-     */
-    private fun addCalendarEvent(timestamp: Long, title: String, enableAlarm: Boolean): Boolean {
-        if (timestamp <= 0L) {
-            println("❌ [Calendar] 无效的时间戳: $timestamp")
-            return false
-        }
-
-        try {
-            // 1. 查询系统可用的日历账户
-            val calendarId = getAvailableCalendarId()
-            if (calendarId == null) {
-                println("❌ [Calendar] 未找到可用的日历账户")
-                return false
-            }
-            println("📅 [Calendar] 使用日历账户 ID: $calendarId")
-
-            // 2. 插入日历事件
-            val timeZone = TimeZone.getDefault().id
-            val endTime = timestamp + 30 * 60 * 1000L // 默认 30 分钟时长
-
-            val values = android.content.ContentValues().apply {
-                put(CalendarContract.Events.DTSTART, timestamp)
-                put(CalendarContract.Events.DTEND, endTime)
-                put(CalendarContract.Events.TITLE, title)
-                put(CalendarContract.Events.CALENDAR_ID, calendarId)
-                put(CalendarContract.Events.EVENT_TIMEZONE, timeZone)
-                // 全天事件为 0，非全天为 1（默认）
-                put(CalendarContract.Events.ALL_DAY, 0)
-                // 闹钟提醒相关的字段设为默认值
-                put(CalendarContract.Events.HAS_ALARM, if (enableAlarm) 1 else 0)
-            }
-
-            val eventUri = contentResolver.insert(CalendarContract.Events.CONTENT_URI, values)
-            if (eventUri == null) {
-                println("❌ [Calendar] 插入日历事件失败（返回 null）")
-                return false
-            }
-
-            // 3. 从返回的 URI 中提取事件 ID
-            val eventId = eventUri.lastPathSegment?.toLongOrNull()
-            if (eventId == null) {
-                println("⚠️ [Calendar] 无法解析事件 ID，事件已创建但无法添加提醒")
-                return true // 事件已创建，只是无法添加提醒
-            }
-            println("📅 [Calendar] 事件创建成功, ID: $eventId")
-
-            // 不插入 Reminders 表——响铃由 AlarmReceiver 控制，避免日历 App 弹自己的通知导致用户混淆
-
-            println("✅ [Calendar] 日历事件写入成功: $title @ $timestamp")
-
-            // 5. 同时用 AlarmManager 设置精确闹钟（持续响铃，不依赖日历通知）
-            if (enableAlarm) {
-                scheduleAlarm(timestamp, title, eventId?.toInt() ?: 0)
-            } else {
-                println("📅 [Calendar] 响铃闹钟已跳过 (enableAlarm=false)")
-            }
-
-            return true
-
-        } catch (e: SecurityException) {
-            println("❌ [Calendar] 权限不足: ${e.message}")
-            return false
-        } catch (e: Exception) {
-            println("❌ [Calendar] 写入失败: ${e.message}")
-            return false
-        }
-    }
-
-    /**
-     * 使用 AlarmManager 设置精确闹钟
-     * 到时间后触发 AlarmReceiver，播放循环闹钟响铃
-     */
-    private fun scheduleAlarm(timestamp: Long, message: String, alarmId: Int) {
-        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val intent = Intent(this, AlarmReceiver::class.java).apply {
-            putExtra("message", message)
-            putExtra("alarm_id", alarmId)
-        }
-
-        val pendingIntent = PendingIntent.getBroadcast(
-            this,
-            alarmId,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                // Android 12+：检查是否有精确闹钟权限
-                if (alarmManager.canScheduleExactAlarms()) {
-                    alarmManager.setExactAndAllowWhileIdle(
-                        AlarmManager.RTC_WAKEUP,
-                        timestamp,
-                        pendingIntent
-                    )
-                    println("🔔 [Alarm] 精确闹钟已设置 (Android 12+): $message @ $timestamp")
-                } else {
-                    // 没有精确闹钟权限，降级为非精确闹钟
-                    alarmManager.setAndAllowWhileIdle(
-                        AlarmManager.RTC_WAKEUP,
-                        timestamp,
-                        pendingIntent
-                    )
-                    println("🔔 [Alarm] 非精确闹钟已设置（无精确权限）: $message @ $timestamp")
-                }
-            } else {
-                // Android 11 及以下：直接设置精确闹钟
-                alarmManager.setExactAndAllowWhileIdle(
-                    AlarmManager.RTC_WAKEUP,
-                    timestamp,
-                    pendingIntent
-                )
-                println("🔔 [Alarm] 精确闹钟已设置: $message @ $timestamp")
-            }
-        } catch (e: SecurityException) {
-            println("⚠️ [Alarm] 设置闹钟失败（权限不足）: ${e.message}")
-            // 降级：不设闹钟，仅依赖日历提醒
-        } catch (e: Exception) {
-            println("⚠️ [Alarm] 设置闹钟失败: ${e.message}")
-        }
-    }
-
-    /**
-     * 查询系统中第一个可写入的日历账户 ID
-     * 优先选择同步账户（Google/Samsung），其次选择本地账户
-     */
-    private fun getAvailableCalendarId(): Long? {
-        // 优先查询同步账户
-        val projection = arrayOf(
-            CalendarContract.Calendars._ID,
-            CalendarContract.Calendars.ACCOUNT_NAME,
-            CalendarContract.Calendars.ACCOUNT_TYPE,
-            CalendarContract.Calendars.CALENDAR_DISPLAY_NAME,
-        )
-
-        // 先尝试查询同步的日历（Google、Samsung 账户等）
-        try {
-            var cursor = contentResolver.query(
-                CalendarContract.Calendars.CONTENT_URI,
-                projection,
-                "${CalendarContract.Calendars.SYNC_EVENTS} = 1",
-                null,
-                "${CalendarContract.Calendars._ID} ASC"
-            )
-
-            if (cursor != null && cursor.moveToFirst()) {
-                val id = cursor.getLong(cursor.getColumnIndexOrThrow(CalendarContract.Calendars._ID))
-                val name = cursor.getString(cursor.getColumnIndexOrThrow(CalendarContract.Calendars.ACCOUNT_NAME))
-                val type = cursor.getString(cursor.getColumnIndexOrThrow(CalendarContract.Calendars.ACCOUNT_TYPE))
-                println("📅 [Calendar] 找到同步日历: id=$id, account=$name, type=$type")
-                cursor.close()
-                return id
-            }
-            cursor?.close()
-
-            // 没有同步日历，查询任何可用的日历
-            cursor = contentResolver.query(
-                CalendarContract.Calendars.CONTENT_URI,
-                projection,
-                null,
-                null,
-                "${CalendarContract.Calendars._ID} ASC"
-            )
-
-            if (cursor != null && cursor.moveToFirst()) {
-                val id = cursor.getLong(cursor.getColumnIndexOrThrow(CalendarContract.Calendars._ID))
-                val name = cursor.getString(cursor.getColumnIndexOrThrow(CalendarContract.Calendars.ACCOUNT_NAME))
-                val type = cursor.getString(cursor.getColumnIndexOrThrow(CalendarContract.Calendars.ACCOUNT_TYPE))
-                println("📅 [Calendar] 找到本地日历: id=$id, account=$name, type=$type")
-                cursor.close()
-                return id
-            }
-            cursor?.close()
-        } catch (e: Exception) {
-            println("❌ [Calendar] 查询日历账户失败: ${e.message}")
-        }
-
-        return null
-    }
-
+    // 日历写入逻辑（addCalendarEvent/scheduleAlarm/getAvailableCalendarId）已抽至
+    // CalendarEventHelper——与无障碍 Service 侧悬浮窗闹钟共用；悬浮窗是独立
+    // FlutterEngine，其通道调不到本 Activity 的处理器，Service 直接调同一份实现
     // ==================== Phase 4：图标包切换 ====================
 
     /**

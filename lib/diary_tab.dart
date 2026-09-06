@@ -28,13 +28,16 @@ import 'package:external_app_launcher/external_app_launcher.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import '../models/time_entity.dart';
 import '../widgets/time_aware_text.dart';
-import '../widgets/alarm_dialog.dart';
+import '../widgets/calendar_confirm_sheet.dart';
 import '../utils/dart_chrono_parser.dart';
+import '../utils/calendar_helper.dart';
 import 'package:file_picker/file_picker.dart';
 import '../app_logger.dart';
 import 'package:persistent_user_dir_access_android/persistent_user_dir_access_android.dart';
 import '../utils/query_detector.dart';
 import '../utils/item_splitter.dart';
+import '../utils/diary_tag.dart';
+import '../utils/diary_sync_bridge.dart';
 import '../utils/waveform_extractor.dart';
 import '../widgets/item_transfer_widget.dart';
 import '../widgets/location_answer_widget.dart';
@@ -145,6 +148,11 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
   AppLifecycleState? _lastState;
   bool _wasInBackground = false; // 标记是否真正进入过后台（paused或hidden）
   DateTime? _pausedTime; // 记录进入后台的时间戳，用于判断短时间后台恢复
+
+  /// 上次同步时见到的 diary 变更计数（见 DiarySyncBridge）
+  /// -1 = 尚未记录过（首次 resume 无条件刷新一次，兜底所有历史遗漏）
+  int _lastSeenDiaryCounter = -1;
+
   static const Duration _shortBackgroundThreshold = Duration(
     minutes: 10,
   ); // 短时间后台的阈值
@@ -177,10 +185,9 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
   final Map<int, List<double>> _peaksCache = {};
   final Set<int> _parsingPeaksIds = {};
 
-  // 使用单例管理器
+  // 使用单例管理器（识别链路已迁 worker isolate，门面 transcribe()/warmup()，
+  // 详见 docs/architecture/speech-recognition.md「识别 worker isolate 架构」）
   final _recognizerManager = RecognizerSingleton.instance;
-  sherpa_onnx.OfflineRecognizer? get _recognizer =>
-      _recognizerManager.recognizer;
 
   List<double> _audioBuffer = [];
   // 正在转写的 diary id 集合（内存态，进程重启后清空，所有占位统一显示"可重试"）
@@ -231,6 +238,13 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
   // --- 列表与搜索相关变量 ---
   List<Map<String, dynamic>> _diaryList = [];
   final TextEditingController _searchController = TextEditingController();
+
+  // --- 搜索防抖（性能审查 Top3）---
+  // 原先每敲一键 = 一次 LIKE 查库 + 清空四级缓存 + 全部可见卡片重新解析
+  // （波纹解析还要重读音频文件）。250ms 防抖合并连续输入；
+  // 搜索只是过滤可见行、不增删改数据 → 刷新时不清解析缓存（见 refreshList）。
+  Timer? _searchDebounce;
+  static const Duration _searchDebounceDelay = Duration(milliseconds: 250);
 
   // --- 编辑相关变量 ---
   final TextEditingController _editController =
@@ -373,6 +387,13 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
       });
     }
 
+    // 悬浮窗（overlay engine）写入 diary 后主 App 不知情（双 isolate 无推送），
+    // 恢复前台时 reload prefs 比对变更计数，变了才 refreshList——无变更零开销。
+    // 独立于 isReady：模型未就绪时也要刷新（键盘重试同款独立块模式）
+    if (_wasInBackground && state == AppLifecycleState.resumed) {
+      _syncDiaryChangesFromOverlay();
+    }
+
     // 只在从后台恢复到前台时才预热（真正的后台恢复，而非通知栏操作）
     // 条件：经历过后台 + 现在恢复到resumed + 引擎已就绪
     if (_wasInBackground && state == AppLifecycleState.resumed && isReady) {
@@ -432,6 +453,7 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
     _lastState = state;
   }
 
+  // 历史方案：本地实现，与 lib/utils/wav_file.dart 同构（后续可选迁移）
   /// 把 PCM16 LE 的 bytes 编成标准 WAV（16-bit, mono）并返回文件路径
   Future<String> _writeWavFile(
     Uint8List pcm16Bytes, {
@@ -502,11 +524,7 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
   /// 关键：暂停后继续用 `resume()` 不重头；切卡时 `stop()` + `play()`。
   /// 签名加可选 `{int? durationSec}`：DB 字段做初始 duration max，
   /// 等 onDurationChanged 流精修（WAV 可能不触发 duration 流）。
-  Future<void> _togglePlay(
-    int id,
-    String? path, {
-    int? durationSec,
-  }) async {
+  Future<void> _togglePlay(int id, String? path, {int? durationSec}) async {
     if (path == null) return;
     try {
       if (_playingDiaryId == id && _isPlaying) {
@@ -598,8 +616,9 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
   void _startPosTicker() {
     _posTicker?.cancel();
     _posTicker = Timer.periodic(const Duration(milliseconds: 50), (_) {
-      _playbackNotifier.value =
-          _playbackNotifier.value.copyWith(position: _computedPosition);
+      _playbackNotifier.value = _playbackNotifier.value.copyWith(
+        position: _computedPosition,
+      );
     });
   }
 
@@ -638,6 +657,7 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
   @override
   void dispose() {
     _muteHintTimer?.cancel();
+    _searchDebounce?.cancel(); // 搜索防抖 Timer（防 dispose 后回调）
     // 移除生命周期监听
     WidgetsBinding.instance.removeObserver(this);
     _audioRecorder.dispose();
@@ -663,6 +683,7 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
       audioPath: null,
       duration: null,
     );
+    DiarySyncBridge.bump();
     log("📝 [Diary] 新建空白文本笔记, id=$newId");
     await refreshList();
     if (mounted) {
@@ -680,10 +701,8 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
       return;
     }
 
-    // 来源前缀功能已移除（2026-08-11）：Android 系统分享面板（ChooserActivity）会刻意抹空
-    // 来源包名，导致经分享面板的 App（酷安/微信/QQ 等绝大多数）拿不到来源，开关时灵时不灵
-    // 体验割裂，故撤掉整个"展示分享来源"开关。source 参数仍由原生层传入并记录在日志里，
-    // 便于将来诊断/恢复，但不再用于拼接正文。
+    // 不拼接来源前缀：经系统分享面板转发的 App 会被 Android 抹空来源包名，
+    // 加了也时灵时不灵。source 仅记录日志，便于将来诊断。
     final String finalContent = trimmedText;
 
     final newId = await widget.dbHelper.insertDiary(
@@ -691,13 +710,14 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
       audioPath: null,
       duration: null,
     );
+    DiarySyncBridge.bump();
     log("📝 [Diary] 保存分享文本笔记, id=$newId, source=$source");
     await refreshList();
 
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("已保存为文本笔记")),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text("已保存为文本笔记")));
     }
   }
 
@@ -714,11 +734,12 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
 
   // 公开方法：供 MainScaffold 调用，按需初始化引擎
   Future<void> refreshEngine() async {
-    // 🆕 不再自动加载模型
-    if (isReady && _recognizerManager.isReady) return;
+    // ⚠️ 热切换守卫：判 isServingLatestModel（worker 是否在服务最新路径）而非 isReady——
+    // 导入新模型后旧模型还活着 isReady 恒 true，会短路掉新模型加载（详见 speech-recognition.md）
+    if (isReady && _recognizerManager.isServingLatestModel) return;
 
-    // 🆕 启动页已完成模型加载，直接同步状态（跳过重复加载）
-    if (_recognizerManager.isReady) {
+    // 启动页已完成模型加载且服务最新路径：只同步状态，不重复加载
+    if (_recognizerManager.isServingLatestModel) {
       _updateState(() {
         isReady = true;
       });
@@ -742,7 +763,14 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> refreshList() async {
+  /// 重新查库并刷新列表。
+  ///
+  /// [clearParseCaches]：是否清空四个懒加载解析缓存（时间实体/查询答案/
+  /// 物品转存/响度波纹）。缓存按 diaryId 键控，只在对应日记内容或关联数据
+  /// 变化后才需要失效：
+  /// - 数据增删改后的刷新（录音完成/编辑/删除/悬浮窗同步等）→ true（默认）
+  /// - 纯过滤性刷新（搜索）→ false：清了只会让所有可见卡片重新解析 + 重读音频
+  Future<void> refreshList({bool clearParseCaches = true}) async {
     final data = await widget.dbHelper.getDiaries(
       keyword: _searchController.text,
     );
@@ -753,6 +781,8 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
         _isLoadingList = false;
       });
     }
+
+    if (!clearParseCaches) return;
 
     // 清除时间实体缓存
     _timeEntitiesCache.clear();
@@ -765,6 +795,24 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
     // 清除响度波纹缓存（与上述缓存同步：录新日记/下拉刷新后波纹重新提取）
     _peaksCache.clear();
     _parsingPeaksIds.clear();
+  }
+
+  /// 悬浮窗（overlay engine）侧 diary 变更的无感同步检查。
+  /// 双 isolate 无跨 engine 推送，靠 prefs 计数器桥（DiarySyncBridge）：
+  /// 变了才 refreshList（只重查库 + setState 换列表 + 清懒加载缓存，
+  /// 不触碰录音状态机，也不影响 ModalBottomSheet 编辑抽屉的独立子树）
+  Future<void> _syncDiaryChangesFromOverlay() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.reload(); // overlay engine 写入，必须 reload（项目惯例）
+      final counter = DiarySyncBridge.current(prefs);
+      if (counter == _lastSeenDiaryCounter) return; // 无变更
+      _lastSeenDiaryCounter = counter;
+      log('🔄 [DiaryTab] 检测到悬浮窗侧 diary 变更（counter=$counter），无感刷新列表');
+      await refreshList();
+    } catch (e) {
+      log('⚠️ [DiaryTab] 悬浮窗变更同步检查失败: $e');
+    }
   }
 
   /// 导出日记为 Markdown 文件
@@ -1102,6 +1150,7 @@ $content
 
     // 3. 删除数据库记录
     await widget.dbHelper.deleteDiary(diaryId);
+    DiarySyncBridge.bump();
 
     // 4. 删除对应的录音文件（复用 _deleteItem 的清理模式）
     if (audioPath != null && audioPath.isNotEmpty) {
@@ -1162,30 +1211,6 @@ $content
     );
   }
 
-  /// 从日记内容中剥离用户点击的时间子串，得到动作内容
-  /// 用于日历事件标题——时间信息已通过 timestamp 传递，标题无需重复
-  /// 例：「今天晚上十二点提醒我去睡觉」→「提醒我去睡觉」
-  /// 例：「下午3点」→ 剥离后为空 → 回退用原文「下午3点」
-  String _extractActionContent(String content, TimeEntity entity) {
-    if (content.isEmpty) return content;
-    // 防御：start/end 必须在合法区间（解析器理论上保证，双保险）
-    if (entity.start < 0 ||
-        entity.end > content.length ||
-        entity.start >= entity.end) {
-      return content;
-    }
-    final before = content.substring(0, entity.start);
-    final after = content.substring(entity.end);
-    String remaining = before + after;
-    // 去掉首尾中英文标点和空白（剥离后可能留下孤立逗号/顿号）
-    remaining = remaining.replaceAll(RegExp(r'^[\s，,。.、；;：:！!？?]+'), '');
-    remaining = remaining.replaceAll(RegExp(r'[\s，,。.、；;：:！!？?]+$'), '');
-    // 合并中间连续空格（如「提醒我 明天8点 起床」→「提醒我 起床」中间留有空格）
-    remaining = remaining.replaceAll(RegExp(r'\s+'), ' ').trim();
-    // 剥离后为空（原文只有时间表达式）→ 回退用原文，避免空标题
-    return remaining.isEmpty ? content : remaining;
-  }
-
   /// 处理时间实体点击 - 设置闹钟
   Future<void> _handleTimeEntityTap(int diaryId, TimeEntity entity) async {
     if (entity.dateTime == null) {
@@ -1203,13 +1228,26 @@ $content
     );
 
     // 剥离时间子串，得到干净的日历事件标题（所见即所得：
-    // AlarmDialog 显示的内容 = 写入日历的 title = 通知栏响铃显示的内容）
-    final actionContent = _extractActionContent(diary['content'] ?? '', entity);
+    // 弹层显示的内容 = 写入日历的 title = 通知栏响铃显示的内容）。
+    // 剥离逻辑与悬浮窗闹钟共用 CalendarHelper（悬浮窗 _onCardAlarm 同款）
+    final actionContent = CalendarHelper.buildEventTitle(
+      diary['content'] ?? '',
+      entity,
+    );
 
-    final result = await AlarmDialog.show(context, entity, actionContent);
+    // 与悬浮窗闹钟按钮同一个确认弹层：转轮预填识别结果、确认前可调
+    //（识别结果只定转轮初始位置，绝不直接定死）。主 App 有 Activity，
+    // alarmAvailable 保持 true，响铃开关可用，通知权限在确认后按需请求。
+    final result = await showCalendarConfirmSheet(
+      context,
+      eventTitle: actionContent,
+      initialTime: entity.dateTime!,
+      recognizedPhrase: entity.text,
+    );
 
-    if (result?.confirmed == true) {
-      final enableAlarm = result!.enableAlarm;
+    if (result != null) {
+      final targetTime = result.time;
+      final enableAlarm = result.enableAlarm;
 
       // 先请求通知权限（Android 13+ 通知栏响铃停止按钮必需）
       // 仅在用户开启响铃闹钟时请求
@@ -1226,7 +1264,7 @@ $content
                 ),
                 backgroundColor: AppThemeExtension.of(
                   context,
-                ).warningText, // 原 Colors.orange
+                ).warningText,
                 duration: Duration(seconds: 3),
               ),
             );
@@ -1248,7 +1286,7 @@ $content
               ),
               backgroundColor: AppThemeExtension.of(
                 context,
-              ).warningText, // 原 Colors.orange
+              ).warningText,
               duration: Duration(seconds: 3),
             ),
           );
@@ -1259,7 +1297,7 @@ $content
       final channel = const MethodChannel('com.shengwuji.app/app');
       try {
         final success = await channel.invokeMethod('addCalendarEvent', {
-          'timestamp': entity.dateTime!.millisecondsSinceEpoch,
+          'timestamp': targetTime.millisecondsSinceEpoch,
           'title': actionContent,
           'enableAlarm': enableAlarm,
         });
@@ -1276,7 +1314,7 @@ $content
                   ? AppThemeExtension.of(context).positiveText
                   : AppThemeExtension.of(
                       context,
-                    ).dangerAccent, // 原 Colors.green / Colors.red
+                    ).dangerAccent,
               duration: Duration(seconds: 3),
             ),
           );
@@ -1305,7 +1343,8 @@ $content
     log(
       "🔍 [Diary] initEngine: 入口, isReady=$isReady, isProcessing=$isProcessing",
     );
-    if (isReady)
+    // ⚠️ 热切换：加"服务最新路径"条件（同 refreshEngine），模型变了放行让 initialize() 热切换
+    if (isReady && _recognizerManager.isServingLatestModel)
       return; // ⚠️ 延迟加载模式下不检查 isProcessing（stopListening 会先设 isProcessing=true 再调此方法）
 
     // 检查权限
@@ -1334,21 +1373,11 @@ $content
 
   // 预热引擎：执行一次空识别，避免第一次使用时卡顿
   Future<void> _warmupEngine() async {
-    if (_recognizer == null) return;
+    // worker 内做 0.1s 静音 decode（幂等）；不要改回主 isolate 同步 decode（阻塞 UI）
+    if (!_recognizerManager.isReady) return;
 
     try {
-      // 创建一个空的音频流（0.1秒的静音）
-      final sampleRate = 16000;
-      final silentSamples = List.filled(sampleRate ~/ 10, 0.0); // 0.1秒静音
-
-      final stream = _recognizer!.createStream();
-      stream.acceptWaveform(
-        samples: Float32List.fromList(silentSamples),
-        sampleRate: sampleRate,
-      );
-      _recognizer!.decode(stream);
-      _recognizer!.getResult(stream);
-      stream.free();
+      await _recognizerManager.warmup();
 
       log("日记引擎预热完成");
     } catch (e) {
@@ -1383,6 +1412,27 @@ $content
         );
       }
       return;
+    }
+
+    // 麦克风互斥守卫（第三道）：悬浮窗语音速记录音中，主 App 再开录音会被
+    // Android 10+ 并发采集策略静默一路。跨 engine prefs 内存缓存隔离，必须 reload 后读落盘值
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.reload();
+      if (prefs.getBool('is_recording') == true) {
+        log("🔍 [Diary] startListening: 悬浮窗正在录音，拒绝开新录音（麦克风互斥）");
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('悬浮窗正在录音，请先结束'),
+              duration: Duration(seconds: 2),
+            ),
+          );
+        }
+        return;
+      }
+    } catch (e) {
+      log("🔍 [Diary] startListening: 读取悬浮窗录音状态失败（不阻塞本次录音）: $e");
     }
 
     // 如果是锁定模式，设置标志并启用 Wakelock
@@ -1427,7 +1477,6 @@ $content
       return;
     }
 
-    // ... 原有的录音逻辑 ...
     // 权限授予后，检查是否已被 stopListening 中断（权限弹窗可能打断了长按手势）
     if (myGeneration != _operationGeneration || isProcessing) {
       log(
@@ -1552,10 +1601,9 @@ $content
       log("停止录音失败: $e");
     }
 
-    // === 阶段2.5：先落盘 WAV + 写占位日记拿 id（防止转写崩溃导致录音丢失） ===
-    // 上下游：原设计把 WAV 落盘 + insertDiary 放在识别后（_processRecognizedText 内），
-    // 长录音 VAD 识别耗时数十秒，期间崩溃 = 录音+记录全丢。现在前置到识别前，
-    // 转写只是 updateDiary 回填 content，失败保留占位（content=''），用户可点"再次转写"
+    // === 阶段2.5：先落盘 WAV + 写占位日记拿 id，再识别（防转写崩溃丢录音） ===
+    // 长录音 VAD 识别耗时数十秒，识别前置落盘可保底；转写只是 updateDiary 回填 content，
+    // 失败保留占位（content=''），用户可点"再次转写"
     int? pendingDiaryId;
     try {
       final pcmBytes = _pcmBuilder.toBytes();
@@ -1569,9 +1617,8 @@ $content
           audioPath: wavPath,
           duration: _recordingDurationInSeconds,
         );
-        AppLogger.appLog(
-          '💾 [Diary] 占位入库 id=$pendingDiaryId wav=$wavPath',
-        );
+        DiarySyncBridge.bump();
+        AppLogger.appLog('💾 [Diary] 占位入库 id=$pendingDiaryId wav=$wavPath');
       }
     } catch (e) {
       log('阶段2.5 落盘失败: $e');
@@ -1583,8 +1630,7 @@ $content
     }
 
     // === 阶段3：先播放转圈动画（避免模型加载阻塞动画） ===
-    // 上下游：原设计把模型加载放在 delay 之前，native 同步加载会卡住橙色转圈
-    // 重排后先 delay 让用户看到完整动画，再做模型加载（UI 可能卡顿但关键视觉已演完）
+    // 模型加载是 native 同步调用会卡住动画，故先 delay 演完动画再加载
     if (isLongRecording) {
       // 长语音：1.5秒动画
       await Future.delayed(const Duration(milliseconds: 1500));
@@ -1707,9 +1753,7 @@ $content
         await _processRecognizedText(rawText, diaryId: diaryId);
       } else {
         // 识别为空：保留占位（diaryId 非空时占位行已存在）
-        AppLogger.appLog(
-          'ℹ️ [Diary] 识别为空, 保留占位（diaryId=$diaryId）',
-        );
+        AppLogger.appLog('ℹ️ [Diary] 识别为空, 保留占位（diaryId=$diaryId）');
       }
     } catch (e) {
       log("日记识别出错: $e");
@@ -1778,6 +1822,12 @@ $content
       //    （C++ 源码注释：Please don't use a very large n.）
       //    bufferSizeInSeconds:30 不是元凶——CircularBuffer 自动扩容不丢数据。
       const int chunkSize = 512; // = Silero v4 windowSize（16kHz 固定）
+      // ⚠️ 喂 VAD 是同步紧循环，60s 音频累计阻塞主 isolate 几百 ms~2s；
+      // 每喂 200 窗口（≈6.4s 音频）用 Future.delayed(Duration.zero) 走事件队列
+      // 真正让出一次事件循环（循环里的 await 只让出 microtask，帧事件插不进来）。
+      // （record_tab 搬家模式不需要：流式 PCM 回调天然逐次让出）
+      const int vadYieldEveryWindows = 200;
+      int fedWindows = 0;
       for (int i = 0; i < samples.length; i += chunkSize) {
         final end = min(i + chunkSize, samples.length);
         final chunk = Float32List.fromList(samples.sublist(i, end));
@@ -1786,6 +1836,10 @@ $content
           vad: VadSingleton.instance.vad!,
           texts: texts,
         );
+        if (++fedWindows >= vadYieldEveryWindows) {
+          fedWindows = 0;
+          await Future.delayed(Duration.zero);
+        }
       }
       // 3. flush 强制输出尾部最后一段
       VadSingleton.instance.vad!.flush();
@@ -1813,14 +1867,7 @@ $content
       AppLogger.appLog('❌ [Diary] 长录音切分失败: $e');
       // 兜底：失败时退回整段识别（与原行为一致）
       if (samples.isEmpty) return '';
-      final stream = _recognizer!.createStream();
-      try {
-        stream.acceptWaveform(samples: samples, sampleRate: 16000);
-        _recognizer!.decode(stream);
-        return _recognizer!.getResult(stream).text;
-      } finally {
-        stream.free();
-      }
+      return _recognizeSamplesToText(samples);
     } finally {
       // 5. 释放 VAD（与搬家模式 _exitMoveMode 同构，防 native 内存泄漏）
       VadSingleton.instance.dispose();
@@ -1846,18 +1893,10 @@ $content
   }
 
   /// 单段 PCM 识别为纯文本（只识别不保存，与录入页搬家模式 _recognizeAndSave 不同）
-  /// _recognizer 为 null 时返回空字符串（保守处理，调用方负责 fallback）
+  /// 引擎未就绪（isReady=false）时返回空字符串（保守处理，调用方负责 fallback）
   Future<String> _recognizeSamplesToText(Float32List samples) async {
-    final recognizer = _recognizer;
-    if (recognizer == null) return '';
-    final stream = recognizer.createStream();
-    try {
-      stream.acceptWaveform(samples: samples, sampleRate: 16000);
-      recognizer.decode(stream);
-      return recognizer.getResult(stream).text;
-    } finally {
-      stream.free();
-    }
+    if (!_recognizerManager.isReady) return '';
+    return _recognizerManager.transcribe(samples);
   }
 
   /// 处理已识别文本：热词纠错 → 清单检测 → 入库
@@ -1884,6 +1923,7 @@ $content
         if (diaryId != null) {
           // 占位行已带真实 audio_path + duration，清单也受崩溃保护
           await widget.dbHelper.updateDiary(diaryId, markdownContent);
+          DiarySyncBridge.bump();
           AppLogger.appLog(
             '📋 [Diary] 清单回填: ${listResult.items.length}条 - $text (id=$diaryId)',
           );
@@ -1894,6 +1934,7 @@ $content
             audioPath: null,
             duration: 0,
           );
+          DiarySyncBridge.bump();
           AppLogger.appLog(
             '📋 [Diary] 清单识别: ${listResult.items.length}条 - $text',
           );
@@ -1909,6 +1950,7 @@ $content
       if (diaryId != null) {
         // 占位已入库：updateDiary 回填 content（WAV 已在阶段 2.5 落盘）
         await widget.dbHelper.updateDiary(diaryId, text);
+        DiarySyncBridge.bump();
         AppLogger.appLog('💾 [Diary] 回填日记: $text (id=$diaryId)');
       } else {
         // 兜底：占位落盘失败的边界场景，保留老的"先写盘再 insertDiary"逻辑
@@ -1925,6 +1967,7 @@ $content
               audioPath: wavPath,
               duration: _recordingDurationInSeconds,
             );
+            DiarySyncBridge.bump();
             AppLogger.appLog('💾 [Diary] 保存日记: $text');
           } else {
             // 没有采集到原始 bytes（异常情况），仍然保存文字
@@ -1933,6 +1976,7 @@ $content
               audioPath: null,
               duration: _recordingDurationInSeconds,
             );
+            DiarySyncBridge.bump();
           }
         } catch (e) {
           // 出错也不要阻塞：保存文字并记录日志
@@ -1942,6 +1986,7 @@ $content
             audioPath: null,
             duration: _recordingDurationInSeconds,
           );
+          DiarySyncBridge.bump();
         }
       }
       // 震动移到外部处理，避免阻塞动画
@@ -2017,9 +2062,9 @@ $content
         log('再次转写：模型加载失败: $e');
         if (mounted) {
           widget.onLoadingChanged?.call(false);
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('模型加载失败: $e')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('模型加载失败: $e')));
         }
         return;
       } finally {
@@ -2027,9 +2072,9 @@ $content
       }
       if (!isReady) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('⚠️ 模型未就绪，请稍后重试')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('⚠️ 模型未就绪，请稍后重试')));
         }
         return;
       }
@@ -2048,9 +2093,9 @@ $content
         // 异常：文件太短，没有有效 PCM
         AppLogger.appLog('⚠️ [Diary] 再次转写：WAV 过短 (${bytes.length}B), id=$id');
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('录音文件异常，无法转写')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('录音文件异常，无法转写')));
         }
         return;
       }
@@ -2073,9 +2118,9 @@ $content
       } else {
         AppLogger.appLog('ℹ️ [Diary] 再次转写：识别为空, 保留占位 id=$id');
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('识别为空，录音已保留，可重试')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('识别为空，录音已保留，可重试')));
         }
       }
       await refreshList();
@@ -2083,9 +2128,9 @@ $content
       log('再次转写失败: $e');
       AppLogger.appLog('❌ [Diary] 再次转写失败 id=$id: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('转写失败，录音已保留，可重试')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('转写失败，录音已保留，可重试')));
       }
     } finally {
       _transcribingIds.remove(id);
@@ -2101,7 +2146,8 @@ $content
     try {
       final prefs = await SharedPreferences.getInstance();
       // 检查「按音量减保持静音」总开关
-      final keepMutedEnabled = prefs.getBool('keep_muted_on_volume_down') ?? true;
+      final keepMutedEnabled =
+          prefs.getBool('keep_muted_on_volume_down') ?? true;
       if (!keepMutedEnabled) return;
       // 检查静音提示子开关
       final hintEnabled = prefs.getBool('mute_hint_enabled') ?? true;
@@ -2116,7 +2162,7 @@ $content
               style: TextStyle(color: ext.textPrimary),
             ),
             duration: const Duration(milliseconds: 1800),
-            backgroundColor: ext.surface, // 原 Color(0xE6323232) SnackBar 背景
+            backgroundColor: ext.surface,
             behavior: SnackBarBehavior.floating,
             shape: const RoundedRectangleBorder(
               borderRadius: BorderRadius.all(Radius.circular(20)),
@@ -2149,7 +2195,7 @@ $content
                 ),
                 duration: const Duration(milliseconds: 1500),
                 backgroundColor:
-                    ext2.surface, // 原 Color(0xE6323232) SnackBar 背景
+                    ext2.surface,
                 behavior: SnackBarBehavior.floating,
                 shape: const RoundedRectangleBorder(
                   borderRadius: BorderRadius.all(Radius.circular(20)),
@@ -2180,6 +2226,7 @@ $content
 
     // 2. 删除数据库记录
     await widget.dbHelper.deleteDiary(id);
+    DiarySyncBridge.bump();
 
     // 3. 删除对应的录音文件（占位日记跳过：plan R1）
     if (audioPath != null && audioPath.isNotEmpty && content.isNotEmpty) {
@@ -2192,9 +2239,7 @@ $content
         // 文件删除失败不影响主流程，仅记录日志
         log('删除录音文件失败: $e');
       }
-    } else if (audioPath != null &&
-        audioPath.isNotEmpty &&
-        content.isEmpty) {
+    } else if (audioPath != null && audioPath.isNotEmpty && content.isEmpty) {
       log('R1: 占位日记 id=$id 删除：保留 audio 文件 $audioPath');
       AppLogger.appLog('ℹ️ [Diary] R1 占位删除保留 audio: id=$id path=$audioPath');
     }
@@ -2206,7 +2251,7 @@ $content
         SnackBar(
           content: Text("日记已删除", style: TextStyle(color: ext.textPrimary)),
           duration: const Duration(milliseconds: 1500),
-          backgroundColor: ext.surface, // 原 Color(0xCC323232) SnackBar 背景
+          backgroundColor: ext.surface,
           behavior: SnackBarBehavior.floating,
           shape: const RoundedRectangleBorder(
             borderRadius: BorderRadius.all(Radius.circular(20)),
@@ -2230,6 +2275,7 @@ $content
 
     // 2. 归档数据库记录
     await widget.dbHelper.archiveDiary(id);
+    DiarySyncBridge.bump();
 
     // 3. 删除对应的录音文件（占位日记跳过：plan R1）
     if (audioPath != null && audioPath.isNotEmpty && content.isNotEmpty) {
@@ -2242,9 +2288,7 @@ $content
         // 文件删除失败不影响主流程，仅记录日志
         log('删除录音文件失败: $e');
       }
-    } else if (audioPath != null &&
-        audioPath.isNotEmpty &&
-        content.isEmpty) {
+    } else if (audioPath != null && audioPath.isNotEmpty && content.isEmpty) {
       log('R1: 占位日记 id=$id 归档：保留 audio 文件 $audioPath');
       AppLogger.appLog('ℹ️ [Diary] R1 占位归档保留 audio: id=$id path=$audioPath');
     }
@@ -2256,7 +2300,7 @@ $content
         SnackBar(
           content: Text("日记已归档", style: TextStyle(color: ext.textPrimary)),
           duration: const Duration(milliseconds: 1500),
-          backgroundColor: ext.surface, // 原 Color(0xCC323232) SnackBar 背景
+          backgroundColor: ext.surface,
           behavior: SnackBarBehavior.floating,
           shape: const RoundedRectangleBorder(
             borderRadius: BorderRadius.all(Radius.circular(20)),
@@ -2270,6 +2314,7 @@ $content
   void _restoreItem(int id) async {
     _haptic('tick');
     await widget.dbHelper.restoreDiary(id);
+    DiarySyncBridge.bump();
     refreshList();
 
     if (mounted) {
@@ -2411,7 +2456,7 @@ $content
             Icon(
               Icons.info_outline,
               color: ext.textOnPrimary,
-            ), // 原 Colors.white
+            ),
             const SizedBox(width: 10),
             Expanded(
               child: Text(
@@ -2421,7 +2466,7 @@ $content
             ),
           ],
         ),
-        backgroundColor: ext.fabProcessing, // 原 Colors.orangeAccent 启动失败提示
+        backgroundColor: ext.fabProcessing,
         duration: const Duration(seconds: 3),
       ),
     );
@@ -2474,7 +2519,7 @@ $content
           child: Container(
             height: targetHeight,
             decoration: BoxDecoration(
-              color: ext.cardBackground, // 原 Colors.white 编辑抽屉背景
+              color: ext.cardBackground,
               borderRadius: const BorderRadius.vertical(
                 top: Radius.circular(20),
               ),
@@ -2490,7 +2535,7 @@ $content
                   decoration: BoxDecoration(
                     color: ext.textHint.withValues(
                       alpha: 0.3,
-                    ), // 原 Colors.grey[300] 拖拽指示条
+                    ),
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),
@@ -2524,6 +2569,7 @@ $content
                             if (isNewEmptyNote &&
                                 _editController.text.trim().isEmpty) {
                               widget.dbHelper.deleteDiary(id);
+                              DiarySyncBridge.bump();
                               refreshList();
                             }
                             // 🔒 锁屏隐私保护：编辑面板关闭时**不**清 flag（与 stopListening 一致），
@@ -2544,6 +2590,7 @@ $content
                               return;
                             }
                             await widget.dbHelper.updateDiary(id, newContent);
+                            DiarySyncBridge.bump();
                             refreshList();
                             // 🔒 锁屏隐私保护：编辑面板关闭时**不**清 flag（与 stopListening 一致），
                             // 由 ACTION_SCREEN_OFF 接收器统一负责
@@ -2567,7 +2614,7 @@ $content
                                       ),
                                       decoration: BoxDecoration(
                                         color: ext
-                                            .primary, // 原 Colors.teal 保存成功提示背景
+                                            .primary,
                                         borderRadius: BorderRadius.circular(24),
                                         boxShadow: [
                                           BoxShadow(
@@ -2584,7 +2631,7 @@ $content
                                           "保存成功",
                                           style: TextStyle(
                                             color: ext
-                                                .textOnPrimary, // 原 Colors.white
+                                                .textOnPrimary,
                                             fontSize: 14,
                                             fontWeight: FontWeight.w500,
                                           ),
@@ -2601,9 +2648,9 @@ $content
                             }
                           },
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: ext.primary, // 原 Colors.teal
+                            backgroundColor: ext.primary,
                             foregroundColor:
-                                ext.textOnPrimary, // 原 Colors.white
+                                ext.textOnPrimary,
                           ),
                           child: const Text("保存"),
                         ),
@@ -2640,6 +2687,7 @@ $content
     }
     final newContent = lines.join('\n');
     widget.dbHelper.updateDiary(diaryId, newContent);
+    DiarySyncBridge.bump();
     _haptic('click'); // 勾选触感反馈
     setState(() {
       final idx = _diaryList.indexWhere((d) => d['id'] == diaryId);
@@ -2670,6 +2718,9 @@ $content
     // 获取日记ID和内容
     final diaryId = item['id'] as int;
     final content = item['content'] as String;
+    // 标注小色点（悬浮窗标注的 tag 落库在 diary.tag 列；主 App 只显示
+    // 8dp 色点标记不改卡片背景，色映射与悬浮窗共用 DiaryTag.colors）
+    final tagColor = DiaryTag.colorOf(item['tag'] as String?);
 
     // 首次显示时触发时间实体解析
     if (!_timeEntitiesCache.containsKey(diaryId) &&
@@ -2723,6 +2774,18 @@ $content
           padding: const EdgeInsets.only(bottom: 6),
           child: Row(
             children: [
+              // 标注小色点（tag 非空才渲染；归档卡也显示，标记不随归档消失）
+              if (tagColor != null) ...[
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: tagColor,
+                  ),
+                ),
+                const SizedBox(width: 6),
+              ],
               Text(
                 dateStr,
                 style: TextStyle(fontSize: 12, color: ext.textHint),
@@ -2758,9 +2821,7 @@ $content
                 const SizedBox(width: 8),
                 Flexible(
                   child: Text(
-                    _isTranscribing(diaryId)
-                        ? '正在转写…'
-                        : '转写未完成，点击右上角 ⟳ 重试',
+                    _isTranscribing(diaryId) ? '正在转写…' : '转写未完成，点击右上角 ⟳ 重试',
                     style: TextStyle(fontSize: 14, color: ext.textHint),
                   ),
                 ),
@@ -2783,7 +2844,7 @@ $content
               height: 1.6,
               color: isArchived
                   ? ext.textHint
-                  : ext.textPrimary, // 原 Colors.grey / Color(0xFF1E293B)
+                  : ext.textPrimary,
               decoration: isArchived ? TextDecoration.lineThrough : null,
             ),
           )
@@ -2796,7 +2857,7 @@ $content
               height: 1.6,
               color: isArchived
                   ? ext.textHint
-                  : ext.textPrimary, // 原 Colors.grey / Color(0xFF1E293B)
+                  : ext.textPrimary,
               decoration: isArchived ? TextDecoration.lineThrough : null,
             ),
             onTimeTap: (entity) => _handleTimeEntityTap(diaryId, entity),
@@ -2829,130 +2890,117 @@ $content
         Row(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-                // 左侧：播放/暂停 + 进度条 + 响度波纹（取代原圆形大按钮）
-                // 仅对有 audio_path 且未归档的卡片渲染；否则用 Spacer 占位保持右对齐
-                if (item['audio_path'] != null && !isArchived)
-                  Expanded(
-                    child: ValueListenableBuilder<PlaybackState>(
-                      valueListenable: _playbackNotifier,
-                      builder: (ctx, state, _) {
-                        final isActive = state.id == item['id'];
-                        return DiaryPlayBar(
-                          isActive: isActive,
-                          position: isActive ? state.position : Duration.zero,
-                          duration: isActive
-                              ? state.duration
-                              : Duration(
-                                  seconds: (item['duration'] as int?) ?? 0,
-                                ),
-                          isPlaying: isActive && state.playing,
-                          peaks: peaks,
-                          onSeek: (pos) => _seekTo(item['id'], pos),
-                          onTogglePlay: () => _togglePlay(
-                            item['id'],
-                            item['audio_path'],
-                            durationSec: (item['duration'] as int?) ?? 0,
-                          ),
-                          onHapticTick: () => _haptic('tick'),
-                        );
-                      },
-                    ),
-                  )
-                else
-                  const Spacer(),
-                // 重试按钮：任何有 audio_path 且文件存在的日记都显示
-                // （占位日记 + 已识别/识别失败的日记都可重新转写，覆盖当前 content）
-                // 转写中变灰禁用（文字区已有"正在转写…"提示，按钮不再转圈，保持 40×40 占位）
-                if (_hasAudioFile(item)) ...[
-                  const SizedBox(width: 8),
-                  SizedBox(
-                    width: 40,
-                    height: 40,
-                    child: IconButton(
-                      iconSize: 18,
-                      padding: EdgeInsets.zero,
-                      icon: Icon(
-                        Icons.autorenew,
-                        // 转写中变灰（复用原 loading 圈的 ext.textHint 色）；空闲时与 play 同色
-                        color: _isTranscribing(diaryId)
-                            ? ext.textHint
-                            : ext.primary,
+            // 左侧：播放/暂停 + 进度条 + 响度波纹（取代原圆形大按钮）
+            // 仅对有 audio_path 且未归档的卡片渲染；否则用 Spacer 占位保持右对齐
+            if (item['audio_path'] != null && !isArchived)
+              Expanded(
+                child: ValueListenableBuilder<PlaybackState>(
+                  valueListenable: _playbackNotifier,
+                  builder: (ctx, state, _) {
+                    final isActive = state.id == item['id'];
+                    return DiaryPlayBar(
+                      isActive: isActive,
+                      position: isActive ? state.position : Duration.zero,
+                      duration: isActive
+                          ? state.duration
+                          : Duration(seconds: (item['duration'] as int?) ?? 0),
+                      isPlaying: isActive && state.playing,
+                      peaks: peaks,
+                      onSeek: (pos) => _seekTo(item['id'], pos),
+                      onTogglePlay: () => _togglePlay(
+                        item['id'],
+                        item['audio_path'],
+                        durationSec: (item['duration'] as int?) ?? 0,
                       ),
-                      tooltip: _isTranscribing(diaryId)
-                          ? "正在转写…"
-                          : "再次转写（覆盖当前内容）",
-                      // 转写中置 null 禁用（防重复触发，_retranscribeDiary 另有 _transcribingIds 兜底）
-                      onPressed: _isTranscribing(diaryId)
-                          ? null
-                          : () {
-                              final audioPath =
-                                  item['audio_path'] as String?;
-                              final duration =
-                                  (item['duration'] as int?) ?? 0;
-                              if (audioPath != null && audioPath.isNotEmpty) {
-                                _haptic('tick');
-                                _retranscribeDiary(
-                                  diaryId,
-                                  audioPath,
-                                  duration,
-                                );
-                              }
-                            },
-                    ),
+                      onHapticTick: () => _haptic('tick'),
+                    );
+                  },
+                ),
+              )
+            else
+              const Spacer(),
+            // 重试按钮：任何有 audio_path 且文件存在的日记都显示
+            // （占位日记 + 已识别/识别失败的日记都可重新转写，覆盖当前 content）
+            // 转写中变灰禁用（文字区已有"正在转写…"提示，按钮不再转圈，保持 40×40 占位）
+            if (_hasAudioFile(item)) ...[
+              const SizedBox(width: 8),
+              SizedBox(
+                width: 40,
+                height: 40,
+                child: IconButton(
+                  iconSize: 18,
+                  padding: EdgeInsets.zero,
+                  icon: Icon(
+                    Icons.autorenew,
+                    // 转写中变灰（复用原 loading 圈的 ext.textHint 色）；空闲时与 play 同色
+                    color: _isTranscribing(diaryId)
+                        ? ext.textHint
+                        : ext.primary,
                   ),
-                ],
-                // AI 应用分享按钮：占位（空 content）和已归档不渲染（避免分享空文本到 AI）
-                if ((item['content'] as String).isNotEmpty && !isArchived) ...[
-                  const SizedBox(width: 8),
-                  SizedBox(
-                    width: 40,
-                    height: 40,
-                    child: IconButton(
-                      iconSize: 18,
-                      padding: EdgeInsets.zero,
-                      icon: const Icon(
-                        Icons.chat_bubble_outline,
-                        color: Colors.green, // AI 分享按钮品牌色，保留
-                      ),
-                      onPressed: () => _shareToAI(item['content']),
-                      tooltip: "分享到 AI 应用",
-                    ),
+                  tooltip: _isTranscribing(diaryId) ? "正在转写…" : "再次转写（覆盖当前内容）",
+                  // 转写中置 null 禁用（防重复触发，_retranscribeDiary 另有 _transcribingIds 兜底）
+                  onPressed: _isTranscribing(diaryId)
+                      ? null
+                      : () {
+                          final audioPath = item['audio_path'] as String?;
+                          final duration = (item['duration'] as int?) ?? 0;
+                          if (audioPath != null && audioPath.isNotEmpty) {
+                            _haptic('tick');
+                            _retranscribeDiary(diaryId, audioPath, duration);
+                          }
+                        },
+                ),
+              ),
+            ],
+            // AI 应用分享按钮：占位（空 content）和已归档不渲染（避免分享空文本到 AI）
+            if ((item['content'] as String).isNotEmpty && !isArchived) ...[
+              const SizedBox(width: 8),
+              SizedBox(
+                width: 40,
+                height: 40,
+                child: IconButton(
+                  iconSize: 18,
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(
+                    Icons.chat_bubble_outline,
+                    color: Colors.green, // AI 分享按钮品牌色，保留
                   ),
-                ],
-                // 恢复按钮：仅已归档卡片显示
-                if (isArchived) ...[
-                  const SizedBox(width: 8),
-                  SizedBox(
-                    width: 40,
-                    height: 40,
-                    child: IconButton(
-                      iconSize: 18,
-                      padding: EdgeInsets.zero,
-                      icon: Icon(
-                        Icons.unarchive,
-                        color: ext.primary,
-                      ),
-                      tooltip: "恢复日记",
-                      onPressed: () => _restoreItem(item['id']),
-                    ),
-                  ),
-                ],
-                const SizedBox(width: 8),
-                // 喜欢图标（功能未实现，先隐藏）
-                Visibility(
-                  visible: false,
-                  child: SizedBox(
-                    width: 40,
-                    height: 40,
-                    child: Icon(
-                      Icons.favorite_border,
-                      size: 18,
-                      color: ext.textHint.withValues(
-                        alpha: 0.2,
-                      ), // 原 Colors.black12 装饰图标
-                    ),
+                  onPressed: () => _shareToAI(item['content']),
+                  tooltip: "分享到 AI 应用",
+                ),
+              ),
+            ],
+            // 恢复按钮：仅已归档卡片显示
+            if (isArchived) ...[
+              const SizedBox(width: 8),
+              SizedBox(
+                width: 40,
+                height: 40,
+                child: IconButton(
+                  iconSize: 18,
+                  padding: EdgeInsets.zero,
+                  icon: Icon(Icons.unarchive, color: ext.primary),
+                  tooltip: "恢复日记",
+                  onPressed: () => _restoreItem(item['id']),
+                ),
+              ),
+            ],
+            const SizedBox(width: 8),
+            // 喜欢图标（功能未实现，先隐藏）
+            Visibility(
+              visible: false,
+              child: SizedBox(
+                width: 40,
+                height: 40,
+                child: Icon(
+                  Icons.favorite_border,
+                  size: 18,
+                  color: ext.textHint.withValues(
+                    alpha: 0.2,
                   ),
                 ),
+              ),
+            ),
           ],
         ),
       ],
@@ -2970,38 +3018,38 @@ $content
     }
 
     // 按钮颜色逻辑
-    Color btnColor = ext.fabReady; // 原 Colors.teal 日记页录音按钮
+    Color btnColor = ext.fabReady;
     Widget btnChild = Icon(
       Icons.mic,
       color: ext.textOnPrimary,
       size: 40,
-    ); // 原 Colors.white
+    );
     VoidCallback? onBtnPressed = startListening;
 
     // 获取当前屏幕的媒体查询数据
     // final MediaQueryData mediaQuery = MediaQuery.of(context);
 
     if (!isReady) {
-      btnColor = ext.fabDisabled; // 原 Colors.grey
+      btnColor = ext.fabDisabled;
       onBtnPressed = null; // 禁用按钮
     } else if (isListening) {
       // 正在录音状态：红色背景，停止方块图标
-      btnColor = ext.fabRecording; // 原 Colors.redAccent
+      btnColor = ext.fabRecording;
       btnChild = Icon(
         Icons.stop,
         color: ext.textOnPrimary,
         size: 40,
-      ); // 原 Colors.white
+      );
     } else if (isProcessing) {
       // 识别中状态：橙色背景，显示转圈圈的 Loading
-      btnColor = ext.fabProcessing; // 原 Colors.orangeAccent
+      btnColor = ext.fabProcessing;
       btnChild = SizedBox(
         width: 30,
         height: 30,
         child: CircularProgressIndicator(
           color: ext.textOnPrimary,
           strokeWidth: 3,
-        ), // 原 Colors.white
+        ),
       );
       onBtnPressed = null; // 处理中禁用按钮
     }
@@ -3011,7 +3059,7 @@ $content
 
     return Scaffold(
       resizeToAvoidBottomInset: false, // <--- 添加这一行，禁止页面随键盘弹起而压缩
-      backgroundColor: ext.scaffoldBackground, // 原 Color(0xFFF8F9FB)
+      backgroundColor: ext.scaffoldBackground,
       body: Stack(
         children: [
           // 1. 渐变背景层
@@ -3024,7 +3072,7 @@ $content
                   colors: [
                     ext.scaffoldBackground,
                     ext.scaffoldBackground.withValues(alpha: 0.8),
-                  ], // 原 Color(0xFFF8FAFC), Color(0xFFE2E8F0)
+                  ],
                 ),
               ),
             ),
@@ -3043,7 +3091,7 @@ $content
                   BoxShadow(
                     color: ext.primary.withValues(
                       alpha: 0.3,
-                    ), // 原 Colors.teal.withValues(alpha: 0.3) 光晕
+                    ),
                     blurRadius: 80,
                     spreadRadius: 40,
                   ),
@@ -3063,7 +3111,7 @@ $content
                   BoxShadow(
                     color: ext.timeHighlight.withValues(
                       alpha: 0.25,
-                    ), // 原 Colors.blue.withValues(alpha: 0.25) 光晕
+                    ),
                     blurRadius: 70,
                     spreadRadius: 35,
                   ),
@@ -3083,7 +3131,7 @@ $content
                   BoxShadow(
                     color: ext.primary.withValues(
                       alpha: 0.15,
-                    ), // 原 Colors.purple.withValues(alpha: 0.15) 光晕，映射到 primary
+                    ),
                     blurRadius: 60,
                     spreadRadius: 30,
                   ),
@@ -3111,7 +3159,7 @@ $content
                             decoration: BoxDecoration(
                               color: ext.cardBackground.withValues(
                                 alpha: 0.4,
-                              ), // 原 Color(0x66FFFFFF) 玻璃拟态搜索框
+                              ),
                               borderRadius: BorderRadius.circular(24),
                               border: Border.all(
                                 color: ext
@@ -3128,12 +3176,20 @@ $content
                             ),
                             child: TextField(
                               controller: _searchController,
-                              onChanged: (val) => refreshList(),
+                              onChanged: (val) {
+                                // 250ms 防抖（性能审查 Top3）：连续输入只在
+                                // 停顿后查一次库；搜索纯过滤，不清解析缓存
+                                _searchDebounce?.cancel();
+                                _searchDebounce = Timer(
+                                  _searchDebounceDelay,
+                                  () => refreshList(clearParseCaches: false),
+                                );
+                              },
                               decoration: InputDecoration(
                                 hintText: "搜索回忆...",
                                 prefixIcon: Icon(
                                   Icons.search,
-                                  color: ext.primary, // 原 Colors.teal 搜索图标
+                                  color: ext.primary,
                                 ),
                                 border: InputBorder.none,
                                 contentPadding: const EdgeInsets.symmetric(
@@ -3163,8 +3219,8 @@ $content
                       style: IconButton.styleFrom(
                         backgroundColor: ext.primary.withValues(
                           alpha: 0.1,
-                        ), // 原 Colors.teal.withValues(alpha: 0.1)
-                        foregroundColor: ext.primary, // 原 Colors.teal
+                        ),
+                        foregroundColor: ext.primary,
                       ),
                     ),
                   ],
@@ -3179,7 +3235,7 @@ $content
                           _isLoadingList ? "加载中..." : "还没有日记，试着说句话吧",
                           style: TextStyle(
                             color: ext.textHint,
-                          ), // 原 Colors.grey
+                          ),
                         ),
                       )
                     : ListView.builder(
@@ -3202,7 +3258,7 @@ $content
                                   children: [
                                     Expanded(
                                       child: Divider(
-                                        color: ext.textHint, // 原 Colors.grey
+                                        color: ext.textHint,
                                         thickness: 1,
                                       ),
                                     ),
@@ -3213,14 +3269,14 @@ $content
                                       child: Text(
                                         '已归档',
                                         style: TextStyle(
-                                          color: ext.textHint, // 原 Colors.grey
+                                          color: ext.textHint,
                                           fontSize: 12,
                                         ),
                                       ),
                                     ),
                                     Expanded(
                                       child: Divider(
-                                        color: ext.textHint, // 原 Colors.grey
+                                        color: ext.textHint,
                                         thickness: 1,
                                       ),
                                     ),
@@ -3237,9 +3293,9 @@ $content
                               SwipeDismissCard(
                                 icon: isArchived ? Icons.delete : Icons.archive,
                                 iconColor:
-                                    ext.textSecondary, // 原 Colors.grey.shade600
+                                    ext.textSecondary,
                                 circleColor:
-                                    ext.textHint, // 原 Colors.grey.shade500
+                                    ext.textHint,
                                 onDismissed: () {
                                   _haptic('click');
                                   log(
@@ -3309,7 +3365,7 @@ $content
                                         decoration: BoxDecoration(
                                           color: ext.cardBackground.withValues(
                                             alpha: 0.7,
-                                          ), // 原 Color(0xB3FFFFFF) 玻璃拟态卡片
+                                          ),
                                           borderRadius: BorderRadius.circular(
                                             16,
                                           ),

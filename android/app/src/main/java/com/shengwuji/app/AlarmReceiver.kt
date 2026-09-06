@@ -52,6 +52,10 @@ class AlarmReceiver : BroadcastReceiver() {
                 .putBoolean("flutter.is_alarm_ringing", false)
                 .remove("flutter.current_alarm_id")
                 .apply()
+            // 通知 Flutter 响铃结束，横幅即时收起（覆盖 3 分钟超时/通知栏停止按钮/
+            // 通知点击等所有停止路径；Flutter 引擎未运行时为 no-op，冷启动由
+            // Dart 侧 AlarmRingingNotifier.restoreOnce 读 prefs 兜底）
+            MainActivity.notifyFlutterAlarm(ringing = false, alarmId = alarmId)
             println("🔔 [AlarmReceiver] 闹钟已完全停止（alarmId=$alarmId）")
         }
     }
@@ -61,6 +65,9 @@ class AlarmReceiver : BroadcastReceiver() {
         val alarmId = intent.getIntExtra("alarm_id", 0)
         showNotification(context, alarmId, message)
         playAlarmRingtone(context, alarmId)
+        // 通知 Flutter 响铃开始（替代 Dart 侧轮询，横幅即时弹出；引擎未运行时
+        // 为 no-op，Dart 冷启动经 AlarmRingingNotifier.restoreOnce 读 prefs 兜底）
+        MainActivity.notifyFlutterAlarm(ringing = true, alarmId = alarmId)
     }
 
     private fun showNotification(context: Context, alarmId: Int, message: String) {

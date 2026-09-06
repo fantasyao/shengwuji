@@ -19,12 +19,23 @@
                      android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
                      android:maxSdkVersion="32" />
+    <!-- 悬浮窗（闪念胶囊） -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <application
         android:label="声物记"
-        android:name="${applicationName}"
+        android:name=".ShengwujiApplication"
         android:icon="@mipmap/launcher_icon"
         android:roundIcon="@mipmap/launcher_icon"
         android:theme="@style/NormalTheme">
+
+        <!-- flutter_overlay_window 前台服务 -->
+        <service
+            android:name="flutter.overlay.window.flutter_overlay_window.OverlayService"
+            android:foregroundServiceType="specialUse"
+            android:exported="false" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

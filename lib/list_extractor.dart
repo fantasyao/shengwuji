@@ -2,7 +2,8 @@ import 'app_logger.dart';
 
 /// 清单提取器 - 从中文语音识别结果中提取结构化待办清单
 /// 纯 Dart 实现，不依赖第三方分词库
-/// 使用 5 阶段管道：预处理 → 意图检测 → 条目拆分 → 结构提取 → 分类
+/// 5 阶段管道：预处理 → 触发词门禁 → 条目拆分 → 结构提取 → 分类
+/// 详见 docs/architecture/list-extractor.md
 
 // ============================================================
 // 数据模型
@@ -71,8 +72,8 @@ class ExtractionResult {
   /// 每条目一行，默认未完成状态
   /// 非清单或空条目时返回空字符串
   ///
-  /// 方案 A（2026-06-29）：displayText 用 rawSegment（清理首尾标点）保留原句语序，
-  /// 不再前置 quantity+unit。避免"最后再买两包烟"被错拼成"2包最后再买烟"。
+  /// displayText 用 rawSegment（清理首尾标点）保留原句语序，不再前置
+  /// quantity+unit——前置会把"最后再买两包烟"错拼成"2包最后再买烟"（9aa859a）。
   /// quantity/unit/time 仍作为元数据保留在 TodoItem 上，供将来 UI 升级使用。
   String toMarkdown() {
     if (!isList || items.isEmpty) return '';
@@ -83,7 +84,7 @@ class ExtractionResult {
       final displayText = (item.rawSegment ?? item.content)
           .replaceAll(RegExp(r'^[，、,。.、\s]+'), '')
           .replaceAll(RegExp(r'[，、,。.、\s]+$'), '');
-      return '- [ ] $displayText'; // 默认未完成
+      return '- [ ] $displayText';
     });
     return lines.join('\n');
   }
@@ -317,10 +318,11 @@ class ListExtractor {
   /// 主入口：从语音识别文本中提取清单
   /// 返回 ExtractionResult，isList=false 表示不是清单
   ///
-  /// 触发词门禁（2026-06-29 加入）：
+  /// 触发词门禁：
   /// - 文本必须严格以"代办"或"待办"开头才会进入清单提取流程
   /// - 命中后剥离触发词，剩余内容走后续拆分/提取/分类管道
-  /// - 设计意图：用白名单替代脆弱的评分制，"开口"开小，正常说话不误判
+  /// - 设计意图：用白名单替代脆弱的评分制（子串重叠会把正常叙述误判成清单，
+  ///   d18503b），"开口"开小，正常说话不误判
   ExtractionResult extract(String rawText) {
     if (rawText.trim().isEmpty) {
       return const ExtractionResult(isList: false, normalizedText: '');
@@ -675,7 +677,7 @@ class ListExtractor {
     // 6. "和"字拆分辅助：如果分片中包含"和"且前后都是短词
     // 这里不拆分（拆分在 Stage 3 完成），只清理
 
-    // 7. 清理残余标点（含句号 —— 用户说话末尾常带"。"，老逻辑只清逗号顿号）
+    // 7. 清理残余标点（含句号——用户说话末尾常带"。"）
     remaining = remaining.replaceAll(RegExp(r'^[，、,。.]\s*'), '');
     remaining = remaining.replaceAll(RegExp(r'\s*[，、,。.]\s*$'), '');
     remaining = remaining.trim();

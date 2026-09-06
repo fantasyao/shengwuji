@@ -303,7 +303,7 @@ MainActivity + 3 个 `activity-alias` 均声明 `ACTION_SEND` / `text/plain` int
 
 ## Pro 付费解锁弹窗
 
-设置页"支持作者"分区入口（诊断区与关于区之间），点击调起金边 Dialog。弹窗展示作者寄语 + 微信/支付宝真实付款码缩略图 + 解锁按钮。已接入 Pro 功能门禁：主题/皮肤系统中的黑金主题、图标包切换中的节日红/极简白为 Pro 专属，未解锁时点击会调起弹窗。
+设置页"支持作者"分区入口（诊断区与关于区之间），点击调起金边 Dialog。弹窗展示作者寄语 + 微信/支付宝真实付款码缩略图 + 解锁按钮。已接入 Pro 功能门禁：主题/皮肤系统中的黑金主题、图标包切换中的节日红/极简白、悬浮窗整体（手势选择器 3 悬浮窗动作 chip 标 Pro 徽章 + 点击拦截弹窗；绕过设置页直接按音量键手势的，原生无障碍服务执行前读落盘 `is_pro_unlocked` 拦截，详见 @../architecture/floating-window.md 的"Pro 门禁"小节）为 Pro 专属，未解锁时点击会调起弹窗。
 
 ### 组件
 - **ProUnlockDialog** (`lib/widgets/pro_unlock_dialog.dart`) - `showDialog` + 自定义 Container（不用 AlertDialog，便于做精致金边）

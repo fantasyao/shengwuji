@@ -4,7 +4,6 @@ import '../models/time_entity.dart';
 /// 纯 Dart 实现的中文时间解析器
 /// 替代 flutter_js 方案，解决内存溢出问题
 class DartChronoParser {
-  // 单例模式
   DartChronoParser._internal();
 
   static final DartChronoParser _instance = DartChronoParser._internal();
@@ -21,22 +20,19 @@ class DartChronoParser {
   }) async {
     if (text.isEmpty) return [];
 
-    // 解析参考日期
     final now = refDate != null ? DateTime.parse(refDate) : DateTime.now();
 
     final results = <TimeEntity>[];
 
-    // 依次尝试各种解析方式
     results.addAll(_parseRelativeTime(text, now));
     results.addAll(_parseWeekday(text, now));
     results.addAll(_parseSpecificDate(text, now));
     results.addAll(_parseTime(text, now));
     results.addAll(_parseOffset(text, now));
 
-    // 按索引排序
     results.sort((a, b) => a.start.compareTo(b.start));
 
-    // 去重（相同的文本和位置）
+    // 去重（key = 起始位置 + 文本）
     final uniqueResults = <TimeEntity>[];
     final seen = <String>{};
     for (final entity in results) {
@@ -61,13 +57,11 @@ class DartChronoParser {
   List<TimeEntity> _parseRelativeTime(String text, DateTime now) {
     final results = <TimeEntity>[];
 
-    // 今天
     final todayMatch = _findFirstMatch(text, '今天');
     if (todayMatch != null) {
       results.add(_createEntity(text: '今天', index: todayMatch, date: now));
     }
 
-    // 明天
     final tomorrowMatch = _findFirstMatch(text, '明天');
     if (tomorrowMatch != null) {
       final date = now.add(const Duration(days: 1));
@@ -76,7 +70,6 @@ class DartChronoParser {
       );
     }
 
-    // 后天
     final afterTomorrowMatch = _findFirstMatch(text, '后天');
     if (afterTomorrowMatch != null) {
       final date = now.add(const Duration(days: 2));
@@ -90,7 +83,6 @@ class DartChronoParser {
       );
     }
 
-    // 昨天
     final yesterdayMatch = _findFirstMatch(text, '昨天');
     if (yesterdayMatch != null) {
       final date = now.subtract(const Duration(days: 1));
@@ -99,7 +91,6 @@ class DartChronoParser {
       );
     }
 
-    // 前天
     final beforeYesterdayMatch = _findFirstMatch(text, '前天');
     if (beforeYesterdayMatch != null) {
       final date = now.subtract(const Duration(days: 2));
@@ -213,66 +204,94 @@ class DartChronoParser {
     return results;
   }
 
-  /// 解析时间（如：下午3点、15:30）
+  /// 解析时间（如：下午3点、15:30、八点半、两点）
+  ///
+  /// 时段表达式的钟点/分钟接受中文数字（"晚上八点""晚上八点三十"）——
+  /// 语音转写与手输笔记都常出现中文数字写法，纯 \d+ 会漏识；
+  /// 分钟支持"半"（"八点半"→:30）与省略"分"字（"3点50"）；
+  /// 另支持无时段词的裸钟点（"八点半去提醒我吃饭""两点开会"——口语
+  /// 常省时段词，此前这类表达完全解析不到）。
   List<TimeEntity> _parseTime(String text, DateTime now) {
     final results = <TimeEntity>[];
 
-    // 上午/早上/早 X点 — 支持"10点50"省略"分"字
-    final morningPattern = RegExp(r'(?:上午|早上|早)(\d+)点(?:(\d+)(?:分)?)?');
-    for (final match in morningPattern.allMatches(text)) {
-      var hour = int.parse(match.group(1)!);
-      final minute = match.group(2) != null ? int.parse(match.group(2)!) : 0;
+    // 钟点/分钟字符集：阿拉伯数字 + 中文数字（零〇一二两三四五六七八九十）
+    const numCls = r'[零〇一二两三四五六七八九十\d]+';
 
-      // "分"的数字应 <= 59，否则可能误匹配（如"3点100"）
-      if (minute > 59) continue;
-      if (hour >= 12) hour -= 12;
+    // (模式, 是否午后[小时<12则+12/上午小时>=12则-12], 纯"一"跳过
+    // [防"早一点/晚一点"口语误伤])
+    final periodPatterns = <(RegExp, bool, bool)>[
+      (
+        RegExp('(?:上午|早上|早)($numCls)点(?:钟)?(?:(?:($numCls)(?:分)?)|(半))?'),
+        false,
+        true,
+      ),
+      (
+        RegExp('(?:下午|中午)($numCls)点(?:钟)?(?:(?:($numCls)(?:分)?)|(半))?'),
+        true,
+        false,
+      ),
+      (
+        RegExp('(?:晚上|夜间|晚)($numCls)点(?:钟)?(?:(?:($numCls)(?:分)?)|(半))?'),
+        true,
+        true,
+      ),
+    ];
 
-      results.add(
-        _createEntity(
-          text: match.group(0)!,
-          index: match.start,
-          date: now,
-          hour: hour,
-          minute: minute,
-        ),
-      );
+    // 时段词命中区间（含被"一"守卫跳过的）：裸钟点与之重叠一律丢弃——
+    // 防"下午3点"再拆出重复"3点"、"晚一点"复活成"一点"。
+    // 用区间重叠而非前置字断言（(?<!下)会误挡"楼下3点"这种正常话）
+    final covered = <({int start, int end})>[];
+
+    for (final (pattern, isPm, skipPureOne) in periodPatterns) {
+      for (final match in pattern.allMatches(text)) {
+        covered.add((start: match.start, end: match.end));
+        if (skipPureOne && match.group(1) == '一') continue;
+        final hourRaw = _cnNumToInt(match.group(1)!);
+        if (hourRaw == null || hourRaw > 23) continue;
+        final minute = _minuteFrom(match.group(2), match.group(3));
+        if (minute == null || minute > 59) continue;
+
+        var hour = hourRaw;
+        if (isPm && hour < 12) {
+          hour += 12;
+        } else if (!isPm && hour >= 12) {
+          hour -= 12;
+        }
+
+        results.add(
+          _createEntity(
+            text: match.group(0)!,
+            index: match.start,
+            date: now,
+            hour: hour,
+            minute: minute,
+          ),
+        );
+      }
     }
 
-    // 下午/中午 X点 — 支持"3点50"省略"分"字
-    final afternoonPattern = RegExp(r'(?:下午|中午)(\d+)点(?:(\d+)(?:分)?)?');
-    for (final match in afternoonPattern.allMatches(text)) {
-      var hour = int.parse(match.group(1)!);
-      final minute = match.group(2) != null ? int.parse(match.group(2)!) : 0;
-
-      if (minute > 59) continue;
-      if (hour < 12) hour += 12;
-
-      results.add(
-        _createEntity(
-          text: match.group(0)!,
-          index: match.start,
-          date: now,
-          hour: hour,
-          minute: minute,
-        ),
+    // 裸钟点（无时段词）："点半"吞"钟"字（"八点钟"整段进实体，
+    // 标题剥离不留孤字）；前置断言只挡"第3点"序号写法；纯"一"跳过
+    final barePattern = RegExp(
+      '(?<!第)($numCls)点(?:钟)?(?:(?:($numCls)(?:分)?)|(半))?',
+    );
+    for (final match in barePattern.allMatches(text)) {
+      if (match.group(1) == '一') continue;
+      final overlapsCovered = covered.any(
+        (r) => match.start < r.end && r.start < match.end,
       );
-    }
-
-    // 晚上/夜间/晚 X点 — 支持"8点30"省略"分"字
-    final eveningPattern = RegExp(r'(?:晚上|夜间|晚)(\d+)点(?:(\d+)(?:分)?)?');
-    for (final match in eveningPattern.allMatches(text)) {
-      var hour = int.parse(match.group(1)!);
-      final minute = match.group(2) != null ? int.parse(match.group(2)!) : 0;
-
-      if (minute > 59) continue;
-      if (hour < 12) hour += 12;
+      if (overlapsCovered) continue;
+      final hourRaw = _cnNumToInt(match.group(1)!);
+      if (hourRaw == null || hourRaw > 23) continue;
+      final minute = _minuteFrom(match.group(2), match.group(3));
+      if (minute == null || minute > 59) continue;
 
       results.add(
         _createEntity(
           text: match.group(0)!,
           index: match.start,
           date: now,
-          hour: hour,
+          hour: hourRaw, // 无时段词不偏移，按 24 小时制原样
           minute: minute,
         ),
       );
@@ -304,7 +323,7 @@ class DartChronoParser {
   List<TimeEntity> _parseOffset(String text, DateTime now) {
     final results = <TimeEntity>[];
 
-    // 时间单位映射（毫秒）
+    // 时间单位映射（秒）
     final unitMs = {
       '秒': 1,
       '分': 60,
@@ -335,6 +354,39 @@ class DartChronoParser {
     }
 
     return results;
+  }
+
+  /// 分钟组取值："半"→30；未写分钟（两组皆 null）→0；其余中文/数字串转 int
+  static int? _minuteFrom(String? raw, String? half) {
+    if (half != null) return 30;
+    if (raw == null) return 0;
+    return _cnNumToInt(raw);
+  }
+
+  /// 中文/阿拉伯数字串转 int（"八"→8、"十二"→12、"二十"→20、"二十一"→21、
+  /// "两"→2、"30"→30、"零五"→5）；不合法（空/"一三"式杂混）返回 null
+  static int? _cnNumToInt(String raw) {
+    if (RegExp(r'^\d+$').hasMatch(raw)) return int.tryParse(raw);
+    const digitMap = {
+      '零': 0, '〇': 0, '一': 1, '二': 2, '两': 2, '三': 3,
+      '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9,
+    };
+    if (raw == '十') return 10;
+    if (raw.contains('十')) {
+      // 仅支持"X十Y"标准形式（X/Y 可空）
+      final parts = raw.split('十');
+      if (parts.length != 2) return null;
+      final tens = parts[0].isEmpty ? 1 : digitMap[parts[0]];
+      final ones = parts[1].isEmpty ? 0 : digitMap[parts[1]];
+      if (tens == null || ones == null) return null;
+      return tens * 10 + ones;
+    }
+    if (raw.length == 1) return digitMap[raw];
+    // 全是单数字字符的串按位拼接（"零五"→"05"→5）——口语"三点零五"写法
+    if (raw.split('').every(digitMap.containsKey)) {
+      return int.parse(raw.split('').map((c) => digitMap[c]).join());
+    }
+    return null;
   }
 
   /// 获取下一个指定星期几的日期
@@ -477,7 +529,6 @@ class DartChronoParser {
       }
     }
 
-    // 按索引重新排序
     merged.sort((a, b) => a.start.compareTo(b.start));
     return merged;
   }

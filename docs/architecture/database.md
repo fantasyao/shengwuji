@@ -5,7 +5,7 @@
 使用 SQLite 通过 `sqflite` 包实现数据持久化。
 
 ### 数据库版本
-- **当前版本**: 8
+- **当前版本**: 10
 - **定义位置**: [lib/db_helper.dart](../lib/db_helper.dart)
 
 ## 数据表
@@ -31,6 +31,16 @@
 | duration | INTEGER | 音频时长（秒） |
 | is_archived | INTEGER | 归档标记（0=活跃, 1=已归档） |
 | exported_at | TEXT | 增量导出时间戳，未导出为 NULL |
+| tag | TEXT | 标注（悬浮窗标注功能：'urgent'/'star'/'idea'，NULL=无标注），悬浮窗整卡换色 + 主 App 日记页小色点共用 |
+
+### dismissed_splits 表（日记页 ✕ 学习，v9 新增）
+存储用户在日记页物品转存横条上 ✕ 掉的内容（同一 content UNIQUE，避免重复入库）。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | INTEGER | 主键，自增 |
+| content | TEXT | 被 dismiss 的转存内容（UNIQUE） |
+| created_at | TEXT | 记录时间戳 |
 
 ## 数据库操作
 
@@ -50,6 +60,7 @@
 - `queryAllDiaries()` - 查询所有日记
 - `addDiary(content, audioPath, duration)` - 添加新日记
 - `updateDiary(id, content)` - 更新日记内容
+- `updateDiaryTag(id, tag)` - 更新日记标注（'urgent'/'star'/'idea'，null=取消标注；悬浮窗标注行调用）
 - `deleteDiary(id)` - 删除日记
 - `archiveDiary(id)` - 归档日记
 
@@ -78,3 +89,5 @@
 | v5 → v6 | 添加 `exported_at` 字段 | 增量导出标记，记录导出时间戳 |
 | v6 → v7 | 添加 lists 表 | 存储清单标题、条目JSON、分类 |
 | v7 → v8 | 清单数据合并到日记表 | items_json 转为 markdown 格式，删除 lists 表 |
+| v8 → v9 | 新增 dismissed_splits 表 | 日记页物品转存横条 ✕ 学习（同一 content UNIQUE） |
+| v9 → v10 | diary 表添加 `tag` 字段 | 悬浮窗日记卡片标注（紧急/收藏/灵感整卡换色，主 App 显示小色点） |

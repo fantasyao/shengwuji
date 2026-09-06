@@ -18,18 +18,19 @@ class DbHelper {
   // 初始化数据库
   initDb() async {
     String path = join(await getDatabasesPath(), 'items.db');
-    // 版本升级：3->4 时长, 4->5 归档, 5->6 导出标记, 6->7 lists 表, 7->8 清单合并到日记, 8->9 dismissed_splits 表
+    // 版本升级：3->4 时长, 4->5 归档, 5->6 导出标记, 6->7 lists 表, 7->8 清单合并到日记, 8->9 dismissed_splits 表, 9->10 diary.tag 标注列
     return await openDatabase(
       path,
-      version: 9,
+      version: 10,
       onCreate: (db, version) async {
         // 创建物品表：id, name (物品), location (位置)
         await db.execute(
           "CREATE TABLE items(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, location TEXT)",
         );
-        // 创建日记表，包含音频时长字段
+        // 创建日记表，包含音频时长字段；tag = 标注（悬浮窗标注功能，
+        // 'urgent'/'star'/'idea'，NULL=无标注）
         await db.execute(
-          "CREATE TABLE diary(id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT, created_at TEXT, audio_path TEXT, duration INTEGER, is_archived INTEGER DEFAULT 0, exported_at TEXT)",
+          "CREATE TABLE diary(id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT, created_at TEXT, audio_path TEXT, duration INTEGER, is_archived INTEGER DEFAULT 0, exported_at TEXT, tag TEXT)",
         );
         // dismissed_splits 表：用户在日记页 ✕ 掉的物品转存内容（V9 新增）
         // 同一 content UNIQUE，避免重复入库
@@ -40,21 +41,17 @@ class DbHelper {
         await _seedTutorialDiaries(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
-        // 数据库升级：从版本3升级到版本4，添加 duration 字段
         if (oldVersion < 4) {
           await db.execute("ALTER TABLE diary ADD COLUMN duration INTEGER");
         }
-        // 数据库升级：从版本4升级到版本5，添加 is_archived 字段
         if (oldVersion < 5) {
           await db.execute(
             "ALTER TABLE diary ADD COLUMN is_archived INTEGER DEFAULT 0",
           );
         }
-        // 数据库升级：从版本5升级到版本6，添加 exported_at 字段（增量导出标记）
         if (oldVersion < 6) {
           await db.execute("ALTER TABLE diary ADD COLUMN exported_at TEXT");
         }
-        // 数据库升级：从版本6升级到版本7，新增 lists 表（清单存储）
         if (oldVersion < 7) {
           await db.execute('''
               CREATE TABLE lists(
@@ -69,7 +66,6 @@ class DbHelper {
         // 数据库升级：从版本7升级到版本8，清单数据合并到日记表并删除 lists 表
         if (oldVersion < 8) {
           try {
-            // 读取 lists 表所有数据，按创建时间排序
             final lists = await db.rawQuery(
               'SELECT * FROM lists ORDER BY created_at',
             );
@@ -81,7 +77,6 @@ class DbHelper {
                   row['created_at'] as String? ??
                   DateTime.now().toIso8601String();
 
-              // 解析 items_json，转为 markdown 任务列表格式
               final List<dynamic> items = jsonDecode(itemsJson);
               final markdownLines = <String>[];
               for (final item in items) {
@@ -94,7 +89,6 @@ class DbHelper {
                 }
               }
 
-              // 标题 + 清单条目组合为 content
               final content = markdownLines.isNotEmpty
                   ? '$title\n${markdownLines.join('\n')}'
                   : title;
@@ -107,7 +101,6 @@ class DbHelper {
               migratedCount++;
             }
 
-            // 删除 lists 表
             await db.execute('DROP TABLE lists');
             log("数据库迁移 v7→v8：已将 $migratedCount 条清单迁移到日记表，lists 表已删除");
           } catch (e) {
@@ -125,6 +118,16 @@ class DbHelper {
             log("数据库迁移 v8→v9 失败（不阻止升级）：$e");
           }
         }
+        // 数据库升级：从版本9升级到版本10，diary 表新增 tag 标注列
+        //（悬浮窗日记卡片标注功能：'urgent'/'star'/'idea'，NULL=无标注）
+        if (oldVersion < 10) {
+          try {
+            await db.execute("ALTER TABLE diary ADD COLUMN tag TEXT");
+            log("数据库迁移 v9→v10：diary 表已添加 tag 标注列");
+          } catch (e) {
+            log("数据库迁移 v9→v10 失败（不阻止升级）：$e");
+          }
+        }
       },
     );
   }
@@ -134,7 +137,6 @@ class DbHelper {
   // 时间戳策略：offsetSec 越大 → created_at 越新 → 排序越靠前
   Future<void> _seedTutorialDiaries(Database db) async {
     final baseTime = DateTime.now();
-    // 顺序：点击复制 → 长按编辑 → 双击跳AI → 左滑 → 搬家模式 → 语音代办 → 撤销命令 → 时间识别
     final tutorials = <Map<String, dynamic>>[
       {
         'content': '📋 点击复制\n轻点任意日记卡片，内容即刻复制到剪贴板，无提示音，可直接粘贴到任意位置。',
@@ -147,15 +149,18 @@ class DbHelper {
       },
       {'content': '⬅️ 左滑归档/删除\n将日记卡片向左滑动：活跃日记会归档，已归档日记会被彻底删除。', 'offsetSec': 5},
       {
-        'content': '📦 搬家模式\n录制页开启搬家模式后，双手不用看屏幕：持续录音 + Silero VAD 自动切段识别 + TTS 播报“已保存X到Y”，连说多件物品也逐条入库。',
+        'content':
+            '📦 搬家模式\n录制页开启搬家模式后，手机放一旁就行：app 会一直听，自动听出每句话的开头结尾，说一句记一条，存好一件还会开口播报“已保存X到Y”，连说多件物品也逐条入库，全程不用看屏幕、不用按按钮。',
         'offsetSec': 4,
       },
       {
-        'content': '✅ 语音代办清单\n开口必须以“代办”或“待办”起头，再用顿号、“还有”、“再买”连接多个事项，系统才会自动拆分为待办清单（说正常话不会误判）。',
+        'content':
+            '✅ 语音代办清单\n开口必须以“代办”或“待办”起头，再用顿号、“还有”、“再买”连接多个事项，系统才会自动拆分为待办清单（说正常话不会误判）。',
         'offsetSec': 3,
       },
       {
-        'content': '↩️ 搬家模式撤销\n搬家模式中 TTS 念错时（如把“电扇”念成“电脑”），10 秒内说“不对”/“撤销”/“错了”等关键词，自动删除上一条物品记录并播报“已撤销”。',
+        'content':
+            '↩️ 搬家模式撤销\n搬家模式听错时（如把“电扇”听成“电脑”），10 秒内说“不对”“撤销”“错了”任一关键词，会自动删除上一条物品记录并播报“已撤销”。',
         'offsetSec': 2,
       },
       {
@@ -195,16 +200,20 @@ class DbHelper {
   //       新装用户 = onCreate 8 条 + 首次 seedVersionedTutorials 增量 1 条，
   //       单一事实来源，文案不需两处维护。
 
-  /// v1.0.18(+18) 新增：上滑麦克风按钮新建文本笔记（配合 2026-08-19 上线的
-  /// 「按钮固定 + Aa 拉出反馈」上滑交互）
+  /// v1.0.18(+18) 新增：上滑麦克风按钮新建文本笔记
   static const String _kTutorialSwipeFabText =
       '⌨️ 上滑建文本笔记\n在日记页按住底部麦克风圆钮向上滑动，拉出「Aa」标记后松手，即刻新建一条空白文本笔记，直接打字，无需语音。';
+
+  /// v1.1.0(+19) 新增：悬浮窗语音定闹钟
+  static const String _kTutorialOverlayAlarmText =
+      '⏰ 悬浮窗语音定闹钟\n悬浮窗卡片上点闹钟按钮，说一句「周六晚上八点提醒我去看电影」，app 自动认出时间，拨动转轮确认后写入系统日历，到点响铃。「晚上八点」「两点半」这样随口说也能听懂。';
 
   /// 版本化说明卡片注册表：build number → 该版本新增的说明卡片文案
   /// ⚠️ key 必须用 int 的 build number（不能用版本字符串比较：
   ///    '1.0.9' > '1.0.17' 按字符串序为 true，会误判）
   static const Map<int, List<String>> _versionedTutorials = {
     18: [_kTutorialSwipeFabText], // v1.0.18：上滑麦克风新建文本笔记
+    19: [_kTutorialOverlayAlarmText], // v1.1.0：悬浮窗语音定闹钟
   };
 
   /// prefs 键：已 seed 到的 build number
@@ -272,13 +281,15 @@ class DbHelper {
   /// 不修改老 insertItem，避免影响 RecordTab 现有保存流程
   Future<int> insertItemReturningId(String name, String location) async {
     final dbClient = await db;
-    final id = await dbClient.insert('items', {'name': name, 'location': location});
+    final id = await dbClient.insert('items', {
+      'name': name,
+      'location': location,
+    });
     log("📦 [DB] 已保存(id=$id): $name 在 $location");
     return id;
   }
 
   /// 按 id 删除物品（搬家模式撤销用）
-  /// 注意：项目中没有老的 deleteItem(id)，文档超前；本方法是新建，不存在命名冲突
   Future<void> deleteItemById(int id) async {
     final dbClient = await db;
     await dbClient.delete('items', where: 'id = ?', whereArgs: [id]);
@@ -406,6 +417,19 @@ class DbHelper {
     );
   }
 
+  // 5. 更新日记标注（悬浮窗标注功能）：tag 取值见 DiaryTag 常量
+  //（'urgent'/'star'/'idea'），传 null = 取消标注。
+  // 调用方：OverlayHome._setDiaryTag（悬浮窗展开卡标注行）
+  Future<int> updateDiaryTag(int id, String? tag) async {
+    final dbClient = await db;
+    return await dbClient.update(
+      'diary',
+      {'tag': tag},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
   // --- 批量操作方法（用于导入导出） ---
 
   // 清除所有日记的导出标记（换目录重新导出时调用）
@@ -466,6 +490,8 @@ class DbHelper {
         'created_at': diary['created_at'],
         'audio_path': diary['audio_path'],
         'duration': diary['duration'],
+        // 标注列（v10 新增）：旧备份导入时解析结果为 null，落库即无标注
+        'tag': diary['tag'],
       });
     }
     await batch.commit(noResult: true);

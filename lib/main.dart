@@ -1,7 +1,10 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart'; // LicenseRegistry / LicenseEntryWithLineBreaks（开放源代码许可页登记字体 OFL）
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter/services.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa_onnx;
 import 'app_logger.dart';
@@ -10,21 +13,33 @@ import 'text_processor.dart';
 import 'record_tab.dart';
 import 'list_tab.dart';
 import 'settings_tab.dart';
-import 'diary_tab.dart'; // [新增] 引入日记页
+import 'diary_tab.dart';
 import 'widgets/blur_loading_overlay.dart';
+import 'widgets/diary_floating_button.dart';
 import 'shortcut_manager.dart' as sm;
 import 'recognizer_singleton.dart';
 import 'splash_screen.dart';
 import 'theme/app_theme.dart';
 import 'theme/app_theme_extension.dart';
+import 'overlay/overlay_constants.dart';
+import 'utils/alarm_ringing_notifier.dart';
+// 保活悬浮窗入口 overlayMain：Dart 编译器只编译从 main() 可达的代码，
+// 不 import 此文件 overlayMain 就不进 kernel，引擎报 "Could not resolve main entrypoint function"
+import 'overlay/overlay_main.dart' as overlay_entry;
+
+/// 悬浮窗引擎入口（根库转发）。
+///
+/// ⚠️ 原生层 DartEntrypoint(path, "overlayMain") 只在根库（main.dart 对应的库）里查找
+/// 入口函数——定义在独立库里的 overlayMain 即使已进 kernel 也找不到，报
+/// "Could not resolve main entrypoint function"（flutter_overlay_window 官方 README 同款做法）。
+@pragma('vm:entry-point')
+void overlayMain() => overlay_entry.overlayMain();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // 注册霞鹜文楷字体的 OFL 协议到 LicenseRegistry，让设置→关于→「开放源代码许可」
-  // 页（Flutter 官方 showLicensePage）能展示字体协议全文。
-  // 说明：showLicensePage 只会自动收集 pub 依赖的 LICENSE，字体以 asset 形式打包、
-  // 不属于任何 pub 包，故在此手动登记（此处只注册 stream 工厂，开销可忽略）。
+  // 注册霞鹜文楷字体的 OFL 协议到 LicenseRegistry，让设置→关于→「开放源代码许可」页
+  // 能展示字体协议全文（showLicensePage 只自动收集 pub 依赖的 LICENSE，asset 字体需手动登记）。
   LicenseRegistry.addLicense(() async* {
     final ofl = await rootBundle.loadString(
       'assets/licenses/OFL-LXGWWenKai.txt',
@@ -45,6 +60,9 @@ void main() async {
   final initialTheme = AppThemes.findById(themeId) ?? AppThemes.defaultTheme;
   // 初始化全局主题 notifier，AppRoot 内的 ValueListenableBuilder 会订阅它
   AppRoot.themeNotifier.value = initialTheme;
+
+  // 预读用户选择的字号缩放（默认 1.0 标准；旧版本无此 key 回退 1.0）
+  AppRoot.fontScaleNotifier.value = prefs.getDouble('font_size_scale') ?? 1.0;
 
   // 全局拦截 print，自动收集日志到 AppLogger
   runZonedGuarded(
@@ -72,11 +90,23 @@ void main() async {
 /// await prefs.setString('selected_theme', theme.id);
 /// AppRoot.themeNotifier.value = theme; // 立即触发整树重建
 /// ```
+///
+/// 切换字号时只需：
+/// ```dart
+/// final prefs = await SharedPreferences.getInstance();
+/// await prefs.setDouble('font_size_scale', scale);
+/// AppRoot.fontScaleNotifier.value = scale; // 立即触发整树重建
+/// ```
 class AppRoot extends StatelessWidget {
   /// 全局主题状态——任何位置都能读写
   /// main() 启动时初始化为持久化的用户选择，默认青兜底
   static final ValueNotifier<AppThemeDefinition> themeNotifier =
       ValueNotifier<AppThemeDefinition>(AppThemes.defaultTheme);
+
+  /// 全局字号缩放——任何位置都能读写
+  /// main() 启动时初始化为持久化的用户选择，默认 1.0（标准）
+  static final ValueNotifier<double> fontScaleNotifier =
+      ValueNotifier<double>(1.0);
 
   const AppRoot({super.key});
 
@@ -85,11 +115,36 @@ class AppRoot extends StatelessWidget {
     return ValueListenableBuilder<AppThemeDefinition>(
       valueListenable: themeNotifier,
       builder: (context, themeDef, _) {
-        return MaterialApp(
-          title: '声物记',
-          theme: themeDef.toThemeData(),
-          home: const SplashScreen(child: MainScaffold()),
-          debugShowCheckedModeBanner: false,
+        return ValueListenableBuilder<double>(
+          valueListenable: fontScaleNotifier,
+          builder: (context, fontScale, _) {
+            return MaterialApp(
+              title: '声物记',
+              theme: themeDef.toThemeData(),
+              // 强制中文本地化：UI 文案全 App 硬编码中文，日期转轮选择器
+              //（悬浮窗闹钟 CalendarConfirmSheet 的 CupertinoDatePicker）等
+              // 框架级文案跟随这里——不配则转轮显示英文月份/AM/PM
+              locale: const Locale('zh', 'CN'),
+              supportedLocales: const [Locale('zh', 'CN')],
+              localizationsDelegates: const [
+                GlobalMaterialLocalizations.delegate,
+                GlobalWidgetsLocalizations.delegate,
+                GlobalCupertinoLocalizations.delegate,
+              ],
+              // 全局字号缩放：整树文本统一缩放（含硬编码 fontSize）。
+              // 悬浮窗是独立 engine 独立 widget 树，不经过此 builder，不受影响。
+              builder: (context, child) {
+                return MediaQuery(
+                  data: MediaQuery.of(context).copyWith(
+                    textScaler: TextScaler.linear(fontScale),
+                  ),
+                  child: child!,
+                );
+              },
+              home: const SplashScreen(child: MainScaffold()),
+              debugShowCheckedModeBanner: false,
+            );
+          },
         );
       },
     );
@@ -123,9 +178,10 @@ class _MainScaffoldState extends State<MainScaffold>
   // 防止快捷方式重复触发
   bool _hasHandledShortcutLaunch = false;
 
-  // 闹钟响铃状态（原生层通过 SharedPreferences 传递）
-  bool _isAlarmRinging = false;
-  Timer? _alarmCheckTimer;
+  // 闹钟响铃状态（性能审查 Top5）：原生响铃开始/停止经通道推事件
+  // （onAlarmRinging / onAlarmStopped，见 MainActivity.flutterChannel），
+  // 冷启动从 SharedPreferences 一次性恢复——不再全局 2 秒轮询 prefs
+  final AlarmRingingNotifier _alarmRinging = AlarmRingingNotifier();
 
   // 【关键】给列表页创建一个"遥控器" (Key)
   final GlobalKey<ListTabState> _listTabKey = GlobalKey<ListTabState>();
@@ -134,21 +190,17 @@ class _MainScaffoldState extends State<MainScaffold>
   // [新增] 日记页的 Key
   final GlobalKey<DiaryTabState> _diaryTabKey = GlobalKey<DiaryTabState>();
 
-  // 日记页浮动按钮上滑新建文本笔记的拖拽状态
-  // 设计原则：麦克风按钮位置始终固定，上滑时「↑ Aa」徽章从按钮上方被拉出
-  static const double _kSwipeThreshold = 70.0; // 触发新建笔记的上滑距离阈值
-  static const double _kSwipeVelocity = 250.0; // 快速滑动兜底速度阈值（仅向上，向上速度为负）
-  static const double _kMaxDragDistance = 72.0; // 最大拖动距离
-  static const double _kAaDamping = 0.65; // Aa 徽章视觉阻尼系数（手指移 70px 徽章只移约 46px）
-  static const double _kAaAppearStart = 10.0; // Aa 开始出现的拖动距离（之前无反馈，防点击误触）
-  static const double _kAaAppearFull = 35.0; // Aa 完全显示的拖动距离
-  static const double _kAaTriggerScale = 1.08; // 激活态 Aa 徽章放大
-  static const double _kMicTriggerScale = 0.96; // 激活态麦克风按钮轻微缩小（位置不动）
+  // 日记页浮动按钮（DiaryFloatingButton，widgets/diary_floating_button.dart）
+  // 上滑手势的拖拽状态已下沉到该组件自有 State——拖拽帧只重建按钮子树，
+  // 不再 MainScaffold 整页 setState（性能审查 Top6）
 
-  double _dragOffset = 0.0; // 垂直拖动累计位移（上滑为负值），手势回调写入，_buildAaBadge 读取
-  double _dragOffsetX = 0.0; // 水平位移累计（>24px 取消本次滑动，防斜滑/横滑误触）
-  bool _isDragging = false; // 是否处于垂直拖拽中（拖拽中动画 duration=0 即时跟手）
-  bool _isTriggered = false; // 上滑是否达到激活阈值（✓+震动+松手新建），手势回调写入，徽章/按钮/状态文字读取
+  // 【性能审查 Top6】三个外层浮动组件各自的状态刷新信号：
+  // tab 状态翻转（录音/处理/搬家等）经 onStateChanged 递增对应计数，
+  // 只重建对应浮动组件（ValueListenableBuilder 包裹），不再 MainScaffold
+  // 整页 setState（IndexedStack 四页 build 全部陪跑）
+  final ValueNotifier<int> _recordBarTick = ValueNotifier<int>(0);
+  final ValueNotifier<int> _listButtonTick = ValueNotifier<int>(0);
+  final ValueNotifier<int> _diaryButtonTick = ValueNotifier<int>(0);
 
   @override
   void initState() {
@@ -161,15 +213,9 @@ class _MainScaffoldState extends State<MainScaffold>
     // 初始化快捷方式管理器（用于动态快捷方式）
     sm.ShortcutManager().initialize(_handleQuickRecord);
 
-    // 定期检查闹钟响铃状态（原生层通过 SharedPreferences 传递）
-    _alarmCheckTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.reload(); // 原生层写入，必须 reload
-      final ringing = prefs.getBool('is_alarm_ringing') ?? false;
-      if (ringing != _isAlarmRinging && mounted) {
-        setState(() => _isAlarmRinging = ringing);
-      }
-    });
+    // 闹钟响铃：冷启动一次性恢复（进程被杀期间闹钟触发过、用户未点通知
+    // 直接打开 APP 的场景，无引擎可推事件，只能读原生写入的 prefs 标志）
+    unawaited(_alarmRinging.restoreOnce());
 
     // 监听原生层的快捷方式启动事件（用于静态快捷方式和冷启动）
     _platform.setMethodCallHandler((call) async {
@@ -180,19 +226,32 @@ class _MainScaffoldState extends State<MainScaffold>
           _handleQuickRecord();
         } else if (shortcutType == 'quick_text_note') {
           _handleQuickTextNote();
+        } else if (shortcutType == 'grant_calendar') {
+          _handleGrantCalendarPermission();
         }
       } else if (call.method == 'onReceiveSharedText') {
         final args = call.arguments as Map<dynamic, dynamic>;
         final text = args['text'] as String;
         final source = args['source'] as String?;
         await _handleReceiveSharedText(text, source: source);
+      } else if (call.method == 'showOverlay') {
+        // 原生层（如音量键长按）请求显示悬浮窗，显示后把主 App 退到后台
+        await _showFloatingOverlay(moveToBack: true);
+      } else if (call.method == 'onAlarmRinging' ||
+          call.method == 'onAlarmStopped') {
+        // 闹钟响铃开始/停止事件（原生 AlarmReceiver 推送，见
+        // MainActivity.flutterChannel）——替代旧 2 秒轮询，响铃即时显隐横幅
+        _alarmRinging.handleNativeEvent(call.method);
       }
     });
   }
 
   @override
   void dispose() {
-    _alarmCheckTimer?.cancel();
+    _alarmRinging.dispose();
+    _recordBarTick.dispose();
+    _listButtonTick.dispose();
+    _diaryButtonTick.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -260,6 +319,29 @@ class _MainScaffoldState extends State<MainScaffold>
     }
   }
 
+  /// 处理悬浮窗闹钟的日历权限请求（悬浮窗无 Activity 不能自己弹授权框，
+  /// 由无障碍 Service 拉起主 App 并携带 type=grant_calendar extra 路由到此）。
+  /// 日历 + 通知权限一次请求齐——悬浮窗闹钟两项都用得上
+  Future<void> _handleGrantCalendarPermission() async {
+    log('🔑 [Permission] 主 App 被悬浮窗拉起：请求日历权限');
+    final calendarStatus = await Permission.calendarFullAccess.request();
+    // 通知权限失败不阻塞（只影响响铃，日历事件本身已可用）
+    await Permission.notification.request();
+    if (!mounted) return;
+    final granted = calendarStatus.isGranted;
+    log('🔑 [Permission] 日历权限请求结果: $calendarStatus');
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          granted
+              ? '日历权限已授予，可在悬浮窗中添加日历提醒了'
+              : '日历权限被拒绝，悬浮窗闹钟将无法添加日程',
+        ),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
   /// 处理系统分享菜单传入的文本
   Future<void> _handleReceiveSharedText(String text, {String? source}) async {
     // 🔍 诊断分享来源：确认原生层经 MethodChannel 传来的 source 是否为 null
@@ -277,6 +359,52 @@ class _MainScaffoldState extends State<MainScaffold>
       return;
     }
     await diaryState.saveSharedTextNote(text, source: source);
+  }
+
+  /// 显示系统级悬浮窗（闪念胶囊）
+  ///
+  /// 首次调用会检查/请求 `SYSTEM_ALERT_WINDOW` 权限，然后以收起态把手显示在屏幕右侧。
+  Future<void> _showFloatingOverlay({bool moveToBack = false}) async {
+    try {
+      // 1. 检查并请求悬浮窗权限
+      if (!await FlutterOverlayWindow.isPermissionGranted()) {
+        print('🔒 [Overlay] 悬浮窗权限未授予，请求权限');
+        final granted = await FlutterOverlayWindow.requestPermission();
+        if (granted != true) {
+          print('❌ [Overlay] 用户拒绝悬浮窗权限');
+          return;
+        }
+      }
+
+      // 2. 如果已经激活，先关闭再重新显示（避免重复叠加）
+      if (await FlutterOverlayWindow.isActive()) {
+        print('🔄 [Overlay] 悬浮窗已存在，先关闭');
+        await FlutterOverlayWindow.closeOverlay();
+      }
+
+      // 3. 显示收起态把手
+      print('🪟 [Overlay] 显示悬浮窗把手');
+      await FlutterOverlayWindow.showOverlay(
+        alignment: OverlayAlignment.centerRight,
+        positionGravity: PositionGravity.right,
+        height: OverlayConstants.handleHeight,
+        width: OverlayConstants.handleWidth,
+        flag: OverlayFlag.defaultFlag,
+        overlayTitle: '声物记悬浮窗',
+        overlayContent: '点击边缘把手展开随手记',
+        enableDrag: false,
+      );
+
+      // 4. 触发场景（音量键）需要把主 App 退到后台，不遮挡悬浮窗
+      // 🔍 方案二调试：暂时不移到后台，验证小米是否允许在 App 前台显示悬浮窗
+      if (moveToBack) {
+        print('🔙 [Overlay] 调试模式：跳过 moveTaskToBack，主 App 留在前台');
+        // await _platform.invokeMethod('moveTaskToBack');
+      }
+    } catch (e, stack) {
+      print('❌ [Overlay] 显示悬浮窗失败: $e');
+      log('❌ [Overlay] 显示悬浮窗失败:', e, stack);
+    }
   }
 
   // 显示全局loading
@@ -348,21 +476,22 @@ class _MainScaffoldState extends State<MainScaffold>
                       hideGlobalLoading();
                     }
                   },
-                  // 按钮栏在 main.dart 外层 Stack，RecordTab 状态变化（录音/处理/搬家）需通知此处重建
-                  onStateChanged: () => setState(() {}),
+                  // 按钮栏在 main.dart 外层 Stack，RecordTab 状态变化（录音/处理/搬家）→
+                  // tick 递增只重建外层按钮栏，不再整页重建（性能审查 Top6）
+                  onStateChanged: () => _recordBarTick.value++,
                 ),
                 // [修改] 传入回调，让列表页状态变化时，外层也跟着刷新按钮 UI
                 ListTab(
                   key: _listTabKey,
                   dbHelper: _dbHelper,
-                  onStateChanged: () => setState(() {}),
+                  onStateChanged: () => _listButtonTick.value++,
                 ),
-                // [修改] 传入回调，让日记页状态变化时，外层也跟着刷新
+                // [修改] 传入回调，让日记页状态变化时，外层浮动按钮跟着刷新
                 DiaryTab(
                   key: _diaryTabKey,
                   dbHelper: _dbHelper,
                   processor: _processor,
-                  onStateChanged: () => setState(() {}),
+                  onStateChanged: () => _diaryButtonTick.value++,
                   onLoadingChanged: (show, {message}) {
                     if (show) {
                       showGlobalLoading(message: message);
@@ -422,8 +551,8 @@ class _MainScaffoldState extends State<MainScaffold>
                     }
                   });
                 },
-                selectedItemColor: ext.primary, // 原 Colors.blueAccent
-                unselectedItemColor: ext.textHint, // 原 Colors.grey 未选中颜色
+                selectedItemColor: ext.primary,
+                unselectedItemColor: ext.textHint,
                 items: const [
                   BottomNavigationBarItem(icon: Icon(Icons.mic), label: "存物品"),
                   BottomNavigationBarItem(
@@ -443,14 +572,57 @@ class _MainScaffoldState extends State<MainScaffold>
               ),
             ),
           ),
-          // 【悬浮语音按钮】：因为在外层 Stack 中，它会钉在物理底部，键盘弹起时会被覆盖而不会飞起
-          if (_currentIndex == 2) _buildFloatingDiaryButton(),
-          // 【物品列表页浮动按钮】：与日记页同款外层 Stack 模式，键盘弹起不上浮
-          if (_currentIndex == 1) _buildFloatingListButton(),
-          // 【录入页钉底按钮栏】：在外层 Stack 才不受键盘挤压
-          if (_currentIndex == 0) _buildRecordBottomBar(),
-          // 闹钟响铃横幅
-          if (_isAlarmRinging) _buildAlarmRingingBanner(),
+          // 【悬浮语音按钮】：因为在外层 Stack 中，它会钉在物理底部，键盘弹起时会被覆盖而不会飞起。
+          // ValueListenableBuilder：DiaryTab 状态翻转（_diaryButtonTick）只重建按钮，
+          // 不整页 setState；拖拽状态在 DiaryFloatingButton 自有 State（Top6）
+          if (_currentIndex == 2)
+            ValueListenableBuilder<int>(
+              valueListenable: _diaryButtonTick,
+              builder: (context, _, _) {
+                // ⚠️ 【日记页浮动按钮的唯一控制点】
+                // 按钮颜色/启用状态在此读取 DiaryTabState 传入（三态 + 模型存在
+                // 与否），diary_tab.dart 中的 btnColor/onBtnPressed 是 unused 变量。
+                // 上下游：state.isReady 由 diary_tab.initEngine() 设置；
+                // RecognizerSingleton.hasModel 由 recognizer_singleton 静态管理；
+                // 切换 tab 时 diary_tab.refreshEngine() 会刷新状态并经
+                // onStateChanged → tick 触发此处重建
+                final state = _diaryTabKey.currentState;
+                if (state == null) return const SizedBox.shrink();
+                return DiaryFloatingButton(
+                  modelAvailable: RecognizerSingleton.hasModel,
+                  isReady: state.isReady,
+                  isListening: state.isListening,
+                  isProcessing: state.isProcessing,
+                  isLockedRecording: state.isLockedRecording,
+                  statusText: state.statusText,
+                  onStartListening: () => state.startListening(),
+                  onStopListening: state.stopListening,
+                  onNewTextNote: () => state.startNewTextNote(),
+                );
+              },
+            ),
+          // 【物品列表页浮动按钮】：与日记页同款外层 Stack 模式，键盘弹起不上浮；
+          // ListTab 状态翻转（_listButtonTick）只重建按钮不整页 setState（Top6）
+          if (_currentIndex == 1)
+            ValueListenableBuilder<int>(
+              valueListenable: _listButtonTick,
+              builder: (context, _, _) => _buildFloatingListButton(),
+            ),
+          // 【录入页钉底按钮栏】：在外层 Stack 才不受键盘挤压；
+          // RecordTab 状态翻转（_recordBarTick，含搬家模式开关）只重建按钮栏（Top6）
+          if (_currentIndex == 0)
+            ValueListenableBuilder<int>(
+              valueListenable: _recordBarTick,
+              builder: (context, _, _) => _buildRecordBottomBar(),
+            ),
+          // 闹钟响铃横幅：ListenableBuilder 局部订阅 _alarmRinging，
+          // 响铃开始/停止只重建横幅自身，不再依赖整页 setState
+          ListenableBuilder(
+            listenable: _alarmRinging,
+            builder: (context, _) => _alarmRinging.ringing
+                ? _buildAlarmRingingBanner()
+                : const SizedBox.shrink(),
+          ),
           // 全局模糊loading遮罩
           if (_showGlobalLoading) BlurLoadingOverlay(message: _loadingMessage),
         ],
@@ -490,9 +662,9 @@ class _MainScaffoldState extends State<MainScaffold>
                     } catch (e) {
                       log('⚠️ 停止闹钟失败: $e');
                     }
-                    if (mounted) {
-                      setState(() => _isAlarmRinging = false);
-                    }
+                    // 乐观收起横幅；原生 stopAlarmCompletely 随后推送的
+                    // onAlarmStopped 为同值幂等
+                    _alarmRinging.markStopped();
                   },
                   style: TextButton.styleFrom(
                     foregroundColor: Colors.white,
@@ -508,322 +680,20 @@ class _MainScaffoldState extends State<MainScaffold>
     );
   }
 
-  /// 复位上滑手势的全部状态（dragEnd 触发后 / dragCancel / 水平取消 三处共用）
-  void _resetSwipeState() {
-    _isDragging = false;
-    _dragOffset = 0.0;
-    _dragOffsetX = 0.0;
-    _isTriggered = false;
-  }
-
-  /// 上滑时从麦克风按钮上方拉出的「↑ Aa」徽章（新建文本笔记的视觉反馈）
-  // 设计原则：麦克风按钮位置固定不动，只有 Aa 徽章随上滑距离阻尼上移，
-  // 营造"从按钮上方拉出文本输入功能"的手感，而不是拖动按钮本身
-  // 上下游：_dragOffset / _isTriggered / _isDragging 由外层 GestureDetector 回调写入
-  Widget _buildAaBadge(AppThemeExtension ext) {
-    // 上滑距离（正值）；下滑 clamp 为 0 → 无反馈不触发
-    final distance = (-_dragOffset).clamp(0.0, _kMaxDragDistance);
-    // 阻尼位移：手指移 70px，徽章只移约 46px
-    final visualOffset = distance * _kAaDamping;
-    // 10px 内无反馈（防点击误触），10→35px 渐显
-    final opacity =
-        ((distance - _kAaAppearStart) / (_kAaAppearFull - _kAaAppearStart))
-            .clamp(0.0, 1.0);
-    // 拖动中 0ms 即时跟手；松手后 180ms 平滑淡出恢复默认
-    final Duration animDur = _isDragging
-        ? Duration.zero
-        : const Duration(milliseconds: 180);
-
-    return IgnorePointer(
-      // 徽章是纯视觉反馈，不参与命中测试，避免在按钮上方扩大隐形手势热区
-      child: AnimatedOpacity(
-        opacity: opacity,
-        duration: animDur,
-        child: AnimatedContainer(
-          transform: Matrix4.translationValues(0, -visualOffset, 0),
-          duration: animDur,
-          child: AnimatedScale(
-            scale: _isTriggered ? _kAaTriggerScale : 1.0,
-            duration: const Duration(milliseconds: 120),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                // 浅青胶囊底（fabReady 低透明度），复用主题色槽，不引入新颜色体系
-                color: ext.fabReady.withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    Icons.keyboard_arrow_up,
-                    size: 18,
-                    color: ext.fabReady,
-                  ),
-                  const SizedBox(width: 2),
-                  Text(
-                    'Aa',
-                    style: TextStyle(
-                      // ⚠️ 本区域位于 Scaffold 外层 Stack（无 Material 祖先），
-                      // Text 不给完整样式会 fallback 到黄色双下划线警示样式，
-                      // decoration 必须显式置 none（同下方状态文字的处理）
-                      fontFamily: 'LXGWWenKaiMonoGBScreen',
-                      fontSize: 17,
-                      fontWeight: FontWeight.w600,
-                      color: ext.fabReady,
-                      decoration: TextDecoration.none,
-                    ),
-                  ),
-                  // 激活态才显示 ✓（达到阈值，松手即新建）
-                  AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 120),
-                    child: _isTriggered
-                        ? Padding(
-                            key: const ValueKey('aa-check'),
-                            padding: const EdgeInsets.only(left: 3),
-                            child: Icon(
-                              Icons.check,
-                              size: 16,
-                              color: ext.fabReady,
-                            ),
-                          )
-                        : const SizedBox.shrink(key: ValueKey('aa-no-check')),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  // ⚠️ 【日记页浮动按钮的唯一控制点】
-  // 按钮颜色/启用状态在此控制，diary_tab.dart 中的 btnColor/onBtnPressed 是 unused 变量
-  // 上下游：state.isReady 由 diary_tab.initEngine() 设置
-  //         RecognizerSingleton.hasModel 由 recognizer_singleton 静态管理
-  //         切换 tab 时 diary_tab.refreshEngine() 会刷新状态并触发此处重建
-  Widget _buildFloatingDiaryButton() {
-    final state = _diaryTabKey.currentState;
-    if (state == null) return const SizedBox.shrink();
-
-    final ext = AppThemeExtension.of(context);
-
-    // 颜色和图标逻辑
-    Color btnColor = ext.fabReady; // 原 Colors.teal
-    Widget btnChild = const Icon(
-      Icons.mic,
-      color: Colors.white,
-      size: 46,
-    ); // 原 Colors.white
-
-    if (!state.isReady && !RecognizerSingleton.hasModel) {
-      // 模型文件不存在 → 禁用按钮
-      btnColor = ext.fabDisabled; // 原 Colors.grey
-    } else if (state.isListening) {
-      btnColor = ext.fabRecording; // 原 Colors.redAccent
-      btnChild = Icon(
-        Icons.fiber_manual_record,
-        color: Colors.white,
-        size: 46,
-      ); // 原 Colors.white
-    } else if (state.isProcessing) {
-      btnColor = ext.fabProcessing; // 原 Colors.orangeAccent
-      btnChild = SizedBox(
-        width: 40,
-        height: 40,
-        child: CircularProgressIndicator(
-          color: Colors.white,
-          strokeWidth: 3,
-        ), // 原 Colors.white
-      );
-    } else {
-      // 就绪状态：纯麦克风图标
-      // [2026-08-19] 原圆内左右双箭头滑动提示已移除，由上滑拉出的「↑ Aa」徽章反馈
-      // 替代（见 _buildAaBadge）；下滑暂无功能，不做对称提示以免误导
-      // 经验保留：本按钮位于 Scaffold 外层 Stack（无 Material 祖先），Text 若不给
-      // 完整样式会 fallback 到黄色双下划线警示样式（_buildAaBadge 已按此防护）
-      btnChild = const Icon(Icons.mic, color: Colors.white, size: 46);
-    }
-
-    return Positioned(
-      left: 0,
-      right: 0,
-      bottom: 90,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          GestureDetector(
-            // 外层：只负责垂直拖拽（上滑），拉出 Aa 后松手新建文本笔记
-            onVerticalDragStart: (details) {
-              if (state.isLockedRecording) return;
-              setState(() {
-                _isDragging = true;
-                _dragOffset = 0.0;
-                _dragOffsetX = 0.0;
-                _isTriggered = false;
-              });
-            },
-            onVerticalDragUpdate: (details) {
-              if (!_isDragging) return;
-              // 先算目标位移与激活态（上滑距离为正值；下滑 clamp 为 0 → 无反馈不触发）
-              final newOffset = (_dragOffset + details.delta.dy).clamp(
-                -_kMaxDragDistance,
-                _kMaxDragDistance,
-              );
-              final upDistance = (-newOffset).clamp(0.0, _kMaxDragDistance);
-              final willTrigger = upDistance >= _kSwipeThreshold;
-              // 激活瞬间一次轻震动，不持续震动（回退到阈值以下可重新激活）
-              if (willTrigger && !_isTriggered) {
-                HapticFeedback.lightImpact();
-              }
-              setState(() {
-                _dragOffsetX += details.delta.dx;
-                // 如果水平位移明显，取消本次上滑，避免斜滑/横滑误触发
-                if (_dragOffsetX.abs() > 24.0) {
-                  _resetSwipeState();
-                  return;
-                }
-                _dragOffset = newOffset;
-                _isTriggered = willTrigger;
-              });
-            },
-            onVerticalDragEnd: (details) async {
-              if (!_isDragging) return;
-              // 触发条件：达到激活阈值，或快速向上甩动兜底（向上速度为负值）
-              final shouldTrigger =
-                  _isTriggered ||
-                  (details.primaryVelocity ?? 0) < -_kSwipeVelocity;
-
-              if (shouldTrigger && !state.isLockedRecording) {
-                // 状态归零（Aa 徽章淡出），再触发新建笔记
-                setState(_resetSwipeState);
-                await state.startNewTextNote();
-                return;
-              }
-
-              if (mounted) {
-                // 未达阈值：不执行任何操作，Aa 徽章以 180ms 动画恢复默认
-                setState(_resetSwipeState);
-              }
-            },
-            onVerticalDragCancel: () {
-              // 系统打断手势（如页面被移除）时复位，防止拖拽状态卡死
-              if (!_isDragging) return;
-              setState(_resetSwipeState);
-            },
-            child: SizedBox(
-              width: 94,
-              height: 94,
-              child: Stack(
-                // 关键：clipBehavior none，允许 Aa 徽章溢出按钮上方渲染
-                clipBehavior: Clip.none,
-                children: [
-                  // 「↑ Aa」徽章：下缘锚定在按钮上缘外 2px（bottom: 96 = 按钮高 94 + 2）
-                  // 随上滑阻尼上移（见 _buildAaBadge），按钮本体位置始终固定
-                  Positioned(
-                    left: 0,
-                    right: 0,
-                    bottom: 96,
-                    child: Center(child: _buildAaBadge(ext)),
-                  ),
-                  // 麦克风按钮本体：位置固定不动（不再随拖动平移），激活时轻微缩小
-                  AnimatedScale(
-                    scale: _isTriggered ? _kMicTriggerScale : 1.0,
-                    duration: const Duration(milliseconds: 120),
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 200),
-                      width: 94,
-                      height: 94,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: btnColor,
-                        // 🎨 黏土拟态阴影：顶部高光 + 底部深色阴影
-                        boxShadow: [
-                          // 顶部高光阴影（模拟光源从上方）
-                          BoxShadow(
-                            color: ext.textOnPrimary.withValues(
-                              alpha: 0.4,
-                            ), // 原 Colors.white
-                            offset: const Offset(-4, -4),
-                            blurRadius: 8,
-                          ),
-                          // 底部深色阴影（模拟凹陷感）
-                          BoxShadow(
-                            color: Colors.black.withValues(alpha: 0.2),
-                            offset: const Offset(4, 4),
-                            blurRadius: 10,
-                          ),
-                        ],
-                      ),
-                      child: GestureDetector(
-                        // 内层：保留原有 onTap / onLongPressStart / onLongPressEnd
-                        onTap: () {
-                          // 锁定录音模式下，点击停止录音
-                          if (state.isLockedRecording) {
-                            state.stopListening();
-                          }
-                        },
-                        onLongPressStart: (_) {
-                          // 普通模式下，长按开始录音
-                          if (!state.isLockedRecording) {
-                            state.startListening();
-                          }
-                        },
-                        onLongPressEnd: (_) {
-                          // 普通模式下，松开停止录音
-                          if (!state.isLockedRecording) {
-                            state.stopListening();
-                          }
-                        },
-                        child: Center(child: btnChild),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 14),
-          // 用固定高度容器包裹文字：文字出现/消失都不改变 Column 总高度
-          // 按钮位置完全稳定，不再抖动（修复"录音时按钮被撑高"问题）
-          SizedBox(
-            height: 22, // 中文字体 fontSize 16 行高约 22，预留固定空间
-            child: Center(
-              child: Text(
-                _isTriggered
-                    ? '松手新建文本笔记'
-                    : (state.isLockedRecording ? '点击停止' : state.statusText),
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  // 显式指定霞鹜文楷字体，避免在部分 widget 链路中 Roboto 回退
-                  fontFamily: 'LXGWWenKaiMonoGBScreen',
-                  fontSize: 16,
-                  color: ext.textHint, // 原 Colors.black45
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ⚠️ 【物品列表页浮动按钮】完全仿 _buildFloatingDiaryButton 模式
+  // ⚠️ 【物品列表页浮动按钮】同 widgets/diary_floating_button.dart（日记页）的外层 Stack 模式
   // 跟日记页的差异：
   //   1. 长按开始/松开停止（无锁定模式）
   //   2. 状态文本：录音中"松开停止"、处理中"识别中..."
   //   3. ListTab 只读 hasModel/isReady 判断按钮启用
   // 上下游：state.isReady/isListening/isProcessing 由 list_tab.dart 的 setState 流转
-  //         ListTab.onStateChanged 回调触发本方法重建
+  //         ListTab.onStateChanged → _listButtonTick 递增触发本方法重建（Top6）
   Widget _buildFloatingListButton() {
     final state = _listTabKey.currentState;
     if (state == null) return const SizedBox.shrink();
 
     final ext = AppThemeExtension.of(context);
 
-    // 颜色和图标逻辑（仿日记页 main.dart:449-465）
+    // 颜色和图标逻辑（仿日记页浮动按钮）
     Color btnColor = ext.fabReady; // 默认青色
     Widget btnChild = Icon(Icons.mic, color: ext.textOnPrimary, size: 46);
 
@@ -851,7 +721,7 @@ class _MainScaffoldState extends State<MainScaffold>
       );
     }
 
-    // 状态文本（固定高度 22 容器避免抖动，仿日记页 main.dart:522-537）
+    // 状态文本（固定高度 22 容器避免抖动，仿日记页）
     String statusText = '';
     if (state.isListening) {
       statusText = '松开停止';
@@ -883,7 +753,7 @@ class _MainScaffoldState extends State<MainScaffold>
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: btnColor,
-                // 🎨 黏土拟态阴影（仿日记页 main.dart:500-514）
+                // 🎨 黏土拟态阴影（仿日记页）
                 boxShadow: [
                   // 顶部高光阴影（模拟光源从上方）
                   BoxShadow(
@@ -925,8 +795,7 @@ class _MainScaffoldState extends State<MainScaffold>
   }
 
   // ⚠️ 【录入页钉底按钮栏（录音 + 确认保存）】
-  // 必须放在 main.dart 外层 Stack（Scaffold 之外），才不受 resizeToAvoidBottomInset 影响。
-  // RecordTab 自己的 Stack 嵌在 IndexedStack(main.dart:281) 里会被键盘挤压，
+  // 必须放在 main.dart 外层 Stack（Scaffold 之外），才不受 resizeToAvoidBottomInset 影响；
   // 按钮放这里才能"键盘弹起原地不动、被覆盖不上浮"（用户已确认接受此行为）。
   // 仿 _buildFloatingListButton 模式。颜色状态机复现自 record_tab.dart 原非搬家逻辑。
   Widget _buildRecordBottomBar() {
@@ -938,25 +807,25 @@ class _MainScaffoldState extends State<MainScaffold>
     final ext = AppThemeExtension.of(context);
 
     // 颜色/图标状态机（复现 record_tab.dart 原非搬家模式染色）
-    Color btnColor = ext.fabReady; // 原 Colors.teal
+    Color btnColor = ext.fabReady;
     Widget btnChild = Icon(
       Icons.mic,
-      color: ext.textOnPrimary, // 原 Colors.white
+      color: ext.textOnPrimary,
       size: 55,
     );
 
     if (!state.isReady && !RecognizerSingleton.hasModel) {
       // 模型文件不存在 → 禁用按钮（灰色）
-      btnColor = ext.fabDisabled; // 原 Colors.grey
+      btnColor = ext.fabDisabled;
     } else if (state.isListening) {
-      btnColor = ext.fabRecording; // 原 Colors.redAccent
+      btnColor = ext.fabRecording;
       btnChild = Icon(
         Icons.fiber_manual_record,
         color: ext.textOnPrimary,
         size: 55,
       );
     } else if (state.isProcessing) {
-      btnColor = ext.fabProcessing; // 原 Colors.orangeAccent
+      btnColor = ext.fabProcessing;
       btnChild = SizedBox(
         width: 45,
         height: 45,
@@ -990,7 +859,7 @@ class _MainScaffoldState extends State<MainScaffold>
                     style: TextStyle(
                       fontSize: 15,
                       fontWeight: FontWeight.w500,
-                      color: ext.textSecondary, // 原 Colors.black45
+                      color: ext.textSecondary,
                     ),
                   ),
                 ),
@@ -1029,8 +898,8 @@ class _MainScaffoldState extends State<MainScaffold>
                     child: ElevatedButton(
                       onPressed: state.saveData,
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: ext.primary, // 原 Colors.teal
-                        foregroundColor: ext.textOnPrimary, // 原 Colors.white
+                        backgroundColor: ext.primary,
+                        foregroundColor: ext.textOnPrimary,
                         elevation: 0,
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(18),
@@ -1108,13 +977,13 @@ class _MainScaffoldState extends State<MainScaffold>
               Icons.info_outline,
               color: ext.textOnPrimary,
               size: 16,
-            ), // 原 Colors.white
+            ),
             const SizedBox(width: 8),
             const Text('再按一次退出应用', style: TextStyle(fontSize: 12)),
           ],
         ),
         duration: _exitPromptTimeout,
-        backgroundColor: ext.textPrimary, // 原 Colors.black87
+        backgroundColor: ext.textPrimary,
         behavior: SnackBarBehavior.floating,
         margin: EdgeInsets.fromLTRB(
           90,

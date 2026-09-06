@@ -6,7 +6,8 @@ import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:record/record.dart';
 import 'package:vibration/vibration.dart';
-import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa_onnx;
+// 历史方案：import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa_onnx;
+// （识别链路已迁 worker isolate，本文件不再触碰 FFI 类型，走门面 transcribe()）
 import 'package:audioplayers/audioplayers.dart';
 import '../db_helper.dart';
 import '../text_processor.dart';
@@ -35,7 +36,7 @@ class RecordTab extends StatefulWidget {
   });
 
   @override
-  State<RecordTab> createState() => RecordTabState(); // 改为公开 State 类名
+  State<RecordTab> createState() => RecordTabState(); // 公开 State 类名，供 main.dart 调用
 }
 
 class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
@@ -53,8 +54,8 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
 
   // 使用单例管理器
   final _recognizerManager = RecognizerSingleton.instance;
-  sherpa_onnx.OfflineRecognizer? get _recognizer =>
-      _recognizerManager.recognizer;
+  // 识别链路已迁 worker isolate：本文件不直触 FFI，全走
+  // _recognizerManager.transcribe() / warmup() / isReady（详见 speech-recognition.md）
 
   List<double> _audioBuffer = [];
   bool _isReady = false;
@@ -99,8 +100,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
   Timer? _idleDimTimer; // 闲置降亮计时器
   static const Duration _kDimDelay = Duration(seconds: 10); // 闲置多久后变暗
   static const double _kDimOpacity = 0.55; // 遮罩不透明度
-  // 注：plan 原列 _kDimAnimDuration 字段，但第一版明确不用动画（直接 if 渲染），
-  // 该字段无引用，已删除避免 unused_field 警告。后续若加 AnimatedOpacity 再补回。
+  // _kDimAnimDuration 故意不设：直接 if 渲染无动画，后续若加 AnimatedOpacity 再补回。
 
   // ── 搬家模式：语音撤销命令配置 ──
   // 用户听到 TTS 念错后（如"电扇"识别成"电脑"），不方便看手机点撤销按钮，
@@ -136,7 +136,6 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
   // 长音频 TTS 会被 SFX 的 stop 截断。AudioContext 同样配 mixWithOthers（initState 里设置）。
   final AudioPlayer _ttsPlayer = AudioPlayer();
 
-  // 2. 增加一个公开的刷新方法
   /// 公开方法：供 MainScaffold 调用，按需初始化引擎
   Future<void> initializeIfNeeded() async {
     // 刷新模型路径缓存，使 hasModel 判断正确
@@ -146,10 +145,12 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
     );
 
     // 如果已经加载成功，不重复加载
-    if (_isReady && _recognizerManager.isReady) return;
+    // ⚠️ 热切换守卫：判 isServingLatestModel 而非 isReady——导入新模型后旧模型还在，
+    // isReady 恒 true 会把回录入页的刷新短路掉（详见 speech-recognition.md）
+    if (_isReady && _recognizerManager.isServingLatestModel) return;
 
-    // 🆕 启动页已完成模型加载，直接同步状态（跳过重复加载）
-    if (_recognizerManager.isReady) {
+    // 启动页已完成模型加载，仅在服务最新路径时直接同步状态（跳过重复加载）
+    if (_recognizerManager.isServingLatestModel) {
       setState(() {
         _isReady = true;
         _statusText = "长按录音";
@@ -158,14 +159,14 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
       return;
     }
 
-    // 🆕 如果单例已经初始化过，直接同步状态
+    // 如果单例已经初始化过，直接同步状态
     if (_recognizerManager.hasEverInitialized) {
       setState(() => _statusText = "正在检查引擎...");
       await _initEngine();
       return;
     }
 
-    // 🆕 首次进入时不自动加载模型，但刷新 UI（按钮颜色可能因 hasModel 变化而更新）
+    // 首次进入时不自动加载模型，但刷新 UI（按钮颜色可能因 hasModel 变化而更新）
     if (_isFirstVisible) {
       setState(() {
         _isFirstVisible = false;
@@ -181,8 +182,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
     // 注册生命周期监听，支持从桌面恢复时预热引擎
     WidgetsBinding.instance.addObserver(this);
 
-    // 🆕 不再在首次进入时自动初始化引擎
-    // 模型将在用户停止录音后加载，确保录音流程不被打断
+    // 不在首次进入时自动初始化引擎：模型在用户停止录音后才加载，不打断录音流程
 
     // 配置音效播放器：mixWithOthers = AndroidAudioFocus.none
     // 不抢音频焦点，避免与 record 包的录音器冲突（详见 _sfxPlayer 字段注释）
@@ -310,7 +310,9 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
   // 调用链：_stopListening → _isProcessing=true → _initEngine() → 加载模型 → _isReady=true
   // 上下游：_isReady → 控制 build 中按钮颜色、main.dart 浮动按钮（仅日记页）
   Future<void> _initEngine() async {
-    if (_isReady) return;
+    // 热切换守卫：导入新模型后 _isReady 仍为 true 但模型已变，需放行让 initialize() 热切换
+    //（上方"不能检查 _isProcessing"注释语义不变）
+    if (_isReady && _recognizerManager.isServingLatestModel) return;
 
     // 检查权限
     if (await Permission.microphone.request().isGranted) {
@@ -336,23 +338,12 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
     }
   }
 
-  // 预热引擎：执行一次空识别，避免第一次使用时卡顿
+  // 预热引擎：worker 内执行一次 0.1s 静音 decode（幂等不抛），避免第一次使用时卡顿
   Future<void> _warmupEngine() async {
-    if (_recognizer == null) return;
+    if (!_recognizerManager.isReady) return;
 
     try {
-      // 创建一个空的音频流（0.1秒的静音）
-      final sampleRate = 16000;
-      final silentSamples = List.filled(sampleRate ~/ 10, 0.0); // 0.1秒静音
-
-      final stream = _recognizer!.createStream();
-      stream.acceptWaveform(
-        samples: Float32List.fromList(silentSamples),
-        sampleRate: sampleRate,
-      );
-      _recognizer!.decode(stream);
-      _recognizer!.getResult(stream);
-      stream.free();
+      await _recognizerManager.warmup();
 
       log("录入引擎预热完成");
     } catch (e) {
@@ -369,7 +360,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
       return;
     }
 
-    // 🆕 只检查模型文件是否存在
+    // 只检查模型文件是否存在
     if (!RecognizerSingleton.hasModel) {
       ScaffoldMessenger.of(
         context,
@@ -377,7 +368,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
       return;
     }
 
-    // 🆕 先请求录音权限
+    // 先请求录音权限
     if (!await Permission.microphone.request().isGranted) {
       if (mounted) {
         ScaffoldMessenger.of(
@@ -387,7 +378,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
       return;
     }
 
-    // 🆕 直接开始录音，不等待模型加载
+    // 直接开始录音，不等待模型加载
     _vibrate(duration: 50, amplitude: 40);
     _audioBuffer.clear();
     final stream = await _audioRecorder.startStream(
@@ -408,7 +399,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
   }
 
   void _stopListening() async {
-    if (_isProcessing) return; // 🆕 移除 _recognizer == null 检查
+    if (_isProcessing) return;
 
     final stopwatch = Stopwatch()..start();
     await _audioRecorder.stop();
@@ -420,9 +411,9 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
       _statusText = "正在识别...";
     });
 
-    sherpa_onnx.OfflineStream? stream;
+    // stream 生命周期收进 worker 内管理（识别已迁 worker isolate）
     try {
-      // 🆕 关键改动：在识别前先加载模型（如果未加载）
+      // 识别前先加载模型（如果未加载）
       if (!_isReady || !_recognizerManager.isReady) {
         if (!_recognizerManager.hasEverInitialized) {
           // 显示 loading 提示
@@ -464,16 +455,13 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
         }
       }
 
-      // 🆕 模型加载完成后，继续原有的识别逻辑
+      // 模型加载完成后继续识别逻辑
       if (_audioBuffer.isNotEmpty) {
-        stream = _recognizer!.createStream();
-        stream.acceptWaveform(
-          samples: Float32List.fromList(_audioBuffer),
-          sampleRate: 16000,
-        );
-        _recognizer!.decode(stream);
-        final result = _recognizer!.getResult(stream);
-        final rawText = result.text; // 拿到的原始语音文本
+        // 识别走 worker isolate（PCM 拷贝进 worker，文本拷贝回），
+        // 不再主 isolate 直 decode（同步 FFI 阻塞 UI）
+        final rawText = await _recognizerManager.transcribe(
+          Float32List.fromList(_audioBuffer),
+        ); // 拿到的原始语音文本
 
         if (rawText.isNotEmpty) {
           // ================= 【核心新增逻辑：智能日记识别】 =================
@@ -506,7 +494,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
                       children: [
                         Icon(
                           Icons.auto_awesome,
-                          color: snackBarExt.goldAccent, // 原 Colors.amber
+                          color: snackBarExt.goldAccent,
                           size: 20,
                         ),
                         SizedBox(width: 10),
@@ -517,7 +505,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
                       ],
                     ),
                     backgroundColor:
-                        snackBarExt.primaryDark, // 原 Colors.teal.shade700
+                        snackBarExt.primaryDark,
                     behavior: SnackBarBehavior.floating,
                     duration: const Duration(seconds: 2),
                     shape: RoundedRectangleBorder(
@@ -554,8 +542,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
       AppLogger.appLog('❌ [Record] 识别出错: $e');
       setState(() => _statusText = "识别出错");
     } finally {
-      // 【最关键】无论成功还是报错，必须释放 C++ 层的流资源，防止闪退
-      stream?.free();
+      // 【最关键】无论成功还是报错必须清理（C++ stream 已收进 worker 内管理，此处只剩缓冲）
       _audioBuffer.clear();
     }
 
@@ -652,6 +639,27 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
   /// 进入搬家模式：初始化 VAD + 启动持续录音
   Future<void> _enterMoveMode() async {
     if (_isMoveMode) return;
+    // 麦克风互斥守卫：悬浮窗语音速记录音中，搬家模式的持续录音会被
+    // Android 10+ 并发采集策略静默一路。overlay engine 写 is_recording 到
+    // SharedPreferences（跨 engine prefs 缓存隔离，必须 reload 后读落盘值）
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.reload();
+      if (prefs.getBool('is_recording') == true) {
+        log('🎤 [搬家模式] 悬浮窗正在录音，拒绝进入搬家模式（麦克风互斥）');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('悬浮窗正在录音，请先结束'),
+              duration: Duration(seconds: 2),
+            ),
+          );
+        }
+        return;
+      }
+    } catch (e) {
+      log('🎤 [搬家模式] 读取悬浮窗录音状态失败（不阻塞进入）: $e');
+    }
     setState(() {
       _isProcessing = true;
       _statusText = '正在初始化...';
@@ -834,7 +842,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
   /// 构造 TTS 播报文本
   ///
   /// 清掉 emoji / 标点等 TTS 可能读成乱码的字符，固定模板"已保存{物品}到{位置}"。
-  //  与 plan 第 3.7 节一致：insertItemReturningId 是纯 INSERT，恒用"已保存"文案。
+  //  insertItemReturningId 是纯 INSERT，恒用"已保存"文案。
   String _buildTtsText(String item, String location) {
     // 清掉 emoji / 标点等 TTS 可能读成乱码的字符
     final cleanItem = item.replaceAll(RegExp(r'[^\u4e00-\u9fa5a-zA-Z0-9]'), '');
@@ -856,8 +864,8 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
       _statusText = '正在识别...';
     });
     try {
-      final recognizer = _recognizer;
-      if (recognizer == null) {
+      // 识别走 worker isolate（门面 transcribe），不再主 isolate 直 decode（阻塞 UI）
+      if (!_recognizerManager.isReady) {
         log('⚠️ [搬家模式] 识别器未就绪，跳过本段');
         setState(() {
           _isProcessing = false;
@@ -865,11 +873,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
         });
         return;
       }
-      final stream = recognizer.createStream();
-      stream.acceptWaveform(samples: samples, sampleRate: 16000);
-      recognizer.decode(stream);
-      final rawText = recognizer.getResult(stream).text;
-      stream.free();
+      final rawText = await _recognizerManager.transcribe(samples);
       log('🎤 [搬家模式] 识别结果: "$rawText"');
       if (rawText.isEmpty) {
         setState(() {
@@ -1216,7 +1220,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
       child: Stack(
         children: [
           Scaffold(
-            backgroundColor: ext.scaffoldBackground, // 原 Color(0xFFF8F9FB)
+            backgroundColor: ext.scaffoldBackground,
             body: LayoutBuilder(
               builder: (context, constraints) {
                 return SingleChildScrollView(
@@ -1366,7 +1370,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
                               controller: _itemController,
                               hint: "物品名称",
                               icon: Icons.inventory_2_rounded,
-                              accentColor: ext.primary, // 原 Colors.blueAccent
+                              accentColor: ext.primary,
                             ),
                             // 物品名与存放位置的间距翻倍（20→40）
                             const SizedBox(height: 40),
@@ -1375,7 +1379,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
                               hint: "存放位置",
                               icon: Icons.place_rounded,
                               accentColor:
-                                  ext.warningText, // 原 Colors.orangeAccent
+                                  ext.warningText,
                             ),
                           ],
                           // ── 搬家模式：移除原录音按钮（Switch 已是开关），改用列表内撤销 ──
@@ -1447,7 +1451,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
           // IgnorePointer：让事件穿透到下方 UI（用户点"撤销"按钮时按钮正常工作，
           //   同时父级 Listener 已感知 pointerDown 恢复全亮）
           // ColoredBox+black opacity 0.55：OLED 屏真实省电，视觉明显变暗但不黑
-          // 直接 if 渲染无动画——plan 第一版决策，后续若用户觉得突兀再加 AnimatedOpacity
+          // 直接 if 渲染无动画，后续若用户觉得突兀再加 AnimatedOpacity
           if (_isMoveMode && _isDimmed)
             Positioned.fill(
               child: IgnorePointer(
@@ -1519,7 +1523,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
           // ── 搬家模式：钉底「撤销最近」按钮（最高层级，永远全亮不被卡片/遮罩遮挡）──
           // 放在降亮遮罩之后：遮罩 IgnorePointer 穿透事件，按钮自身可点；
           //   且按钮渲染在遮罩之上，降亮期间保持全亮可见（用户随时可撤销）。
-          //   用户点按钮时，外层 Listener.onPointerDown(record_tab.dart:1204 附近) 先恢复全亮。
+          //   用户点按钮时，外层 Listener.onPointerDown 先恢复全亮。
           if (_isMoveMode)
             Positioned(
               left: 0,
@@ -1578,13 +1582,13 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
     final ext = AppThemeExtension.of(context);
     return Container(
       decoration: BoxDecoration(
-        color: ext.cardBackground, // 原 Colors.white
+        color: ext.cardBackground,
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
             color: ext.textPrimary.withValues(
               alpha: 0.03,
-            ), // 原 Colors.black.withValues(alpha: 0.03)
+            ),
             blurRadius: 10,
             offset: const Offset(0, 4),
           ),

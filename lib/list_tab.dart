@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:record/record.dart';
-import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa_onnx;
+// 识别走 RecognizerSingleton.transcribe()（worker isolate，9edb24f），本文件不 import sherpa_onnx
 import 'package:vibration/vibration.dart';
 import '../db_helper.dart';
 import '../recognizer_singleton.dart';
@@ -33,7 +33,7 @@ class ListTabState extends State<ListTab> {
 
   // --- 语音查询相关 State ---
   // 上下游：RecognizerSingleton 是全局单例，DiaryTab 已初始化过，
-  //         ListTab 直接读 _recognizerManager.recognizer 即可，无需自己 initialize
+  //         ListTab 直接读 isReady + transcribe() 即可，无需自己 initialize
   final _recognizerManager = RecognizerSingleton.instance;
   // 本地 TextProcessor 实例（ListTab 不接收 processor 参数，避免改 main.dart）
   // 上下游：main.dart 只传 dbHelper 给 ListTab，TextProcessor 在此内部创建+loadConfigs
@@ -58,7 +58,7 @@ class ListTabState extends State<ListTab> {
     _audioRecorder = AudioRecorder();
     _processor.loadConfigs(); // 异步加载纠错规则，不阻塞 UI
     refreshItems();
-    _initEngineIfNeeded(); // 🆕 异步触发模型加载，不阻塞 build
+    _initEngineIfNeeded(); // 异步触发模型加载，不阻塞 build
   }
 
   @override
@@ -296,10 +296,9 @@ class ListTabState extends State<ListTab> {
 
   // --- 语音查询：识别 + 纠错 + 查询分发 ---
   Future<void> _processVoiceSearch() async {
-    sherpa_onnx.OfflineStream? stream;
+    // 识别走门面 transcribe()（worker isolate，9edb24f），stream 生命周期收进 worker 内管理
     try {
-      final recognizer = _recognizerManager.recognizer;
-      if (recognizer == null) {
+      if (!_recognizerManager.isReady) {
         log("🔍 [ListTab] 识别器为 null，无法识别");
         if (mounted) {
           ScaffoldMessenger.of(
@@ -319,15 +318,10 @@ class ListTabState extends State<ListTab> {
         return;
       }
 
-      // 识别
-      stream = recognizer.createStream();
-      stream.acceptWaveform(
-        samples: Float32List.fromList(_audioBuffer),
-        sampleRate: 16000,
+      // 识别（同步 FFI decode 在 worker isolate 内执行，不阻塞主 isolate UI）
+      final rawText = await _recognizerManager.transcribe(
+        Float32List.fromList(_audioBuffer),
       );
-      recognizer.decode(stream);
-      final result = recognizer.getResult(stream);
-      final rawText = result.text;
       log("🔍 [ListTab] 原始识别: $rawText");
 
       if (rawText.isEmpty) {
@@ -339,7 +333,7 @@ class ListTabState extends State<ListTab> {
         return;
       }
 
-      // 纠错（参考 DiaryTab 第 1407 行 widget.processor.process 调用）
+      // 纠错（参考 DiaryTab 的 processor.process 调用）
       // ListTab 查询场景默认 removeSpaces=true（查询词不需要空格）
       final corrected = _processor.process(rawText, removeSpaces: true);
       log("🔍 [ListTab] 纠错后: $corrected");
@@ -377,12 +371,11 @@ class ListTabState extends State<ListTab> {
         ).showSnackBar(SnackBar(content: Text("识别出错: $e")));
       }
     } finally {
-      stream?.free();
       _audioBuffer.clear();
     }
   }
 
-  // --- PCM bytes → Float32 转换（参考 diary_tab.dart 第 1477 行同款实现）---
+  // --- PCM bytes → Float32 转换（与 diary_tab 同款实现）---
   Float32List _convertBytesToFloat32(Uint8List bytes) {
     final int16Data = bytes.buffer.asInt16List();
     final float32Data = Float32List(int16Data.length);
@@ -402,8 +395,7 @@ class ListTabState extends State<ListTab> {
     // 注：浮动按钮渲染已搬到 main.dart._buildFloatingListButton（外层 Stack），
     // 这里恢复为单 Scaffold 结构，避免被 IndexedStack 的 resizeToAvoidBottomInset 挤压
     return Scaffold(
-      // 1. 统一背景色
-      backgroundColor: ext.scaffoldBackground, // 原 Color(0xFFF8F9FB)
+      backgroundColor: ext.scaffoldBackground,
       appBar: AppBar(
         title: Text(
           "物品列表",
@@ -416,7 +408,7 @@ class ListTabState extends State<ListTab> {
             ? SystemUiOverlayStyle.light
             : SystemUiOverlayStyle.dark,
       ),
-      // 搜索框 + 物品列表（原 body 内 Stack 的第一层 Column）
+      // 搜索框 + 物品列表
       body: Column(
         children: [
           // 3. 仿照录音页 ModernField 样式的搜索框
@@ -424,13 +416,13 @@ class ListTabState extends State<ListTab> {
             padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
             child: Container(
               decoration: BoxDecoration(
-                color: ext.cardBackground, // 原 Colors.white
+                color: ext.cardBackground,
                 borderRadius: BorderRadius.circular(16),
                 boxShadow: [
                   BoxShadow(
                     color: ext.textPrimary.withValues(
                       alpha: 0.03,
-                    ), // 原 Colors.black.withValues(alpha: 0.03)
+                    ),
                     blurRadius: 10,
                     offset: const Offset(0, 4),
                   ),

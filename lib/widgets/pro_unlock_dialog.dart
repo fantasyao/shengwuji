@@ -9,9 +9,13 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 /// Pro 功能解锁弹窗
 ///
-/// 展示作者寄语 + 二维码占位区 + 解锁按钮。
-/// 解锁状态持久化到 SharedPreferences 的 `is_pro_unlocked` 字段。
-/// 付费功能本身尚未规划，当前只做 UI + 状态持久化，后续加门禁时直接读该字段。
+/// 展示作者寄语 + 微信/支付宝付款码 + 底部三按钮：
+/// 金色主按钮引导扫码付费（点击弹出付款方式选择），
+/// 金色描边的「已扫码」按钮给付完款回来的用户一键解锁
+/// （服务端无法验证付款，靠用户自觉点击），
+/// 灰色描边次按钮为君子协定出口（不付费直接解锁）。
+/// 解锁状态持久化到 SharedPreferences 的 `is_pro_unlocked` 字段，
+/// Pro 门禁（黑金主题、节日红/极简白图标包等）读该字段。
 class ProUnlockDialog extends StatefulWidget {
   /// 进入弹窗前是否已经解锁（控制解锁按钮是可点还是已点亮灰）
   final bool isAlreadyUnlocked;
@@ -47,9 +51,10 @@ class _ProUnlockDialogState extends State<ProUnlockDialog> {
   static const String _kUnlockText =
       '本app完全离线，已开源。\n'
       '没有做强制付费验证\n'
-      '（主要是做起来太麻烦\n'
-      '如果觉得好用，欢迎扫码请开发者喝杯瑞幸；\n'
-      '如暂时手头紧，点下面的按钮也能直接解锁全部功能。';
+      '（主要是做起来真的很麻烦\n'
+      '本次新增悬浮窗功能-花了很多心血（token）\n'
+      '如果要用悬浮窗功能，5元解锁；\n'
+      '不用该功能就无需付费，君子协定';
 
   @override
   void initState() {
@@ -74,6 +79,71 @@ class _ProUnlockDialogState extends State<ProUnlockDialog> {
     await Future.delayed(const Duration(milliseconds: 700));
     if (!mounted) return;
     Navigator.of(context).pop();
+  }
+
+  /// 底部弹层选择付款方式（微信/支付宝），选中后关弹层并推入全屏付款码。
+  /// 给主按钮一个真实动作：不是死路牌，点进去就能看到可保存的大图。
+  void _showPayMethodSheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 14),
+              child: Text(
+                '选择付款方式（¥5）',
+                style: TextStyle(fontSize: 14, color: Colors.blueGrey),
+              ),
+            ),
+            _payMethodTile(
+              sheetContext,
+              label: '微信支付',
+              icon: Icons.chat_bubble,
+              iconColor: const Color(0xFF07C160),
+              assetPath: 'assets/weixinpay.png',
+              viewerLabel: '微信',
+            ),
+            _payMethodTile(
+              sheetContext,
+              label: '支付宝',
+              icon: Icons.account_balance_wallet,
+              iconColor: const Color(0xFF1677FF),
+              assetPath: 'assets/alipay.png',
+              viewerLabel: '支付宝',
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 付款方式弹层里的一行入口：品牌色圆图标 + 文案，点击进全屏付款码
+  Widget _payMethodTile(
+    BuildContext sheetContext, {
+    required String label,
+    required IconData icon,
+    required Color iconColor,
+    required String assetPath,
+    required String viewerLabel,
+  }) {
+    return ListTile(
+      leading: CircleAvatar(
+        backgroundColor: iconColor,
+        child: Icon(icon, color: Colors.white, size: 20),
+      ),
+      title: Text(label, style: const TextStyle(fontSize: 15)),
+      trailing: const Icon(Icons.chevron_right, color: Colors.black26),
+      onTap: () {
+        Navigator.of(sheetContext).pop();
+        _showFullScreenImage(assetPath, viewerLabel);
+      },
+    );
   }
 
   @override
@@ -145,12 +215,13 @@ class _ProUnlockDialogState extends State<ProUnlockDialog> {
               ],
             ),
             const SizedBox(height: 16),
-            // 解锁按钮（已解锁后变灰禁用）
+            // 主按钮：引导扫码付费（点击 → 底部弹层选微信/支付宝 → 全屏付款码）
+            // 已解锁后变灰禁用，此时下方两个解锁出口整体隐藏
             SizedBox(
               width: double.infinity,
-              height: 46,
+              height: 48,
               child: ElevatedButton(
-                onPressed: _unlocked ? null : _handleUnlock,
+                onPressed: _unlocked ? null : _showPayMethodSheet,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: _kGoldColor,
                   foregroundColor: Colors.white,
@@ -162,7 +233,7 @@ class _ProUnlockDialogState extends State<ProUnlockDialog> {
                   ),
                 ),
                 child: Text(
-                  _unlocked ? '✓ 已解锁，感谢支持' : '直接解锁全部功能',
+                  _unlocked ? '✓ 已解锁，感谢支持' : '扫码支付 ¥5 解锁',
                   style: const TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.bold,
@@ -170,6 +241,46 @@ class _ProUnlockDialogState extends State<ProUnlockDialog> {
                 ),
               ),
             ),
+            // 已扫码按钮：付完款回来的用户专用出口——没有服务端验证，
+            // 靠这个按钮让已付费用户有明确的落点（而不是被迫点「暂不付费」）。
+            // 金色描边 + 浅金底：比君子协定按钮显著，又不抢实心主按钮的层级
+            if (!_unlocked) ...[
+              const SizedBox(height: 10),
+              OutlinedButton(
+                onPressed: _handleUnlock,
+                style: OutlinedButton.styleFrom(
+                  backgroundColor: _kGoldLight,
+                  foregroundColor: _kGoldColor,
+                  side: const BorderSide(color: _kGoldBorder),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+                child: const Text(
+                  '已扫码，点击解锁',
+                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+            // 次按钮：君子协定出口。同为正经按钮但更矮、描边弱化，
+            // 与上面两个金色系按钮拉开层级（不做灰色小字链接，保持大方）
+            if (!_unlocked) ...[
+              const SizedBox(height: 10),
+              OutlinedButton(
+                onPressed: _handleUnlock,
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Colors.blueGrey,
+                  side: BorderSide(color: Colors.grey.shade300),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+                child: const Text(
+                  '先使用，后续再付费解锁',
+                  style: TextStyle(fontSize: 13),
+                ),
+              ),
+            ],
             // 关闭按钮
             TextButton(
               onPressed: () => Navigator.of(context).pop(),

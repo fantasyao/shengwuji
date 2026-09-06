@@ -18,6 +18,7 @@
 - **模型**: SenseVoice (离线)
 - **语言**: 中文优化
 - **组件**: `OfflineRecognizer`
+- **执行位置**: 常驻 worker isolate（2026-08-27 起迁入，主 isolate 只收发消息——PCM 传进、文本传出，详见下文"识别 worker isolate 架构"。decode 是同步 FFI 阻塞调用，历史上在主 isolate 执行导致长录音 UI 冻结）
 
 ### 3. 文本处理（TextProcessor）
 
@@ -56,6 +57,108 @@
 - 识别结果保存到 SQLite 数据库
 - 根据 @architecture/database.md 中的表结构存储
 
+## 识别 worker isolate 架构（2026-08-27 起）
+
+> 提交脉络：`342364c`（新建 RecognitionService，纯新增未接线）→ `9edb24f`（RecognizerSingleton 门面化 + diary/record/list 全部调用点切换）→ `bb769ce`（模型热切换守卫修正 + 后台恢复预热验证）
+
+### 架构总览
+
+```
+主 isolate（UI 线程）                        worker isolate（常驻）
+┌──────────────────────────────┐            ┌──────────────────────────────┐
+│ UI（diary / record / list）  │            │ initBindings()               │
+│ Silero VAD 轻计算             │  请求消息   │  （FFI 绑定须在 worker 内     │
+│ 模型路径解析（Recognizer      │ ─────────▶ │   独立初始化）                │
+│ Singleton 门面）              │            │ OfflineRecognizer（FFI）     │
+│ id → Completer 请求关联       │ ◀───────── │ decode（同步 FFI 阻塞）      │
+│ 超时 / 崩溃重启 / 风暴防护    │  回执事件   │ 模型内存单份                  │
+└──────────────────────────────┘            └──────────────────────────────┘
+```
+
+- 跨界只传 `String / Float32List / int / bool`（可拷贝传输）；FFI 对象（`OfflineRecognizer` / `OfflineStream`）**永不跨界**
+- 模型不跨界传递：worker 用主 isolate 发来的模型目录路径（`modelDir: String`）在 worker 内重建识别器
+- ⚠️ FFI 绑定查找结果（NativeFunction 指针表）缓存在各 isolate 自己的 heap，互不共享——worker 入口必须自己调 `initBindings()`，主 isolate 调过的对 worker 无效；`DynamicLibrary.open` 同一 `.so` 由 OS 引用计数管理，双 isolate 同时打开安全
+
+### 为什么（考古结论）
+
+decode 是同步 FFI 调用，历史方案在主 isolate 直接执行，导致长录音 UI 冻结（1 分钟录音 ≈5s 卡顿）。多次"假异步"尝试均失败：
+
+| 尝试 | 为什么失败 |
+|---|---|
+| Future 包装 decode | Future 只是让出事件循环，FFI 调用仍在主 isolate 阻塞 UI |
+| microtask / await 让出 | 单线程模型，同步 FFI 执行期间 Dart 无处可逃 |
+| isolate 预加载模型再把识别器传回主 isolate | FFI 指针不满足 isolate 传输约束，无法跨界 |
+
+正确形态 = **识别常驻 worker、PCM（Float32List）传进、文本（String）传出**。
+
+### 消息协议
+
+| 方向 | 消息 | 载荷字段 | 用途 |
+|---|---|---|---|
+| 主 → worker | `_ReqInit` | `id, modelDir` | 加载/热切换模型；路径未变幂等回 ready，变了先建新再释旧 |
+| 主 → worker | `_ReqTranscribe` | `id, samples` | 单段 PCM → 文本 |
+| 主 → worker | `_ReqWarmup` | `id` | 0.1s 静音 decode 预热（幂等） |
+| 主 → worker | `_ReqDispose` | `id` | free 识别器 + `Isolate.exit`（终态，之后实例不可再用） |
+| worker → 主 | `_EvReady` | `id, ok, error?` | `_ReqInit` 回执 |
+| worker → 主 | `_EvResult` | `id, text` | transcribe / warmup / dispose 回执 |
+| worker → 主 | `_EvError` | `id, error` | worker 内处理失败回执 |
+
+手写消息类而非 json：`Float32List` 无法 json 化；字段仅 int / String / Float32List / bool，天然满足 isolate 拷贝语义（不含闭包、不含 FFI 指针）。
+
+### 请求关联与容错
+
+- **id → Completer**：主侧为每个请求分配自增 id，worker 原样带回，配对 `_pending` 表里的 Completer；超时清理后的迟到回复直接丢弃，不会误配到新请求
+- **单请求超时 120s**：超时即从 `_pending` 移除并抛 `TimeoutException`（防泄漏）
+- **worker 崩溃自动重启**：spawn 时注入 `onError` / `onExit` 端口感知死亡（双源连续触发，标志位去重）→ 所有 in-flight 请求立即失败（不用干等 120s 超时）→ 用 `_lastModelDir` 自动重启 worker 并恢复模型
+- **重启风暴防护**：60s 滑动窗口内死亡 ≥3 次 → 放弃自动重启，等下一次显式 `initialize()`（防崩溃死循环）
+- worker 内每条消息处理整体 try/catch：Dart 层异常不杀 worker；真正防不住的只有 FFI 段错误等 native 崩溃，由上述重启路径兜底
+
+### 门面语义：消费点零改动
+
+`RecognizerSingleton` 公开 API 不变（`isReady / isInitializing / hasEverInitialized / hasModel / preloadModelPath / initialize / dispose` 语义保留），内部代理 `RecognitionService`：
+
+- **新增** `transcribe(Float32List) → Future<String>`、`warmup()`：原直接摸 recognizer 做 decode 的调用点统一迁此——diary_tab（`_recognizeSamplesToText` / VAD 分段兜底 / `_warmupEngine`）、record_tab（`_stopListening` / `_warmupEngine` / `_recognizeAndSave` 搬家模式）、list_tab（`_processVoiceSearch` 语音搜索）
+- **`recognizer` getter 已 `@Deprecated` 恒 null**（仅为兼容保留签名）：主 isolate 不再创建 `OfflineRecognizer`，FFI 对象只在 worker 内，模型内存单份
+
+### VAD 留主 isolate 的三个理由
+
+1. **轻**：Silero VAD 模型小、单窗计算轻（512 样本/窗 = 32ms），主 isolate 跑不卡 UI
+2. **TTS 回采三层防御依赖同步 `vad.clear()`**：TTS 播报前必须同步清空已 accept 样本（防混入下一识别段），worker 异步清空会引入时序窗口
+3. **段本来就要跨界**：VAD 切出的段最终要作为 `Float32List` 送 worker 识别，VAD 在主侧算完直接发即可，无需为它单独建 isolate
+
+配套防新阻塞源：`_recognizeSamplesWithVad`（diary_tab）按 512 样本喂 VAD 的同步紧循环，60s 音频累计阻塞主 isolate 几百 ms~2s（旧代码被主 isolate decode 大卡掩盖，decode 迁走后暴露）——每喂 200 窗口（200 × 32ms ≈ 6.4s 音频）用 `Future.delayed(Duration.zero)`（走事件队列）真正让出一次事件循环，让 UI 有机会呼吸。record_tab 搬家模式不需要：流式 PCM 回调天然逐次让出。
+
+### 模型热切换守卫链（`isServingLatestModel`）
+
+导入新模型后，各层守卫历史上是"已就绪短路"（`isReady == true` 直接 return）——旧模型还活着 `isReady` 恒 true，新模型永远加载不上。2026-08-27 修正为**"已就绪且路径未变才短路"**，新增权威守卫：
+
+```dart
+// RecognizerSingleton：worker 实际加载目录 == 当前解析的期望路径？
+bool get isServingLatestModel =>
+    _service.isReady && _service.loadedModelDir == _currentModelPath;
+```
+
+完整链路：
+
+```
+设置页导入新模型 → preloadModelPath() 刷新 _currentModelPath（期望路径变了）
+  → tab 切换 refreshEngine：守卫从 isReady 改判 isServingLatestModel → false，放行
+  → initialize()：短路条件改为"已就绪且 worker 加载目录 == 期望路径"
+  → _service.initialize(新路径) → worker 先建新识别器、成功后再 free 旧实例
+     （建新失败时旧实例原封不动，服务不中断，下次 init 同路径幂等重试）
+```
+
+门面 `initialize()` 内 2 处 + diary_tab 3 处 + record_tab 3 处共 8 处守卫同步修正；后台恢复预热路径验证通过、零改动。
+
+### worker FIFO 语义与搬家模式顺序保证
+
+worker 单线程逐条处理消息，天然 FIFO：搬家模式 VAD 连发多段时，`_ReqTranscribe` 按发送顺序依次 decode、依次回执，主侧 `await transcribe()` 的完成顺序与发送顺序一致——"上一条 / 撤销"的 10s 窗口语义不受乱序干扰。
+
+### 关键文件
+
+- [lib/recognition_service.dart](../../lib/recognition_service.dart) - 常驻识别 worker 服务（消息协议 / 请求关联 / 超时 / 崩溃重启 / 风暴防护）
+- [lib/recognizer_singleton.dart](../../lib/recognizer_singleton.dart) - 门面（路径解析 + `isServingLatestModel` 热切换守卫）
+
 ## 录音触发方式
 
 应用支持三种录音触发方式：
@@ -80,7 +183,7 @@
 搬家场景下用户双手占用、不方便按按钮。开启搬家模式后：
 1. 持续录音（PCM 流不 stop-then-start）
 2. Silero VAD 自动切段（minSilenceDuration 0.6s / maxSpeechDuration 15s）
-3. 每段独立送 OfflineRecognizer 识别
+3. 每段独立送 OfflineRecognizer 识别（2026-08-27 起识别调用迁 worker isolate，段按 FIFO 保序，见上文"识别 worker isolate 架构"）
 4. ItemSplitter 智能分割「物品+位置」后写库（返回 rowid 用于撤销）
 5. TTS 播报"已保存X到Y"
 6. 10s 窗口内说"不对"/"撤销"等关键词 → 自动删上一条 + TTS 回显"已撤销"
@@ -198,8 +301,10 @@ DiaryTab 在卡片渲染时对内容做查询检测，与上面 RecordTab 的智
 ### 关键属性
 - `hasModel` - 检查模型文件是否存在（不加载）
 - `preloadModelPath()` - 预读模型路径缓存
-- `isReady` - 识别器是否已初始化
+- `isReady` - 识别器是否已初始化（2026-08-27 起语义 = worker 内模型已加载且 worker 存活）
 - `hasEverInitialized` - 是否曾经初始化过（判断冷/热启动）
+- `isServingLatestModel` - 🆕 2026-08-27 worker 是否正在服务当前解析路径（模型热切换守卫，见"识别 worker isolate 架构"的守卫链小节）
+- `transcribe(samples)` / `warmup()` - 🆕 worker 化识别/预热入口（门面代理 RecognitionService；`recognizer` getter 已 @Deprecated 恒 null）
 
 ## 启动流程
 

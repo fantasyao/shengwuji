@@ -9,7 +9,7 @@
 2. **语音日记** - 录制并保存语音日记，支持播放、编辑、归档和导出
 3. **离线识别** - 使用 Sherpa-ONNX SenseVoice 模型，无需网络
 4. **内置模型** - SenseVoice 模型打包在 APK 中，首次启动自动部署
-5. **音量键快捷** - 长按音量键快速录音，双击新建文本笔记
+5. **音量键快捷** - 4 手势槽位（长按/双击 × 音量加/减）× 5 动作（无动作/显示悬浮窗/悬浮窗录音/APP内录音/APP内笔记）自由组合，旧配置自动迁移推导
 6. **清单提取** - 语音说"代办"/"待办"开头才触发（白名单替代评分制，避免正常说话误判），识别后转 markdown 存入日记表
 7. **时间识别+闹钟** - 日记内容自动识别时间表达式，点击可设系统闹钟
 8. **日记导出** - 增量导出为 Markdown 文件到用户指定目录
@@ -73,7 +73,7 @@ main() → RecognizerSingleton.preloadModelPath()
 4. **Settings Tab** - 内置模型管理（可选导入），热词编辑，备份恢复（含热词配置），无障碍服务配置，外观设置（主题 + Android 图标包），系统分享接收开关
 
 ### 原生集成（Android）
-- **VolumeKeyAccessibilityService** - 无障碍服务，监听音量键事件
+- **VolumeKeyAccessibilityService** - 无障碍服务，音量键手势槽位状态机（4 槽位 × 5 动作）
 - **MainActivity** - MethodChannel 桥接（静音/恢复媒体、通知权限、闹钟管理、任务后台化）
 - **AlarmReceiver** - 闹钟响铃接收器（MediaPlayer 循环播放 + 3分钟超时）
 - **AlarmStopReceiver** - 闹钟停止接收器（通知栏停止按钮）
@@ -116,7 +116,7 @@ flutter pub run flutter_launcher_icons
 ## 架构概览
 
 ### 核心单例
-- `RecognizerSingleton` - 语音识别器（含内置模型管理）
+- `RecognizerSingleton` - 语音识别器（含内置模型管理）；2026-08-27 起识别链路下沉常驻 worker isolate（`RecognitionService`，PCM 进文本出），本类为门面
 - `ShortcutManager` - 快捷方式管理
 - `AIApp` - AI 应用注册表
 
