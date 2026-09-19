@@ -11,24 +11,28 @@ void main() {
   // 100 字长文本：Ahem 字体 15px/字、卡片内可用文本宽 ~188dp ≈ 12 字/行 → 展开应 8 行左右
   final longText = '这是一条用来验证展开态多行显示的测试文本' * 5;
 
-  Widget wrap({required bool expanded, ValueChanged<bool>? onCheckChanged}) =>
-      MaterialApp(
-        home: Scaffold(
-          body: SizedBox(
-            width: 296, // 模拟面板宽（OverlayHome._buildPanel 的 panelWidth 量级）
-            child: ListView(
-              children: [
-                OverlayDiaryCard(
-                  diary: {'id': 1, 'content': longText, 'is_archived': 0},
-                  maxWidth: 268,
-                  expanded: expanded,
-                  onCheckChanged: onCheckChanged ?? (_) {},
-                ),
-              ],
+  Widget wrap({
+    required bool expanded,
+    ValueChanged<bool>? onCheckChanged,
+    bool dockLeft = false,
+  }) => MaterialApp(
+    home: Scaffold(
+      body: SizedBox(
+        width: 296, // 模拟面板宽（OverlayHome._buildPanel 的 panelWidth 量级）
+        child: ListView(
+          children: [
+            OverlayDiaryCard(
+              diary: {'id': 1, 'content': longText, 'is_archived': 0},
+              maxWidth: 268,
+              expanded: expanded,
+              onCheckChanged: onCheckChanged ?? (_) {},
+              dockLeft: dockLeft,
             ),
-          ),
+          ],
         ),
-      );
+      ),
+    ),
+  );
 
   // 卡片内的正文 RichText：按文本内容定位（展开态卡片还有时间行等其它 RichText，
   // 旧"卡片内唯一"的按类型查找随展开态改版失效——时间行加入后 getSize 报
@@ -67,6 +71,36 @@ void main() {
     // ignore: avoid_print
     print('🧪 收起态正文尺寸: $textSize');
     expect(textSize.height, lessThan(21.0 * 2));
+  });
+
+  testWidgets('停靠左缘（dockLeft）：收起胶囊贴面板左缘（镜像对齐）', (tester) async {
+    await tester.pumpWidget(wrap(expanded: false, dockLeft: true));
+    await tester.pumpAndSettle();
+
+    // 卡片盒（含 14dp 水平 margin）贴容器左缘；右缘停靠的默认行为下卡片
+    // 贴右缘（centerRight），两者左缘位置必然不同
+    final box = tester.getRect(find.byType(OverlayDiaryCard));
+    expect(box.left, 0.0, reason: '卡片盒贴容器左缘（Align.centerLeft）');
+  });
+
+  testWidgets('停靠左缘（dockLeft）：展开↔收起过渡锚点镜像（收卷窗口左缘固定）', (tester) async {
+    // 展开 → 收起切换，动画中段断言旧内容仍贴左缘（topLeft 锚镜像后左缘
+    // 固定、右缘收拢——与右缘停靠的 topRight 镜像对称）。
+    // ⚠️ 过渡期新旧 child 共存，cardRichText 命中 2 个（旧展开多行 + 新收起
+    // 单行），取 .first = 淡出中的旧展开内容（收卷窗口的被裁剪对象）
+    await tester.pumpWidget(wrap(expanded: true));
+    await tester.pumpAndSettle();
+    await tester.pumpWidget(wrap(expanded: false, dockLeft: true));
+    await tester.pump(const Duration(milliseconds: 100)); // 200ms 补间中段
+
+    final cardBox = tester.getRect(find.byType(OverlayDiaryCard));
+    final richBox = tester.getRect(cardRichText.first);
+    expect(
+      richBox.left - cardBox.left,
+      lessThan(30.0),
+      reason: '收起过渡中内容左缘仍贴卡片左缘（停靠缘固定，镜像 topRight 旧行为）',
+    );
+    await tester.pumpAndSettle();
   });
 
   testWidgets('展开→收起切换后卡片高度收敛回 minHeight 46', (tester) async {
@@ -503,33 +537,29 @@ void main() {
   // ① 布局尺寸 = 20/1.3（补偿已生效，未补偿则布局就是 20、放大后 26）；
   // ② 布局尺寸 × 框架 paint transform 对角缩放 = 20dp 最终渲染；
   // ③ 同倍率收起态视觉圆 = 20dp，两态一致（用户诉求：展开不比收起大）
-  testWidgets('系统字体放大 1.3 时展开态勾选框仍渲染 20dp（WidgetSpan 反缩放补偿）', (
-    tester,
-  ) async {
+  testWidgets('系统字体放大 1.3 时展开态勾选框仍渲染 20dp（WidgetSpan 反缩放补偿）', (tester) async {
     Widget scaledWrap({required bool expanded}) => MaterialApp(
-          home: Scaffold(
-            body: SizedBox(
-              width: 296,
-              child: ListView(
-                children: [
-                  // MediaQuery 直接包卡片：textScalerOf 精确命中本测试值，
-                  // 不受 MaterialApp 自建 MediaQuery 干扰
-                  MediaQuery(
-                    data: const MediaQueryData(
-                      textScaler: TextScaler.linear(1.3),
-                    ),
-                    child: OverlayDiaryCard(
-                      diary: {'id': 1, 'content': longText, 'is_archived': 0},
-                      maxWidth: 268,
-                      expanded: expanded,
-                      onCheckChanged: (_) {},
-                    ),
-                  ),
-                ],
+      home: Scaffold(
+        body: SizedBox(
+          width: 296,
+          child: ListView(
+            children: [
+              // MediaQuery 直接包卡片：textScalerOf 精确命中本测试值，
+              // 不受 MaterialApp 自建 MediaQuery 干扰
+              MediaQuery(
+                data: const MediaQueryData(textScaler: TextScaler.linear(1.3)),
+                child: OverlayDiaryCard(
+                  diary: {'id': 1, 'content': longText, 'is_archived': 0},
+                  maxWidth: 268,
+                  expanded: expanded,
+                  onCheckChanged: (_) {},
+                ),
               ),
-            ),
+            ],
           ),
-        );
+        ),
+      ),
+    );
 
     // 视觉圆定位：卡片内唯一的 BoxShape.circle AnimatedContainer
     //（勾选框；播放钮/标注钮是普通 Container 且查看态不渲染）
@@ -555,9 +585,7 @@ void main() {
         .getTransformTo(tester.renderObject(cardRichText));
     final paintedWidth = circleLayoutWidth * transform.storage[0];
     // ignore: avoid_print
-    print(
-      '🧪 字体 1.3 展开态勾选框最终渲染宽: $paintedWidth（缩放 ${transform.storage[0]}）',
-    );
+    print('🧪 字体 1.3 展开态勾选框最终渲染宽: $paintedWidth（缩放 ${transform.storage[0]}）');
     expect(paintedWidth, closeTo(20.0, 0.01));
 
     // ③ 同倍率收起态：普通 Row 子项不缩放，视觉圆就是 20dp——与展开态一致
@@ -575,24 +603,35 @@ void main() {
 
   test('测量缓存：同 (文本, textScaler, fontFamily) 只 shaping 一次', () {
     final w1 = OverlayDiaryCard.measureCollapsedTextWidthForTest(
-      '同一段收起文字', TextScaler.noScaling, null,
+      '同一段收起文字',
+      TextScaler.noScaling,
+      null,
     );
     final c1 = OverlayDiaryCard.collapsedTextMeasureCount;
     final w2 = OverlayDiaryCard.measureCollapsedTextWidthForTest(
-      '同一段收起文字', TextScaler.noScaling, null,
+      '同一段收起文字',
+      TextScaler.noScaling,
+      null,
     );
     expect(w2, w1, reason: '命中缓存返回同一数值');
-    expect(OverlayDiaryCard.collapsedTextMeasureCount, c1,
-        reason: '缓存命中不再执行 TextPainter.layout');
+    expect(
+      OverlayDiaryCard.collapsedTextMeasureCount,
+      c1,
+      reason: '缓存命中不再执行 TextPainter.layout',
+    );
 
     // 任一环境因子变化 → 新 key → 重新测量
     final w3 = OverlayDiaryCard.measureCollapsedTextWidthForTest(
-      '同一段收起文字', TextScaler.linear(1.3), null,
+      '同一段收起文字',
+      TextScaler.linear(1.3),
+      null,
     );
     expect(OverlayDiaryCard.collapsedTextMeasureCount, c1 + 1);
     expect(w3, greaterThan(w1), reason: '放大倍率下测量值变大');
     OverlayDiaryCard.measureCollapsedTextWidthForTest(
-      '另一段文字', TextScaler.noScaling, null,
+      '另一段文字',
+      TextScaler.noScaling,
+      null,
     );
     expect(OverlayDiaryCard.collapsedTextMeasureCount, c1 + 2);
   });
@@ -608,7 +647,57 @@ void main() {
       await tester.pumpWidget(wrap(expanded: false));
       await tester.pumpAndSettle();
     }
-    expect(OverlayDiaryCard.collapsedTextMeasureCount, countAfterFirstBuild,
-        reason: '重复 build 命中缓存，零新增 shaping');
+    expect(
+      OverlayDiaryCard.collapsedTextMeasureCount,
+      countAfterFirstBuild,
+      reason: '重复 build 命中缓存，零新增 shaping',
+    );
+  });
+
+  // 展开态重放行命中区（2026-09-11）：圆钮 + 间距 + 「重放录音」文字整体一个
+  // 矩形命中区——旧版文字是裸 Text 点了无反应，用户要求文字并入触发区域
+  testWidgets('展开态重放行：点「重放录音」文字/钮文字间隙都触发 onPlayToggle', (tester) async {
+    var playCount = 0;
+    Widget playWrap() => MaterialApp(
+      home: Scaffold(
+        body: SizedBox(
+          width: 296,
+          child: ListView(
+            children: [
+              OverlayDiaryCard(
+                diary: {
+                  'id': 1,
+                  'content': longText,
+                  'is_archived': 0,
+                  'audio_path': '/tmp/voice.m4a',
+                },
+                maxWidth: 268,
+                expanded: true,
+                onPlayToggle: () => playCount++,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    await tester.pumpWidget(playWrap());
+    await tester.pumpAndSettle();
+
+    final label = find.text('重放录音');
+    expect(label, findsOneWidget);
+
+    // 点文字本身 → 触发回放
+    await tester.tap(label);
+    await tester.pump();
+    expect(playCount, 1);
+
+    // 点钮与文字之间的间隙（命中矩形内部、圆钮 40 命中区之外）→ 同样触发。
+    // 取 label 左缘向间隙内偏 3dp：圆钮命中区右缘 = label 左缘 - 6dp，
+    // 该点落在间隙中央、只属于外层矩形命中区
+    final labelRect = tester.getRect(label);
+    await tester.tapAt(Offset(labelRect.left - 3.0, labelRect.center.dy));
+    await tester.pump();
+    expect(playCount, 2);
   });
 }

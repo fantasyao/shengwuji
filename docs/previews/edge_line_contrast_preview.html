@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>贴边竖线·浅色背景可观测性方案预览</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    background: #17181c; color: #d8dade;
+    padding: 20px; max-width: 1100px; margin: 0 auto;
+  }
+  h1 { font-size: 19px; margin-bottom: 4px; }
+  .sub { font-size: 12px; color: #8b8f98; margin-bottom: 16px; line-height: 1.6; }
+  .row { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
+  .col-left { flex: 1 1 460px; min-width: 380px; }
+  .col-right { flex: 0 0 480px; }
+
+  /* ── 控制区 ── */
+  .ctl { margin-bottom: 12px; }
+  .ctl-label { font-size: 12px; color: #9aa0aa; margin-bottom: 6px; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip {
+    display: flex; align-items: center; gap: 6px;
+    padding: 5px 10px; border-radius: 8px; border: 1px solid #3a3d45;
+    background: #22242a; color: #c9ccd4; font-size: 12px; cursor: pointer;
+    user-select: none;
+  }
+  .chip:hover { border-color: #5a5f6a; }
+  .chip.on { border-color: #4d8ef7; background: #24304a; color: #fff; }
+  .sw { width: 14px; height: 14px; border-radius: 4px; border: 1px solid #555; }
+  .plan-desc {
+    font-size: 12px; line-height: 1.7; color: #aeb3bd;
+    background: #22242a; border: 1px solid #33363e; border-radius: 10px;
+    padding: 10px 12px; margin-top: 4px;
+  }
+  .plan-desc b { color: #e8eaee; }
+  .rec { color: #6fd08c; font-weight: bold; }
+  table.cmp { border-collapse: collapse; font-size: 12px; margin-top: 10px; width: 100%; }
+  table.cmp th, table.cmp td { border: 1px solid #33363e; padding: 5px 8px; text-align: left; }
+  table.cmp th { color: #9aa0aa; font-weight: normal; background: #1e2026; }
+  td.good { color: #6fd08c; } td.bad { color: #f0846f; } td.mid { color: #e5c56f; }
+
+  /* ── 手机屏 ── */
+  .phone {
+    width: 300px; height: 560px; border-radius: 22px;
+    border: 10px solid #0a0a0c; position: relative; overflow: hidden;
+    box-shadow: 0 8px 30px rgba(0,0,0,.5); margin: 0 auto;
+  }
+  .fake-content { position: absolute; inset: 0; padding: 34px 16px; display: flex; flex-direction: column; gap: 10px; }
+  .fk-bar { height: 13px; border-radius: 7px; }
+  .fk-row { display: flex; gap: 10px; align-items: center; }
+  .fk-ava { width: 26px; height: 26px; border-radius: 50%; flex: none; }
+  .fk-lines { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+  .edge-line {
+    position: absolute; top: 50%; transform: translateY(-50%);
+    border-radius: 999px; z-index: 5;
+  }
+  .hint { font-size: 11px; color: #8b8f98; text-align: center; margin-top: 8px; }
+
+  /* ── 全背景总览 ── */
+  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 8px; }
+  .cell { border-radius: 10px; overflow: hidden; border: 1px solid #33363e; position: relative; }
+  .cell .mini { position: relative; height: 150px; }
+  .cell .cap {
+    font-size: 11px; padding: 4px 7px; background: #1e2026;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .cr { font-size: 10px; padding: 1px 5px; border-radius: 5px; }
+  .cr.good { background: #1d3326; color: #6fd08c; }
+  .cr.mid  { background: #35301a; color: #e5c56f; }
+  .cr.bad  { background: #38221d; color: #f0846f; }
+  .sec-title { font-size: 13px; color: #c9ccd4; margin: 18px 0 8px; }
+</style>
+</head>
+<body>
+<h1>贴边竖线 · 浅色背景可观测性方案预览</h1>
+<div class="sub">
+  竖线视觉 4dp 宽、64dp 高，贴停靠缘垂直居中（此处以右缘示意，全部按 Android 源上叠加 alpha 合成真实模拟，圆角/尺寸按所选密度档换算）。<br>
+  结论先行：<b>「自动随背景变色」做不到</b>——悬浮窗窗口拿不到下层像素（Flutter BackdropFilter 只作用于窗口内内容；原生 FLAG_BLUR_BEHIND 是模糊不是取色，且 Android 12+/部分 ROM 禁用；截屏取色需 MediaProjection 每次授权，不现实）。可行路线是让线<b>自带明暗两种成分</b>，任何背景至少一种成分可见。
+</div>
+
+<div class="row">
+  <div class="col-left">
+    <div class="ctl">
+      <div class="ctl-label">方案</div>
+      <div class="chips" id="planChips"></div>
+      <div class="plan-desc" id="planDesc"></div>
+    </div>
+    <div class="ctl">
+      <div class="ctl-label">屏幕背景</div>
+      <div class="chips" id="bgChips"></div>
+    </div>
+    <div class="ctl">
+      <div class="ctl-label">密度档（1dp = ?px）</div>
+      <div class="chips" id="scaleChips"></div>
+    </div>
+    <div class="ctl">
+      <div class="chips" id="contentChip"></div>
+    </div>
+    <div class="sec-title">全背景总览（当前方案）</div>
+    <div class="grid" id="grid"></div>
+    <div class="sec-title">关键场景对比度表（WCAG 对比度，≥3 清晰 / 1.6~3 勉强可辨 / &lt;1.6 不可见）</div>
+    <table class="cmp" id="cmpTable"></table>
+  </div>
+
+  <div class="col-right">
+    <div class="phone" id="phone"></div>
+    <div class="hint">模拟真机观感：竖线贴右缘垂直居中，可切背景与密度档</div>
+  </div>
+</div>
+
+<script>
+// ── 方案定义：segments 为从贴屏外缘→屏内缘的横向分段（flex 比例 + 背景）──
+const PLANS = {
+  current: {
+    name: '对照·现状',
+    desc: '<b>当前线上效果</b>：半透明白 rgba(255,255,255,.45)（0x73FFFFFF）。暗底可见、<b>白底上数学上恒为纯白（白+白=白），无论怎么加不透明度都不可见</b>——这就是你反馈的问题。',
+    segments: [{ fr: 1, bg: 'rgba(255,255,255,0.45)' }],
+  },
+  a: {
+    name: 'A·仅加不透明度',
+    desc: '<b>你的想法 1</b>：提到 0xCC（80%）。暗底更亮，但<b>白底依旧纯白隐形</b>——不透明度只救暗底救不了白底，单独不成立。',
+    segments: [{ fr: 1, bg: 'rgba(255,255,255,0.80)' }],
+  },
+  b: {
+    name: 'B·中性灰单色',
+    desc: '<b>最简单</b>：换成 90% 中灰 rgba(128,128,128,.90)。白底上呈浅灰、黑底上呈亮灰，两边都可见但对比平庸（3~5:1），纯灰壁纸场景失效。改动 = 换一个颜色常量。',
+    segments: [{ fr: 1, bg: 'rgba(128,128,128,0.90)' }],
+  },
+  c: {
+    name: 'C·黑心白边夹心 ★推荐',
+    desc: '<b>地图/字幕配方</b>（任何底色都清晰）：1dp 半透明白边 + 2dp 半透明黑心 + 1dp 半透明白边。<b>白底看黑心（≈5:1）、黑底看白边（≈10:1）、灰底两头都有对比</b>。仍半透明不喧宾夺主；总宽保持 4dp 不变。改动 = _buildEdgeLine 换分层绘制，难度低。',
+    segments: [
+      { fr: 1, bg: 'rgba(255,255,255,0.72)' },
+      { fr: 2, bg: 'rgba(0,0,0,0.58)' },
+      { fr: 1, bg: 'rgba(255,255,255,0.72)' },
+    ],
+  },
+  d: {
+    name: 'D·明暗渐变',
+    desc: '<b>柔和版夹心</b>：贴缘端深灰 → 屏内端浅灰的横向渐变（各 85%）。白底看深端、黑底看浅端，观感比硬夹心柔和，但单端对比弱于 C（2~4:1）。改动难度同 C。',
+    segments: [{ fr: 1, bg: 'linear-gradient(90deg, rgba(70,70,70,0.85), rgba(200,200,200,0.85))' }],
+  },
+};
+const BACKGROUNDS = [
+  { name: '纯白 App',  bg: '#ffffff', content: 'light' },
+  { name: '浅灰列表',  bg: '#f2f2f2', content: 'light' },
+  { name: '米色壁纸',  bg: '#f7efdd', content: 'light' },
+  { name: '青绿壁纸',  bg: 'linear-gradient(160deg,#9fd8c3,#5aa8b8 60%,#3f7fae)', content: 'photo' },
+  { name: '中灰底',    bg: '#7f7f7f', content: 'photo' },
+  { name: '深灰 App',  bg: '#2b2b2b', content: 'dark' },
+  { name: '纯黑',      bg: '#000000', content: 'dark' },
+];
+const SCALES = [3, 4, 5];
+
+let curPlan = 'c', curBg = 0, curScale = 4, showContent = true;
+
+// ── 颜色合成：src-over（与 Android/CSS 一致）──
+function parseRgba(s) {
+  const m = s.match(/rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)(?:,\s*([\d.]+))?\)/);
+  if (m) return [+m[1], +m[2], +m[3], m[4] === undefined ? 1 : +m[4]];
+  const h = s.replace('#','');
+  return [parseInt(h.substr(0,2),16), parseInt(h.substr(2,2),16), parseInt(h.substr(4,2),16), 1];
+}
+function hex2rgb(s) { const h = s.replace('#',''); return [parseInt(h.substr(0,2),16), parseInt(h.substr(2,2),16), parseInt(h.substr(4,2),16)]; }
+function over(fg, bg) { // fg/bg: [r,g,b,a?]
+  const a = fg[3];
+  return [0,1,2].map(i => Math.round(fg[i]*a + bg[i]*(1-a)));
+}
+function bgAt(bgDef, t) { // 取背景在某横向位置的颜色（渐变线性插值近似）
+  if (bgDef.bg.startsWith('#')) return hex2rgb(bgDef.bg);
+  const stops = bgDef.bg.match(/#[0-9a-f]{6}/g).map(hex2rgb);
+  return [0,1,2].map(i => Math.round(stops[0][i] + (stops[stops.length-1][i]-stops[0][i])*t));
+}
+function segEnds(seg) { // 从 css 里拆出代表色（渐变取两端）
+  const colors = seg.bg.match(/rgba?\([^)]+\)|#[0-9a-f]{3,6}/gi) || ['#808080'];
+  return colors.length >= 2 ? [parseRgba(colors[0]), parseRgba(colors[1])] : [parseRgba(colors[0]), parseRgba(colors[0])];
+}
+function relLum([r,g,b]) {
+  const f = c => { c/=255; return c <= .03928 ? c/12.92 : Math.pow((c+.055)/1.055, 2.4); };
+  return .2126*f(r) + .7152*f(g) + .0722*f(b);
+}
+function contrast(c1, c2) {
+  const l1 = relLum(c1), l2 = relLum(c2);
+  return (Math.max(l1,l2)+.05) / (Math.min(l1,l2)+.05);
+}
+// 方案在某背景下的最好段对比度
+function bestContrast(plan, bgDef) {
+  let best = 0;
+  plan.segments.forEach(seg => {
+    const [e0, e1] = segEnds(seg);
+    [0.08, 0.92].forEach(t => {
+      const out = over(e0 === e1 ? e0 : t < .5 ? e0 : e1, bgAt(bgDef, t));
+      best = Math.max(best, contrast(out, bgAt(bgDef, t)));
+    });
+  });
+  return best;
+}
+function crBadge(cr) {
+  const cls = cr >= 3 ? 'good' : cr >= 1.6 ? 'mid' : 'bad';
+  return `<span class="cr ${cls}">${cr.toFixed(1)}:1</span>`;
+}
+
+// ── 竖线 DOM（按分段横向拼装）──
+function lineEl(plan, scaleDp) {
+  const w = 4 * scaleDp, h = 64 * scaleDp;
+  const el = document.createElement('div');
+  el.className = 'edge-line';
+  el.style.cssText = `right:0;width:${w}px;height:${h}px;display:flex;overflow:hidden;`;
+  plan.segments.forEach(seg => {
+    const s = document.createElement('div');
+    s.style.cssText = `flex:${seg.fr};height:100%;background:${seg.bg};`;
+    el.appendChild(s);
+  });
+  return el;
+}
+function fakeContent(type) {
+  if (type === 'photo' || !showContent) return '';
+  const bar = type === 'light' ? '#e8e8e8' : '#3d3d3d';
+  const ava = type === 'light' ? '#dcdcdc' : '#454545';
+  let html = '<div class="fake-content">';
+  for (let i = 0; i < 9; i++) {
+    html += `<div class="fk-row"><div class="fk-ava" style="background:${ava}"></div>
+      <div class="fk-lines"><div class="fk-bar" style="background:${bar};width:${70-(i%3)*15}%"></div>
+      <div class="fk-bar" style="background:${bar};width:${40+(i%2)*20}%;opacity:.7"></div></div></div>`;
+  }
+  return html + '</div>';
+}
+
+function render() {
+  const plan = PLANS[curPlan], bgDef = BACKGROUNDS[curBg], s = curScale;
+  // 主屏
+  const phone = document.getElementById('phone');
+  phone.style.background = bgDef.bg;
+  phone.innerHTML = fakeContent(bgDef.content) ;
+  phone.appendChild(lineEl(plan, s));
+  // chips
+  document.getElementById('planChips').innerHTML = Object.entries(PLANS).map(([k,p]) =>
+    `<div class="chip ${k===curPlan?'on':''}" onclick="curPlan='${k}';render()">${p.name}</div>`).join('');
+  document.getElementById('bgChips').innerHTML = BACKGROUNDS.map((b,i) =>
+    `<div class="chip ${i===curBg?'on':''}" onclick="curBg=${i};render()"><span class="sw" style="background:${b.bg}"></span>${b.name}</div>`).join('');
+  document.getElementById('scaleChips').innerHTML = SCALES.map(v =>
+    `<div class="chip ${v===curScale?'on':''}" onclick="curScale=${v};render()">${v}px</div>`).join('');
+  document.getElementById('contentChip').innerHTML =
+    `<div class="chip ${showContent?'on':''}" onclick="showContent=!showContent;render()">模拟 App 列表内容</div>`;
+  document.getElementById('planDesc').innerHTML = plan.desc;
+  // 总览网格
+  document.getElementById('grid').innerHTML = BACKGROUNDS.map((b,i) => {
+    const cr = bestContrast(plan, b);
+    return `<div class="cell"><div class="mini" style="background:${b.bg}" id="cell${i}"></div>
+      <div class="cap"><span>${b.name}</span>${crBadge(cr)}</div></div>`;
+  }).join('');
+  BACKGROUNDS.forEach((b,i) => document.getElementById('cell'+i).appendChild(lineEl(plan, 3)));
+  // 对比度表
+  document.getElementById('cmpTable').innerHTML =
+    `<tr><th>背景</th>${Object.entries(PLANS).map(([k,p]) => `<th>${p.name.replace('·','<br>·')}</th>`).join('')}</tr>` +
+    BACKGROUNDS.map(b => `<tr><td>${b.name}</td>${Object.entries(PLANS).map(([k,p]) => {
+      const cr = bestContrast(p, b);
+      const cls = cr >= 3 ? 'good' : cr >= 1.6 ? 'mid' : 'bad';
+      return `<td class="${cls}">${cr.toFixed(1)}:1</td>`;
+    }).join('')}</tr>`).join('');
+}
+render();
+</script>
+</body>
+</html>

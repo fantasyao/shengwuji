@@ -87,13 +87,13 @@ class TextProcessor {
     if (text.isEmpty) return text;
 
     // 1. 可选：是否去掉所有空格 (包括普通空格和全角空格)
-    String result = removeSpaces
-        ? text.replaceAll(RegExp(r'\s+'), '')
-        : text;
+    String result = removeSpaces ? text.replaceAll(RegExp(r'\s+'), '') : text;
 
     // 2. 再进行正则规则库和热词表的替换
     _ruleMap.forEach((reg, repl) => result = result.replaceAll(reg, repl));
-    _hotwordMap.forEach((wrong, correct) => result = result.replaceAll(wrong, correct));
+    _hotwordMap.forEach(
+      (wrong, correct) => result = result.replaceAll(wrong, correct),
+    );
 
     return result;
   }

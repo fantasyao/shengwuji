@@ -26,9 +26,9 @@ void main() {
     invoked.clear();
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async {
-      invoked.add(call);
-      return true;
-    });
+          invoked.add(call);
+          return true;
+        });
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(recordChannel, (call) async => null);
   });
@@ -52,8 +52,7 @@ void main() {
     expect(invoked.single.method, 'restoreMedia');
   });
 
-  testWidgets('fail()：录音态失败路径恢复媒体音量，且先于 voiceMemoFailed 回执',
-      (tester) async {
+  testWidgets('fail()：录音态失败路径恢复媒体音量，且先于 voiceMemoFailed 回执', (tester) async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
     final c = OverlayVoiceMemoController()
       ..setStateForTest(OverlayVoiceMemoState.recording);

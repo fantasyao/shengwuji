@@ -170,6 +170,13 @@ class OverlayDiaryCard extends StatelessWidget {
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
 
+  /// 停靠侧：false（默认）= 屏幕右缘（历史行为），true = 左缘。
+  /// 只镜像胶囊的几何锚定——外层对齐（贴停靠侧）、展开↔收起过渡的叠放锚
+  ///（停靠侧缘固定，另一侧随补间伸缩）与收卷裁剪窗口的固定缘；卡内文字/
+  /// 按钮的阅读排版保持 LTR 不镜像（时间行、勾选框、底部按钮条不随停靠侧
+  /// 翻转，两种停靠下内容阅读一致）
+  final bool dockLeft;
+
   const OverlayDiaryCard({
     super.key,
     required this.diary,
@@ -197,6 +204,7 @@ class OverlayDiaryCard extends StatelessWidget {
     this.onTagPickCancel,
     this.onTap,
     this.onLongPress,
+    this.dockLeft = false,
   });
 
   /// 测试探针：收起态文字宽度实际执行 TextPainter.layout 的次数（Top7 缓存验证）
@@ -209,8 +217,7 @@ class OverlayDiaryCard extends StatelessWidget {
     String text,
     TextScaler textScaler,
     String? fontFamily,
-  ) =>
-      _measureCollapsedTextWidth(text, textScaler, fontFamily);
+  ) => _measureCollapsedTextWidth(text, textScaler, fontFamily);
 
   @override
   Widget build(BuildContext context) {
@@ -245,11 +252,10 @@ class OverlayDiaryCard extends StatelessWidget {
       onTap: onTap,
       onLongPress: onLongPress,
       child: Align(
-        // 胶囊贴屏幕边缘对齐：悬浮窗当前停靠右侧 → 右对齐贴面板右缘（=屏幕右缘-margin），
-        // 长度随内容伸缩（短内容不再撑满全宽）。
-        // 未来支持左右侧切换时：停靠左侧改为 centerLeft，并同步镜像 Kotlin 窗口 gravity、
-        // 面板 Stack 的 Alignment.topRight、本对齐，共三处
-        alignment: Alignment.centerRight,
+        // 胶囊贴屏幕边缘对齐：停靠右缘 → 右对齐贴面板右缘（历史行为），
+        // 停靠左缘 → 左对齐（镜像，与 Kotlin 窗口 Gravity、面板 Stack 锚点
+        // 同步切换），长度随内容伸缩（短内容不再撑满全宽）。
+        alignment: dockLeft ? Alignment.centerLeft : Alignment.centerRight,
         // ⚠️ 本层禁止再包 LayoutBuilder：收起最后一张展开卡时，父层面板宽
         // AnimatedContainer 补间（0.92W→0.72W，见 overlay_home._buildPanel）
         // 会让 ListView 给每个卡片 item 的约束逐帧变，LayoutBuilder 把约束
@@ -341,12 +347,12 @@ class OverlayDiaryCard extends StatelessWidget {
           // 可见不闪烁
           child: AnimatedSwitcher(
             duration: OverlayConstants.animationDuration,
-            // 过渡期两 child 叠放顶右锚（右缘对齐 + 顶部对齐；卡片外层
-            // Align centerRight，右锚一致，右缘全程固定只有左缘在动）。
-            // topRight 的顶锚服务收起动画旧内容顶缘连续（收起时卡片向上
+            // 过渡期两 child 叠放停靠侧缘锚（停靠边缘对齐 + 顶部对齐；卡片外层
+            // Align 同侧锚，停靠缘全程固定只有另一缘在动）。
+            // 顶锚服务收起动画旧内容顶缘连续（收起时卡片向上
             // 收的是底部，内容区顶部不动）。⚠️ 收起静止态的 currentChild
             //（单行 Row ~24dp）比 Stack（容器 minHeight 撑到 cardHeight）
-            // 矮，topRight 会让它贴顶——故收起分支自己包 ConstrainedBox
+            // 矮，顶锚会让它贴顶——故收起分支自己包 ConstrainedBox
             //（minHeight: cardHeight）撑满高度居中（ae69cff 贴顶回归
             // 修复）；展开态 currentChild 填满 Stack，不受影响。
             // Stack 默认 clipBehavior: hardEdge = 纵向裁剪兜底（旧内容
@@ -365,7 +371,9 @@ class OverlayDiaryCard extends StatelessWidget {
             // null → 撑满补间中的约束宽 → Stack/色块宽度跟随 maxWidth
             // 补间逐帧真收缩（横向收缩可见的结构来源，945be75 行为）
             layoutBuilder: (currentChild, previousChildren) => Stack(
-              alignment: Alignment.topRight,
+              // 叠放锚 = 停靠侧上角（停靠右缘 topRight / 停靠左缘 topLeft），
+              // 与卡片外层 Align、收卷窗口固定缘同侧
+              alignment: dockLeft ? Alignment.topLeft : Alignment.topRight,
               children: [
                 for (final child in previousChildren)
                   IgnorePointer(child: child),
@@ -381,9 +389,9 @@ class OverlayDiaryCard extends StatelessWidget {
             // - card-expanded（展开态内容）：FadeTransition 之内再包
             //   「裁剪收卷」窗口（ClipRect + _CollapseWindowClipper）+
             //   Align(heightFactor 补间) + OverflowBox 冻结排版——
-            //   出场（收起方向）旧内容排版冻结不动，被右缘固定、与
-            //   AnimatedContainer maxWidth/padding 补间同拍的窗口从左上
-            //   往右缘收卷（文字边界持续跟随胶囊收缩），且 heightFactor
+            //   出场（收起方向）旧内容排版冻结不动，被停靠缘固定、与
+            //   AnimatedContainer maxWidth/padding 补间同拍的窗口从另一侧
+            //   往停靠缘收卷（文字边界持续跟随胶囊收缩），且 heightFactor
             //   逐帧压矮旧 child 的高度贡献 = 纵向真补间源（Stack 高随
             //   progress 线性 展开高→46，替代已移除的 AnimatedSize 外层）；
             //   窗口恒在胶囊区域内 + Stack hardEdge 兜底，文字不可能
@@ -468,14 +476,20 @@ class OverlayDiaryCard extends StatelessWidget {
                           progress: progress,
                           targetWidth: collapsedWidth,
                           targetHeight: OverlayConstants.cardHeight,
+                          alignLeft: dockLeft,
                         ),
                         child: Align(
-                          alignment: Alignment.topRight,
+                          // 停靠侧缘锚（镜像）：停靠缘固定、另一缘随补间伸缩
+                          alignment: dockLeft
+                              ? Alignment.topLeft
+                              : Alignment.topRight,
                           heightFactor:
                               minHeightFactor +
                               (1.0 - minHeightFactor) * progress,
                           child: OverflowBox(
-                            alignment: Alignment.topRight,
+                            alignment: dockLeft
+                                ? Alignment.topLeft
+                                : Alignment.topRight,
                             fit: OverflowBoxFit.deferToChild,
                             minWidth: frozenWidth,
                             maxWidth: frozenWidth,
@@ -591,7 +605,7 @@ class OverlayDiaryCard extends StatelessWidget {
   ///    入口——整卡 onTap 在展开态被父层置空，防与按钮区误触）
   /// 2. 正文：勾选框 WidgetSpan 内联首行文字前，后续行自然顶格
   /// 3. 重放行（有录音才显示）：白底圆播放钮 + 「重放录音」标签，独立一行
-  ///    不挤正文
+  ///    不挤正文；钮 + 标签整体一个矩形命中区（点文字同样触发回放）
   /// 4. 底部按钮条：删除 / 闹钟 / 复制 / AI 对话 / 标注入口；
   ///    删除确认态整行替换为「确认删除？✓ ✗」，标注选择态整行替换为
   ///   「❗ ⭐ 💡 ✗返回」
@@ -701,13 +715,26 @@ class OverlayDiaryCard extends StatelessWidget {
                   // 撑满卡片宽（展开态卡片约束宽 = maxWidth），再整体居中
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    _buildPlayButton(isPlayingAudio),
-                    const SizedBox(width: 6),
-                    Text(
-                      '重放录音',
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: Colors.white.withValues(alpha: 0.9),
+                    // 播放钮 + 间距 + 文字整体一个矩形命中区（旧版只有圆钮
+                    // 可点，「重放录音」是裸 Text 点了无反应）；opaque 让钮与
+                    // 文字间的 6dp 间隙也落在命中区内。内层 _buildPlayButton
+                    // 自带同回调 GestureDetector，竞技场内层胜出，行为一致
+                    GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: onPlayToggle,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _buildPlayButton(isPlayingAudio),
+                          const SizedBox(width: 6),
+                          Text(
+                            '重放录音',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Colors.white.withValues(alpha: 0.9),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ],
@@ -903,8 +930,11 @@ class OverlayDiaryCard extends StatelessWidget {
     String? fontFamily,
   ) {
     // 文字宽度走缓存（Top7）：输入不变直接命中，shaping 只发生一次
-    final textWidth =
-        _measureCollapsedTextWidth(content, textScaler, fontFamily);
+    final textWidth = _measureCollapsedTextWidth(
+      content,
+      textScaler,
+      fontFamily,
+    );
     final double raw =
         2 * OverlayConstants.cardHPadding +
         2 * OverlayConstants.cardBorderWidth +
@@ -1257,8 +1287,8 @@ class OverlayDiaryCard extends StatelessWidget {
 }
 
 /// 收起出场的「裁剪收卷」窗口（OverlayDiaryCard 的 transitionBuilder
-/// card-expanded 分支使用）：右缘固定（topRight 锚定，与胶囊的收缩锚点
-/// 一致）、左缘随 progress 收拢，高度同步从旧内容高收到胶囊高。
+/// card-expanded 分支使用）：停靠缘固定（与胶囊的收缩锚点一致）、另一缘随
+/// progress 收拢，高度同步从旧内容高收到胶囊高。
 /// progress=1 全窗（出场起点/展开完成态），0=收到胶囊目标尺寸。
 /// 旧内容排版由 OverflowBox 真正冻结（恒宽、200ms 零重排），只被窗口
 /// 裁剪 → 文字边界持续跟随胶囊收缩（视觉锚点）；窗口恒 ⊆ 胶囊区域
@@ -1275,10 +1305,15 @@ class _CollapseWindowClipper extends CustomClipper<Rect> {
   /// 收卷终点高（OverlayConstants.cardHeight，收起态胶囊高）
   final double targetHeight;
 
+  /// 停靠侧镜像：false（默认）= 右缘固定（topRight 锚，历史行为），
+  /// true = 左缘固定（topLeft 锚，停靠左缘时与胶囊收缩锚点同侧）
+  final bool alignLeft;
+
   const _CollapseWindowClipper({
     required this.progress,
     required this.targetWidth,
     required this.targetHeight,
+    this.alignLeft = false,
   });
 
   @override
@@ -1287,16 +1322,20 @@ class _CollapseWindowClipper extends CustomClipper<Rect> {
     // w = targetWidth + (size.width - targetWidth) * progress，h 同理
     final double w = targetWidth + (size.width - targetWidth) * progress;
     final double h = targetHeight + (size.height - targetHeight) * progress;
-    // topRight 锚定：右缘固定贴胶囊右缘，左缘随收缩右移。
+    // 停靠缘锚定：右缘停靠 = 右缘固定贴胶囊右缘，左缘随收缩右移（历史行为）；
+    // 左缘停靠 = 左缘固定，右缘随收缩左移（镜像）。
     // targetWidth 超过旧内容宽（长文本两态都顶满 maxWidth）时 progress→0
     // 会得到负 left 的宽窗——Rect 允许负 left，等于无实裁（长文本卡的横向
     // 收缩本就发生在父层面板宽层，本窗口只管纵向收卷）
-    return Rect.fromLTWH(size.width - w, 0.0, w, h);
+    return alignLeft
+        ? Rect.fromLTWH(0.0, 0.0, w, h)
+        : Rect.fromLTWH(size.width - w, 0.0, w, h);
   }
 
   @override
   bool shouldReclip(_CollapseWindowClipper oldClipper) =>
       progress != oldClipper.progress ||
       targetWidth != oldClipper.targetWidth ||
-      targetHeight != oldClipper.targetHeight;
+      targetHeight != oldClipper.targetHeight ||
+      alignLeft != oldClipper.alignLeft;
 }

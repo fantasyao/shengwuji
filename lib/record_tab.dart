@@ -13,8 +13,12 @@ import '../db_helper.dart';
 import '../text_processor.dart';
 import '../recognizer_singleton.dart';
 import '../widgets/blur_loading_overlay.dart';
+import '../widgets/neu_widgets.dart';
 import '../app_logger.dart';
 import '../utils/item_splitter.dart';
+import '../utils/correction_learner.dart';
+import '../correction/context_corrector.dart';
+import '../correction/pair_context.dart';
 import '../vad_singleton.dart';
 import '../tts_singleton.dart';
 import '../theme/app_theme_extension.dart';
@@ -43,6 +47,13 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
   final _audioRecorder = AudioRecorder();
   final TextEditingController _itemController = TextEditingController();
   final TextEditingController _locationController = TextEditingController();
+
+  // 「错误-修正」学习：识别结果填入输入框时的原文快照。
+  // 用户手改后点保存时，对比「快照 → 保存文字」抽取片段级修正对入库
+  //（识别 → 用户改 → 保存 即学到一条；手动打字录入时快照为空串不学习）。
+  // 保存成功后清空，防止旧快照污染后续手动录入
+  String _recognizedItemSnapshot = '';
+  String _recognizedLocationSnapshot = '';
 
   // 用于跟踪App生命周期状态，区分真正的后台恢复和通知栏操作
   AppLifecycleState? _lastState;
@@ -106,18 +117,25 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
   // 用户听到 TTS 念错后（如"电扇"识别成"电脑"），不方便看手机点撤销按钮，
   // 可在 10 秒窗口内说"不对"/"撤销"等关键词自动撤销上一条 + TTS 回显"已撤销"。
   // 设计要点：
-  // 1) 白名单严格匹配（≤5 字纯中文），避免长句里的"不对"误命中
+  // 1) 白名单严格匹配（≤6 字纯中文），避免长句里的"不对"误命中
   // 2) 10 秒窗口不阻塞正常录入——超时或非命中关键词的文本走 ItemSplitter 正常保存
   // 3) 与 _undoSave (UI 撤销按钮) 复用同一删除路径
   static const Set<String> _kUndoKeywords = {
     '不对',
     '撤销',
+    '撤消', // "撤销"的同音异形写法（ASR 两种都可能输出）
     '错了',
     '取消',
     '删掉',
+    '删除',
+    '报销', // 口语"这条报销了"
     '不是这个',
+    '上条不对',
+    '这条不对',
+    '删除上一条',
+    '删除最近一条', // 6 字，是 _kUndoMaxTextLen=6 的由来
   };
-  static const int _kUndoMaxTextLen = 5; // 撤销命令文本最大长度（避免长句误命中）
+  static const int _kUndoMaxTextLen = 6; // 撤销命令文本最大长度（避免长句误命中）
   static const int _kUndoWindowSeconds = 10; // 撤销时间窗口（秒）
 
   // 搬家模式声音提示：成功=高音叮(880+1320Hz)、失败=低音嗡(220+224Hz)
@@ -504,8 +522,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
                         ),
                       ],
                     ),
-                    backgroundColor:
-                        snackBarExt.primaryDark,
+                    backgroundColor: snackBarExt.primaryDark,
                     behavior: SnackBarBehavior.floating,
                     duration: const Duration(seconds: 2),
                     shape: RoundedRectangleBorder(
@@ -522,19 +539,30 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
           // =============================================================
 
           // 如果不是以"记录一下"开头，则继续走原来的"存物品"逻辑
-          final processedText = widget.processor.process(rawText);
+          // 热词替换 → 同音词上下文纠错（智谱/质朴这类按语境自动选词，
+          // 过不了置信度阈值保持原文）
+          final hotwordText = widget.processor.process(rawText);
+          final ctxResult = await ContextCorrector.instance.correct(
+            hotwordText,
+          );
+          final processedText = ctxResult.text;
           log("原始识别: $rawText");
           log("修正后文本: $processedText");
           AppLogger.appLog('🎤 [Record] 原始识别: $rawText');
           AppLogger.appLog('📝 [Record] 修正后文本: $processedText');
 
+          final res = _smartSplit(processedText);
           setState(() {
-            final res = _smartSplit(processedText);
             _itemController.text = res['item']!;
             if (res['location']!.isNotEmpty) {
               _locationController.text = res['location']!;
             }
+            // 原文快照：供保存时对比用户的手动修改（学习错误-修正对）
+            _recognizedItemSnapshot = res['item']!;
+            _recognizedLocationSnapshot = res['location']!;
           });
+          // 「错误-修正」命中检测：识别结果里有学过的错误片段 → 提示一键修正
+          await _offerCorrectionFix(res['item']!, res['location']!);
         }
       }
     } catch (e) {
@@ -600,12 +628,117 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
       _vibrate(duration: 30, amplitude: 40);
       await widget.dbHelper.insertItem(currentItem, currentLoc);
       AppLogger.appLog('💾 [Record] 保存物品: $currentItem -> $currentLoc');
+      // 「错误-修正」学习：对比「识别快照 → 用户保存的文字」，
+      // 双方都先过 _cleanPunctuation，避免把保存时的标点清理误当成用户修改
+      _learnFromEdit(_cleanPunctuation(_recognizedItemSnapshot), currentItem);
+      _learnFromEdit(
+        _cleanPunctuation(_recognizedLocationSnapshot),
+        currentLoc,
+      );
+      _recognizedItemSnapshot = '';
+      _recognizedLocationSnapshot = '';
       _itemController.clear();
       _locationController.clear();
       setState(() => _statusText = "✅ 已保存");
       FocusScope.of(context).unfocus();
     } else {
       setState(() => _statusText = "⚠️ 请完善物品和位置");
+    }
+  }
+
+  /// 「错误-修正」学习：对比「识别原文快照 → 保存的文字」，抽取片段级修正对
+  /// 入库（fire-and-forget，不阻塞保存）。快照为空=本次是手动打字录入，不学习。
+  /// 同音组内的对（质朴→智谱）由 ContextCorrector 分流进共现统计，不进盲替换表
+  void _learnFromEdit(String original, String edited) {
+    if (original.isEmpty || original == edited) return;
+    ContextCorrector.instance.learnFromEdit(original, edited);
+    AppLogger.appLog('🧠 [Record] 编辑学习已触发: $original → $edited');
+  }
+
+  /// 「错误-修正」命中提示：识别填框的结果里有学过的错误片段时，弹 SnackBar
+  /// 询问是否一键修正（默认仍显示识别原文，用户点「一键修正」才替换输入框）。
+  /// 采纳时顺带把命中对 hit_count+1，强化学习计数。
+  /// 语境门控：有语境档案的对只在邻接字符吻合的语境下提示——
+  /// 「互联网影视可控」学到的「影视→隐私」不会打扰「今晚看的影视不错」；
+  /// 无档案的对照旧字面命中就提示
+  Future<void> _offerCorrectionFix(String item, String location) async {
+    try {
+      // 同音组内的修正对（质朴→智谱）不提示：交给上下文纠错按语境处理，
+      // 盲替换提示会把「这个人很质朴」也建议改成「智谱」
+      final pairs = (await widget.dbHelper.getAllCorrectionPairs())
+          .where((p) => !ContextCorrector.instance.isHomophonePair(p))
+          .toList();
+      if (!mounted) return;
+      final contexts = PairContextGate.groupByPair(
+        await widget.dbHelper.getAllPairContexts(),
+      );
+      // 物品/位置两个字段分别匹配、分别替换（一次查询复用）
+      bool hitWithGate(String field, CorrectionPair p) =>
+          field.contains(p.error) &&
+          PairContextGate.shouldPrompt(
+            field,
+            p,
+            contexts[PairContextGate.keyOfPair(p)] ?? const [],
+          );
+      final itemMatches = pairs.where((p) => hitWithGate(item, p)).toList();
+      final locMatches = pairs
+          .where((p) => hitWithGate(location, p))
+          .toList();
+      if (itemMatches.isEmpty && locMatches.isEmpty) return;
+      // 双钥匙对（整词+短核）同时命中时文案只展示长钥匙，计数不虚高；
+      // 下方替换仍用全集：长钥匙先应用，短钥匙只兜底残余位置
+      final visible = CorrectionLearner.dedupeSubsumed(
+        itemMatches + locMatches,
+      );
+      final first = visible.first;
+      final hitCount = visible.length;
+      final ext = AppThemeExtension.of(context);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '检测到「${first.error}」，上次您改成了「${first.correct}」'
+            '${hitCount > 1 ? '（共 $hitCount 处可修正）' : ''}',
+          ),
+          action: SnackBarAction(
+            label: '一键修正',
+            onPressed: () {
+              if (!mounted) return;
+              final newItem = itemMatches.isNotEmpty
+                  ? CorrectionLearner.applyCorrections(
+                      _itemController.text,
+                      itemMatches,
+                    )
+                  : _itemController.text;
+              final newLoc = locMatches.isNotEmpty
+                  ? CorrectionLearner.applyCorrections(
+                      _locationController.text,
+                      locMatches,
+                    )
+                  : _locationController.text;
+              setState(() {
+                _itemController.text = newItem;
+                _locationController.text = newLoc;
+              });
+              // 用户采纳 = 明确纠错行为：普通对强化计数，同音组对
+              // （若有混入）改道共现统计，统一走分流学习
+              ContextCorrector.instance.learnFromEdit(item, newItem);
+              ContextCorrector.instance.learnFromEdit(location, newLoc);
+              _vibrate(duration: 30, amplitude: 40);
+              AppLogger.appLog('✅ [Record] 一键修正已应用: $first');
+            },
+          ),
+          duration: const Duration(seconds: 6),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: ext.primaryDark,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
+        ),
+      );
+    } catch (e) {
+      // 命中检测失败不影响识别填框主流程
+      log('修正提示失败: $e');
     }
   }
 
@@ -883,7 +1016,11 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
         _playFailure();
         return;
       }
-      final processed = widget.processor.process(rawText);
+      // 热词替换 → 同音词上下文纠错（搬家模式即时落库没有确认机会，
+      // 这里是上下文纠错收益最大的链路；过不了阈值保持原文宁漏勿错）
+      final processed = (await ContextCorrector.instance.correct(
+        widget.processor.process(rawText),
+      )).text;
       // 🆕 撤销命令前置分流：检测到"不对"/"撤销"等关键词且窗口内 → 走撤销路径
       // 不阻塞正常录入：未命中关键词的文本继续走 ItemSplitter 正常保存
       if (_isUndoCommand(processed)) {
@@ -991,10 +1128,10 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
   }
 
   /// 判断识别文本是否为撤销命令
-  //  规则：去除非中文字符后，纯中文长度 ≤5 且（完全匹配 或 包含）白名单关键词
+  //  规则：去除非中文字符后，纯中文长度 ≤6 且（完全匹配 或 包含）白名单关键词
   //  - 完全匹配：clean ∈ _kUndoKeywords（如"不对"、"撤销"）
   //  - 短包含：clean.contains(kw)（应对 SenseVoice 输出"嗯不对"等前缀噪声）
-  //  长度限制 ≤5 避免"今天天气不对劲"（7字）这类长句误命中
+  //  长度限制 ≤6 避免"今天天气不对劲"（7字）这类长句误命中
   bool _isUndoCommand(String text) {
     final clean = text.replaceAll(RegExp(r'[^\u4e00-\u9fa5]'), '').trim();
     if (clean.isEmpty || clean.length > _kUndoMaxTextLen) return false;
@@ -1266,12 +1403,20 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
                                   ),
                                 ),
                                 const Spacer(),
-                                Switch(
-                                  value: _isMoveMode,
-                                  activeThumbColor: ext.primary,
-                                  onChanged: (v) =>
-                                      v ? _enterMoveMode() : _exitMoveMode(),
-                                ),
+                                // 新拟物主题：凹槽轨道+凸滑块开关；其余主题保持 M3 Switch
+                                if (ext.isNeumorphic)
+                                  NeuSwitch(
+                                    value: _isMoveMode,
+                                    onChanged: (v) =>
+                                        v ? _enterMoveMode() : _exitMoveMode(),
+                                  )
+                                else
+                                  Switch(
+                                    value: _isMoveMode,
+                                    activeThumbColor: ext.primary,
+                                    onChanged: (v) =>
+                                        v ? _enterMoveMode() : _exitMoveMode(),
+                                  ),
                               ],
                             ),
                           ),
@@ -1308,19 +1453,33 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
                                     ),
                                   ),
                                   const Spacer(),
-                                  Switch(
-                                    value: _ttsEnabled,
-                                    activeThumbColor: ext.primary,
-                                    onChanged: (v) async {
-                                      setState(() => _ttsEnabled = v);
-                                      final prefs =
-                                          await SharedPreferences.getInstance();
-                                      await prefs.setBool(
-                                        'move_mode_tts_enabled',
-                                        v,
-                                      );
-                                    },
-                                  ),
+                                  if (ext.isNeumorphic)
+                                    NeuSwitch(
+                                      value: _ttsEnabled,
+                                      onChanged: (v) async {
+                                        setState(() => _ttsEnabled = v);
+                                        final prefs = await SharedPreferences
+                                            .getInstance();
+                                        await prefs.setBool(
+                                          'move_mode_tts_enabled',
+                                          v,
+                                        );
+                                      },
+                                    )
+                                  else
+                                    Switch(
+                                      value: _ttsEnabled,
+                                      activeThumbColor: ext.primary,
+                                      onChanged: (v) async {
+                                        setState(() => _ttsEnabled = v);
+                                        final prefs =
+                                            await SharedPreferences.getInstance();
+                                        await prefs.setBool(
+                                          'move_mode_tts_enabled',
+                                          v,
+                                        );
+                                      },
+                                    ),
                                 ],
                               ),
                             ),
@@ -1378,8 +1537,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
                               controller: _locationController,
                               hint: "存放位置",
                               icon: Icons.place_rounded,
-                              accentColor:
-                                  ext.warningText,
+                              accentColor: ext.warningText,
                             ),
                           ],
                           // ── 搬家模式：移除原录音按钮（Switch 已是开关），改用列表内撤销 ──
@@ -1466,7 +1624,8 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
             Positioned(
               left: 0,
               right: 0,
-              bottom: 100, // 在「撤销最近」按钮上方（按钮 bottom:12 + SafeArea + height:56 ≈ 80-92）
+              bottom:
+                  100, // 在「撤销最近」按钮上方（按钮 bottom:12 + SafeArea + height:56 ≈ 80-92）
               child: SafeArea(
                 top: false,
                 child: Padding(
@@ -1478,10 +1637,16 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
                     background: Container(
                       alignment: Alignment.centerRight,
                       padding: const EdgeInsets.only(right: 20),
-                      child: const Icon(Icons.delete_sweep, color: Colors.white54),
+                      child: const Icon(
+                        Icons.delete_sweep,
+                        color: Colors.white54,
+                      ),
                     ),
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 14,
+                      ),
                       decoration: BoxDecoration(
                         color: ext.primaryDark,
                         borderRadius: BorderRadius.circular(10),
@@ -1498,7 +1663,10 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
                           Expanded(
                             child: Text(
                               '没分出物品+位置: "$_moveSplitError"',
-                              style: const TextStyle(color: Colors.white, fontSize: 13),
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 13,
+                              ),
                             ),
                           ),
                           const SizedBox(width: 8),
@@ -1506,7 +1674,9 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
                             onPressed: _handleManualSaveSplitError,
                             style: TextButton.styleFrom(
                               foregroundColor: Colors.white,
-                              padding: const EdgeInsets.symmetric(horizontal: 8),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                              ),
                             ),
                             child: const Text(
                               '手动保存',
@@ -1580,37 +1750,40 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
     required Color accentColor,
   }) {
     final ext = AppThemeExtension.of(context);
-    return Container(
-      decoration: BoxDecoration(
-        color: ext.cardBackground,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: ext.textPrimary.withValues(
-              alpha: 0.03,
-            ),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      child: TextField(
-        controller: controller,
-        style: TextStyle(color: ext.textPrimary), // 输入文字色（黑金主题下白色，深色卡片上清晰）
-        textInputAction: TextInputAction.done, // 设置键盘动作按钮为"完成"
-        onSubmitted: (_) => _saveData(), // 当用户点击键盘的完成/Enter按钮时触发保存
-        decoration: InputDecoration(
-          hintText: hint,
-          hintStyle: TextStyle(color: ext.textHint), // hint 占位文字色
-          prefixIcon: Icon(icon, color: accentColor),
-          border: InputBorder.none,
-          contentPadding: const EdgeInsets.symmetric(
-            vertical: 18,
-            horizontal: 20,
-          ),
+    final field = TextField(
+      controller: controller,
+      style: TextStyle(color: ext.textPrimary), // 输入文字色（黑金主题下白色，深色卡片上清晰）
+      textInputAction: TextInputAction.done, // 设置键盘动作按钮为"完成"
+      onSubmitted: (_) => _saveData(), // 当用户点击键盘的完成/Enter按钮时触发保存
+      decoration: InputDecoration(
+        hintText: hint,
+        hintStyle: TextStyle(color: ext.textHint), // hint 占位文字色
+        prefixIcon: Icon(icon, color: accentColor),
+        border: InputBorder.none,
+        contentPadding: const EdgeInsets.symmetric(
+          vertical: 18,
+          horizontal: 20,
         ),
       ),
     );
+    // 新拟物主题：三层硬边凹陷（NeuInset，2026-09-18 真机反馈渐变版读不出
+    // 凹感后换实现）；其余主题保持白卡+软阴影配方
+    return ext.isNeumorphic
+        ? NeuInset(radius: 16, child: field)
+        : Container(
+            decoration: BoxDecoration(
+              color: ext.cardBackground,
+              borderRadius: BorderRadius.circular(16),
+              boxShadow: [
+                BoxShadow(
+                  color: ext.textPrimary.withValues(alpha: 0.03),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: field,
+          );
   }
 
   // ── 搬家模式：单条最近保存记录卡片 ──

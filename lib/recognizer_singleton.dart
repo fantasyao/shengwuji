@@ -83,8 +83,14 @@ class RecognizerSingleton {
     // 如果两个文件都已存在，直接返回路径
     if (modelFile.existsSync() && tokensFile.existsSync()) {
       final modelSize = await modelFile.length();
-      log("📍 [Singleton] 内置模型已存在于本地: $bundledDir (${(modelSize / 1024 / 1024).toStringAsFixed(1)}MB)");
-      StartupLogger.log("内置模型已存在(跳过拷贝)", 0, extra: "${(modelSize / 1024 / 1024).toStringAsFixed(1)}MB");
+      log(
+        "📍 [Singleton] 内置模型已存在于本地: $bundledDir (${(modelSize / 1024 / 1024).toStringAsFixed(1)}MB)",
+      );
+      StartupLogger.log(
+        "内置模型已存在(跳过拷贝)",
+        0,
+        extra: "${(modelSize / 1024 / 1024).toStringAsFixed(1)}MB",
+      );
       return bundledDir;
     }
 
@@ -104,27 +110,43 @@ class RecognizerSingleton {
       modelData = await rootBundle.load('assets/model.int8.onnx');
     } catch (e) {
       log('❌ [Singleton] assets/model.int8.onnx 不存在：$e');
-      log('❌ [Singleton] 开源仓库不含 229MB 模型，请从 GitHub Release 下载 model.int8.onnx 放到 assets/ 目录');
+      log(
+        '❌ [Singleton] 开源仓库不含 229MB 模型，请从 GitHub Release 下载 model.int8.onnx 放到 assets/ 目录',
+      );
       rethrow;
     }
     copySw.stop();
-    log("⏱️ [Singleton] rootBundle.load(model) 耗时: ${copySw.elapsedMilliseconds}ms");
+    log(
+      "⏱️ [Singleton] rootBundle.load(model) 耗时: ${copySw.elapsedMilliseconds}ms",
+    );
     StartupLogger.log("rootBundle.load(model)", copySw.elapsedMilliseconds);
 
     copySw.reset();
     copySw.start();
     await modelFile.writeAsBytes(
-      modelData.buffer.asUint8List(modelData.offsetInBytes, modelData.lengthInBytes),
+      modelData.buffer.asUint8List(
+        modelData.offsetInBytes,
+        modelData.lengthInBytes,
+      ),
     );
     copySw.stop();
-    log("⏱️ [Singleton] writeAsBytes(model) 耗时: ${copySw.elapsedMilliseconds}ms, 大小: ${(modelData.lengthInBytes / 1024 / 1024).toStringAsFixed(1)}MB");
-    StartupLogger.log("writeAsBytes(model)", copySw.elapsedMilliseconds, extra: "${(modelData.lengthInBytes / 1024 / 1024).toStringAsFixed(1)}MB");
+    log(
+      "⏱️ [Singleton] writeAsBytes(model) 耗时: ${copySw.elapsedMilliseconds}ms, 大小: ${(modelData.lengthInBytes / 1024 / 1024).toStringAsFixed(1)}MB",
+    );
+    StartupLogger.log(
+      "writeAsBytes(model)",
+      copySw.elapsedMilliseconds,
+      extra: "${(modelData.lengthInBytes / 1024 / 1024).toStringAsFixed(1)}MB",
+    );
     log("📦 [Singleton] model.int8.onnx 拷贝完成");
 
     // 拷贝 tokens.txt
     final tokensData = await rootBundle.load('assets/tokens.txt');
     await tokensFile.writeAsBytes(
-      tokensData.buffer.asUint8List(tokensData.offsetInBytes, tokensData.lengthInBytes),
+      tokensData.buffer.asUint8List(
+        tokensData.offsetInBytes,
+        tokensData.lengthInBytes,
+      ),
     );
     log("📦 [Singleton] tokens.txt 拷贝完成");
 
@@ -144,12 +166,16 @@ class RecognizerSingleton {
       if (customPath != null && Directory(customPath).existsSync()) {
         // 用户手动导入过模型，优先使用
         _currentModelPath = customPath;
-        log("📍 [Singleton] preloadModelPath: 使用用户导入的模型, path=$_currentModelPath, hasModel=$hasModel");
+        log(
+          "📍 [Singleton] preloadModelPath: 使用用户导入的模型, path=$_currentModelPath, hasModel=$hasModel",
+        );
       } else {
         // 没有用户导入的模型，使用内置模型
         final bundledDir = await _ensureBundledModel();
         _currentModelPath = bundledDir;
-        log("📍 [Singleton] preloadModelPath: 使用内置模型, path=$_currentModelPath, hasModel=$hasModel");
+        log(
+          "📍 [Singleton] preloadModelPath: 使用内置模型, path=$_currentModelPath, hasModel=$hasModel",
+        );
       }
     } catch (e) {
       debugPrint("⚠️ 预读模型路径失败: $e");

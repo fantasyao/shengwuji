@@ -161,6 +161,14 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "1.0.9"
+  dart_jieba:
+    dependency: "direct main"
+    description:
+      name: dart_jieba
+      sha256: "54f892c7319dd1f7131220b78a61033141c3ef63e5c5d7ac2d408cb81f028ed3"
+      url: "https://pub.flutter-io.cn"
+    source: hosted
+    version: "1.0.1"
   dbus:
     dependency: transitive
     description:
@@ -694,7 +702,7 @@ packages:
     source: hosted
     version: "1.2.1"
   record_platform_interface:
-    dependency: transitive
+    dependency: "direct dev"
     description:
       name: record_platform_interface
       sha256: "8a81dbc4e14e1272a285bbfef6c9136d070a47d9b0d1f40aa6193516253ee2f6"

@@ -29,7 +29,16 @@ class _OverlayAppState extends State<OverlayApp> {
     try {
       final prefs = await SharedPreferences.getInstance();
       final themeId = prefs.getString('selected_theme');
-      final theme = AppThemes.findById(themeId) ?? AppThemes.defaultTheme;
+      var theme = AppThemes.findById(themeId) ?? AppThemes.defaultTheme;
+      // ⚠️ 新拟物主题降级为默认青（悬浮窗视觉零变化）：
+      // 悬浮窗 FlutterView 背景透明，拟物的外扩散双阴影会被窗口边缘硬裁剪成
+      // 灰块（透明窗口教训，overlay_constants 同类约束），且灰底面板与桌面
+      // 叠加突兀。2026-09-17 拍板：本期悬浮窗不拟物化，选中拟物主题时主窗
+      // 正常渲染、悬浮窗回落 default_teal。
+      if (theme.id == 'neumorphism') {
+        theme = AppThemes.defaultTheme;
+        print('🎨 [OverlayApp] 拟物主题不适用于悬浮窗，降级为默认青');
+      }
       if (mounted) {
         setState(() => _theme = theme);
       }

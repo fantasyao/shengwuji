@@ -92,7 +92,10 @@ void main() {
 
     test('无时间返回 null', () async {
       expect(
-        await CalendarHelper.extractBestTime('记得买牛奶', now: DateTime(2026, 9, 6)),
+        await CalendarHelper.extractBestTime(
+          '记得买牛奶',
+          now: DateTime(2026, 9, 6),
+        ),
         isNull,
       );
       expect(
@@ -110,8 +113,7 @@ void main() {
       expect(parsed.time, DateTime(2026, 9, 7, 20));
     });
 
-    test('「昨天」等已过多日的实体也能滚到未来（14 点说「昨天」→ 明天 12 点）',
-        () async {
+    test('「昨天」等已过多日的实体也能滚到未来（14 点说「昨天」→ 明天 12 点）', () async {
       final parsed = await CalendarHelper.extractBestTime(
         '昨天提醒的事',
         now: DateTime(2026, 9, 6, 14),

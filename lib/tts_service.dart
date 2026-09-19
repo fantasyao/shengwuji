@@ -568,9 +568,7 @@ class TtsService {
       return;
     }
 
-    print(
-      '🧵 [TtsService] 🔁 自动重启 worker（窗口内第 $_crashesInWindow 次）并恢复模型...',
-    );
+    print('🧵 [TtsService] 🔁 自动重启 worker（窗口内第 $_crashesInWindow 次）并恢复模型...');
     unawaited(() async {
       try {
         final ok = await initialize(

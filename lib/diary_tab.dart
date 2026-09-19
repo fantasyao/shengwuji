@@ -11,6 +11,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:record/record.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa_onnx;
 import '../vad_singleton.dart';
+import '../utils/quick_record_auto_stop.dart';
 import 'package:intl/intl.dart';
 import '../db_helper.dart';
 import '../text_processor.dart';
@@ -21,6 +22,7 @@ import '../recognizer_singleton.dart';
 import '../widgets/blur_loading_overlay.dart';
 import '../widgets/swipe_dismiss_card.dart';
 import '../widgets/checklist_widget.dart';
+import '../widgets/neu_widgets.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../ai_app_model.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -36,8 +38,12 @@ import '../app_logger.dart';
 import 'package:persistent_user_dir_access_android/persistent_user_dir_access_android.dart';
 import '../utils/query_detector.dart';
 import '../utils/item_splitter.dart';
+import '../utils/correction_learner.dart';
+import 'correction/context_corrector.dart';
+import 'correction/pair_context.dart';
 import '../utils/diary_tag.dart';
 import '../utils/diary_sync_bridge.dart';
+import '../utils/quick_record_exit_policy.dart';
 import '../utils/waveform_extractor.dart';
 import '../widgets/item_transfer_widget.dart';
 import '../widgets/location_answer_widget.dart';
@@ -209,6 +215,20 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
   // 记录录音开始时间，用于判断是否为长语音
   DateTime? _recordingStartTime;
 
+  // 🔇 快速录音「说完自动停止」检测器（仅 lockedMode 快捷录音会话存在，
+  // 普通点按钮录音不启用；startListening 开流前按配置创建，stopListening
+  // 开头清理——放最前是因权限弹窗打断的"录音从未开始"路径也会经过那里）
+  QuickRecordSilenceDetector? _autoStopDetector;
+
+  // 🔇 statusText 上次显示的静音倒计时秒数（流回调里做"整数秒变化才
+  // setState"的节流基线；null = 当前显示"正在聆听..."，新会话开始时重置）
+  int? _lastSilenceCountdownShown;
+
+  /// 🔇 是否处于说完自动停止的静音倒计时（浮动按钮 UI 用：倒计时文案
+  /// 「N 秒后自动停止」优先于锁定态「点击停止」固定文案；main.dart 每次
+  /// 按钮重建经 ValueListenableBuilder 现读）
+  bool get isSilenceCountdown => _autoStopDetector?.remainingSeconds != null;
+
   // generation 计数器：防止权限弹窗等异步中断导致 startListening/stopListening 竞态
   int _operationGeneration = 0;
 
@@ -352,6 +372,43 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
       _wasInBackground = true;
       _pausedTime = DateTime.now(); // 记录进入后台的时间
       log("日记页：进入后台，记录时间戳: $_pausedTime");
+    }
+
+    // 🔌 快捷录音「退出即停」：快捷方式/音量键拉起的录音会话（lockedMode）
+    // 在 App 退到后台且屏幕仍亮着时，判定为"用户离开 App"（努比亚滑动键
+    // 下滑退出后录音不停、要二次回 App 点停止的反馈场景），自动停止并照常
+    // 转写保存。息屏不在此列——锁屏快捷录音中按电源键（场景 D）续录是既有
+    // 行为。延迟 800ms 复核：① 息屏广播可能晚于 onPause 到达，复核时再查
+    // 屏幕状态；② 误触 Home 后立刻返回前台则续录不打断。App 内手动点录音
+    // 按钮的会话（lockedMode=false）不受影响，后台续录行为不变。
+    if ((state == AppLifecycleState.paused ||
+            state == AppLifecycleState.hidden) &&
+        _isLockedRecording &&
+        isListening &&
+        !isProcessing) {
+      Future.delayed(const Duration(milliseconds: 800), () async {
+        if (!mounted || !isListening || isProcessing) return;
+        bool? screenOn;
+        try {
+          screenOn = await _channel.invokeMethod<bool>('isScreenOn');
+        } catch (e) {
+          log("🔌 [Diary] 查询屏幕状态失败（保守起见不停录）: $e");
+        }
+        final lifecycle = WidgetsBinding.instance.lifecycleState;
+        if (!shouldAutoStopQuickRecording(
+          isLockedRecording: _isLockedRecording,
+          isListening: isListening,
+          isProcessing: isProcessing,
+          appStillBackgrounded:
+              lifecycle == AppLifecycleState.paused ||
+              lifecycle == AppLifecycleState.hidden,
+          screenOn: screenOn,
+        )) {
+          return;
+        }
+        log("🔌 [Diary] 快捷录音随 App 退出自动停止（后台 + 亮屏判定通过）");
+        stopListening();
+      });
     }
 
     // 后台恢复时，如果编辑抽屉开着但键盘没拉起来，重新请求焦点
@@ -526,6 +583,9 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
   /// 等 onDurationChanged 流精修（WAV 可能不触发 duration 流）。
   Future<void> _togglePlay(int id, String? path, {int? durationSec}) async {
     if (path == null) return;
+    // 播放/暂停触感：heavy 档对齐悬浮窗把手侧滑展开（同为线性马达预设，
+    // 小米15 真机上 heavy 体感偏轻，适合按钮级确认）
+    _haptic('heavy');
     try {
       if (_playingDiaryId == id && _isPlaying) {
         // 同卡播放中 → 暂停
@@ -1235,14 +1295,16 @@ $content
       entity,
     );
 
-    // 与悬浮窗闹钟按钮同一个确认弹层：转轮预填识别结果、确认前可调
-    //（识别结果只定转轮初始位置，绝不直接定死）。主 App 有 Activity，
+    // 与悬浮窗闹钟按钮同一个确认弹层：日历/拨轮预填识别结果、确认前可调
+    //（识别结果只定初始位置，绝不直接定死）。主 App 有 Activity，
     // alarmAvailable 保持 true，响铃开关可用，通知权限在确认后按需请求。
+    // onHaptic 注入主 App 侧触觉通道（performHaptic → VibrationEffect 线性马达）
     final result = await showCalendarConfirmSheet(
       context,
       eventTitle: actionContent,
       initialTime: entity.dateTime!,
       recognizedPhrase: entity.text,
+      onHaptic: _haptic,
     );
 
     if (result != null) {
@@ -1262,9 +1324,7 @@ $content
                       ? '通知权限被拒绝，请在系统设置中手动开启，否则无法在通知栏停止响铃'
                       : '需要通知权限才能显示响铃通知',
                 ),
-                backgroundColor: AppThemeExtension.of(
-                  context,
-                ).warningText,
+                backgroundColor: AppThemeExtension.of(context).warningText,
                 duration: Duration(seconds: 3),
               ),
             );
@@ -1284,9 +1344,7 @@ $content
                     ? '日历权限被拒绝，请在系统设置中手动开启'
                     : '需要日历权限才能添加日程提醒',
               ),
-              backgroundColor: AppThemeExtension.of(
-                context,
-              ).warningText,
+              backgroundColor: AppThemeExtension.of(context).warningText,
               duration: Duration(seconds: 3),
             ),
           );
@@ -1312,9 +1370,7 @@ $content
               ),
               backgroundColor: success == true
                   ? AppThemeExtension.of(context).positiveText
-                  : AppThemeExtension.of(
-                      context,
-                    ).dangerAccent,
+                  : AppThemeExtension.of(context).dangerAccent,
               duration: Duration(seconds: 3),
             ),
           );
@@ -1444,8 +1500,9 @@ $content
       } catch (e) {
         log("启用 Wakelock 失败: $e");
       }
-      // 震动反馈
-      _haptic('heavy');
+      // 开始震感在 Kotlin triggerQuickRecord（isRecording() 分流：开始 50,50 嗡/
+      // 停录 tick）——此处刻意不震（2026-09-17 用户拍板「开始嗡、停止清脆」触感
+      // 收敛到按键侧一下，Dart 再震会叠成两下）
       // 快速录音时静音其他媒体
       try {
         await _channel.invokeMethod('muteMedia');
@@ -1502,6 +1559,35 @@ $content
 
     // 记录录音开始时间
     _recordingStartTime = DateTime.now();
+    _lastSilenceCountdownShown = null; // 🔇 倒计时提示节流基线复位（新会话）
+
+    // 🔇 快速录音「说完自动停止」（仅 lockedMode 会话；配置读失败按关闭兜底，
+    // 不阻塞录音）。放在开流前：此前任一失败路径 return 时检测器尚不存在。
+    // VAD 初始化不 await（与开麦并行），未就绪期间喂入跳过——只延迟触发起点
+    // 不漏停（一次都没说话本就不触发）。触发后走 stopListening 既有链路，
+    // 与「退出即停」同款程序化停止
+    if (lockedMode) {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.reload();
+        final autoStopCfg = QuickRecordAutoStopConfig.fromPrefs(prefs);
+        if (autoStopCfg.enabled) {
+          _autoStopDetector = QuickRecordSilenceDetector(
+            config: autoStopCfg,
+            onSilence: () {
+              log(
+                "🔇 [Diary] 静音超 ${autoStopCfg.silenceSeconds}s（说过话后），自动停止并转写",
+              );
+              stopListening();
+            },
+          );
+          unawaited(_autoStopDetector!.ensureInitialized());
+          log("🔇 [Diary] 说完自动停止已启用（静音 ${autoStopCfg.silenceSeconds}s）");
+        }
+      } catch (e) {
+        log("🔍 [Diary] 读取说完自动停止配置失败（本次不启用）: $e");
+      }
+    }
 
     final stream = await _audioRecorder.startStream(
       const RecordConfig(
@@ -1519,6 +1605,18 @@ $content
       final chunk = Uint8List.fromList(data);
       _pcmBuilder.add(chunk);
       _audioBuffer.addAll(_convertBytesToFloat32(chunk));
+      // 🔇 快速录音说完自动停止：chunk 喂静音检测（非 lockedMode 会话为 null）
+      _autoStopDetector?.feedPcm16(chunk);
+      // 🔇 静音倒计时提示：剩余整数秒变化才 setState（每秒至多一次，流回调
+      // 频率高不能裸 setState）。恢复说话 → null → 回"正在聆听..."；
+      // 非 lockedMode 会话检测器为 null 恒 null，零开销
+      final countdown = _autoStopDetector?.remainingSeconds;
+      if (countdown != _lastSilenceCountdownShown) {
+        _lastSilenceCountdownShown = countdown;
+        _updateState(() {
+          statusText = countdown != null ? "$countdown 秒后自动停止" : "正在聆听...";
+        });
+      }
     });
   }
 
@@ -1527,6 +1625,12 @@ $content
     log(
       "🔍 [Diary] stopListening: 入口, generation=$_operationGeneration, isProcessing=$isProcessing, _recordingStartTime=$_recordingStartTime",
     );
+
+    // 🔇 快速录音静音检测器清理：必须放在所有 return 之前——权限弹窗打断的
+    // "录音从未开始"路径也会到这里。dispose 顺带释放 VAD 单例（清本会话残留
+    // 样本/段），后续长录音分段兜底路径需要 VAD 时 initialize 会重建
+    _autoStopDetector?.dispose();
+    _autoStopDetector = null;
 
     // 清除录音状态标志（供原生层双击检测使用）
     await _setRecordingFlag(false);
@@ -1554,8 +1658,9 @@ $content
       // flag 的清理由 MainActivity 的 ACTION_SCREEN_OFF 接收器统一负责
       // （用户主动锁屏时清 flag + moveTaskToBack）。
 
-      // 停止时震动反馈
-      _haptic('heavy');
+      // 停止触感刻意不在 Dart 侧（2026-09-17 用户拍板）：音量键 toggle 停录在
+      // Kotlin triggerQuickRecord 已震 tick（清脆），此处旧 _haptic('heavy') 与
+      // 它叠成两下已删；自动停（VAD/上限）无停止震，与悬浮窗行为对齐
     }
 
     // ⚠️ 延迟加载模式下只检查 isProcessing，不能检查 _recognizer==null
@@ -1909,10 +2014,13 @@ $content
       rawText,
       removeSpaces: false,
     );
-    log("修正后文本: $processedText");
-    AppLogger.appLog('📝 [Diary] 修正后文本: $processedText');
+    // 同音词上下文纠错：智谱/质朴这类同音词按上下文自动选词，
+    // 过不了置信度阈值就保持原文（宁漏勿错）；无歧义文本零开销直通
+    final ctxResult = await ContextCorrector.instance.correct(processedText);
+    log("修正后文本: ${ctxResult.text}");
+    AppLogger.appLog('📝 [Diary] 修正后文本: ${ctxResult.text}');
 
-    String text = processedText; // 使用处理后的文本
+    String text = ctxResult.text; // 使用处理后的文本
 
     // 清单检测：如果识别为清单，转为 markdown 存入 diary 表
     if (text.isNotEmpty) {
@@ -1947,11 +2055,15 @@ $content
 
     // 简单处理：去掉末尾多余标点
     if (text.isNotEmpty) {
+      // 本次内容落库后的行 id（供识别后「错误-修正」命中提示用）；
+      // 占位回填与兜底插入两条路径最终都会赋值
+      late final int savedId;
       if (diaryId != null) {
         // 占位已入库：updateDiary 回填 content（WAV 已在阶段 2.5 落盘）
         await widget.dbHelper.updateDiary(diaryId, text);
         DiarySyncBridge.bump();
         AppLogger.appLog('💾 [Diary] 回填日记: $text (id=$diaryId)');
+        savedId = diaryId;
       } else {
         // 兜底：占位落盘失败的边界场景，保留老的"先写盘再 insertDiary"逻辑
         // 1) 生成 wav 文件（使用 _pcmBuilder 中的原始 PCM16 bytes）
@@ -1962,7 +2074,7 @@ $content
               Uint8List.fromList(pcmBytes),
               sampleRate: 16000,
             );
-            await widget.dbHelper.insertDiary(
+            savedId = await widget.dbHelper.insertDiary(
               text,
               audioPath: wavPath,
               duration: _recordingDurationInSeconds,
@@ -1971,7 +2083,7 @@ $content
             AppLogger.appLog('💾 [Diary] 保存日记: $text');
           } else {
             // 没有采集到原始 bytes（异常情况），仍然保存文字
-            await widget.dbHelper.insertDiary(
+            savedId = await widget.dbHelper.insertDiary(
               text,
               audioPath: null,
               duration: _recordingDurationInSeconds,
@@ -1981,7 +2093,7 @@ $content
         } catch (e) {
           // 出错也不要阻塞：保存文字并记录日志
           log('保存 wav 失败: $e');
-          await widget.dbHelper.insertDiary(
+          savedId = await widget.dbHelper.insertDiary(
             text,
             audioPath: null,
             duration: _recordingDurationInSeconds,
@@ -1989,7 +2101,87 @@ $content
           DiarySyncBridge.bump();
         }
       }
+      // 「错误-修正」命中检测：识别文本里有学过的错误片段 → 提示一键修正
+      await _offerCorrectionFix(savedId, text);
       // 震动移到外部处理，避免阻塞动画
+    }
+  }
+
+  /// 「错误-修正」学习入口：对比「编辑前原文 → 保存后文字」，抽取片段级
+  /// 修正对入库（fire-and-forget，不阻塞保存主流程）。
+  /// 例：识别「饰品日志-」被改成「视频日志」→ 学到「饰品→视频」，
+  /// 下次识别再出现「饰品」时提示一键修正。
+  /// 同音组内的对（质朴→智谱）由 ContextCorrector 分流进共现统计，
+  /// 不进盲替换表
+  void _learnFromEdit(String original, String edited) {
+    if (original.isEmpty || original == edited) return;
+    ContextCorrector.instance.learnFromEdit(original, edited);
+    AppLogger.appLog('🧠 [Diary] 编辑学习已触发: $original → $edited');
+  }
+
+  /// 「错误-修正」命中提示：识别文本里出现学过的错误片段时，弹 SnackBar
+  /// 询问是否一键修正（提示制不动原文，用户点「一键修正」才替换）。
+  /// 采纳时顺带把命中对 hit_count+1，强化学习计数。
+  /// 语境门控：有语境档案的对只在邻接字符吻合的语境下提示，
+  /// 无档案的对照旧字面命中就提示
+  Future<void> _offerCorrectionFix(int diaryId, String text) async {
+    try {
+      // 同音组内的修正对（质朴→智谱）不提示：交给上下文纠错按语境处理，
+      // 盲替换提示会把「这个人很质朴」也建议改成「智谱」
+      final allMatches = (await widget.dbHelper.matchCorrectionPairs(text))
+          .where((p) => !ContextCorrector.instance.isHomophonePair(p))
+          .toList();
+      if (allMatches.isEmpty || !mounted) return;
+      final contexts = PairContextGate.groupByPair(
+        await widget.dbHelper.getAllPairContexts(),
+      );
+      final matches = allMatches
+          .where(
+            (p) => PairContextGate.shouldPrompt(
+              text,
+              p,
+              contexts[PairContextGate.keyOfPair(p)] ?? const [],
+            ),
+          )
+          .toList();
+      if (matches.isEmpty || !mounted) return;
+      // 替换用全集（长钥匙先应用，短核兜底残余位置）；
+      // 文案展示折叠短核后的长钥匙，"等 N 处"计数不虚高
+      final fixed = CorrectionLearner.applyCorrections(text, matches);
+      if (fixed == text || !mounted) return;
+      final visible = CorrectionLearner.dedupeSubsumed(matches);
+      final first = visible.first;
+      final extraCount = visible.length - 1;
+      final ext = AppThemeExtension.of(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '检测到「${first.error}」${extraCount > 0 ? '等 ${matches.length} 处' : ''}，'
+            '上次您改成了「${first.correct}」',
+          ),
+          action: SnackBarAction(
+            label: '一键修正',
+            onPressed: () async {
+              await widget.dbHelper.updateDiary(diaryId, fixed);
+              // 用户采纳 = 明确纠错行为：普通对强化计数，同音组对
+              // （若有混入）改道共现统计，统一走分流学习
+              ContextCorrector.instance.learnFromEdit(text, fixed);
+              DiarySyncBridge.bump();
+              await refreshList();
+              AppLogger.appLog('✅ [Diary] 一键修正已应用: ${matches.join('、')}');
+            },
+          ),
+          duration: const Duration(seconds: 6),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: ext.primaryDark,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
+        ),
+      );
+    } catch (e) {
+      // 命中检测失败不影响识别保存主流程
+      log('修正提示失败: $e');
     }
   }
 
@@ -2194,8 +2386,7 @@ $content
                   style: TextStyle(color: ext2.textPrimary),
                 ),
                 duration: const Duration(milliseconds: 1500),
-                backgroundColor:
-                    ext2.surface,
+                backgroundColor: ext2.surface,
                 behavior: SnackBarBehavior.floating,
                 shape: const RoundedRectangleBorder(
                   borderRadius: BorderRadius.all(Radius.circular(20)),
@@ -2453,10 +2644,7 @@ $content
       SnackBar(
         content: Row(
           children: [
-            Icon(
-              Icons.info_outline,
-              color: ext.textOnPrimary,
-            ),
+            Icon(Icons.info_outline, color: ext.textOnPrimary),
             const SizedBox(width: 10),
             Expanded(
               child: Text(
@@ -2533,9 +2721,7 @@ $content
                   width: 40,
                   height: 4,
                   decoration: BoxDecoration(
-                    color: ext.textHint.withValues(
-                      alpha: 0.3,
-                    ),
+                    color: ext.textHint.withValues(alpha: 0.3),
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),
@@ -2590,6 +2776,10 @@ $content
                               return;
                             }
                             await widget.dbHelper.updateDiary(id, newContent);
+                            // 「错误-修正」学习：用户手动改动了识别文本，
+                            // 对比「编辑前 → 保存后」抽取片段级修正对入库
+                            //（content 为空串=空白新笔记，extract 直接返回空不学习）
+                            _learnFromEdit(content, newContent);
                             DiarySyncBridge.bump();
                             refreshList();
                             // 🔒 锁屏隐私保护：编辑面板关闭时**不**清 flag（与 stopListening 一致），
@@ -2613,8 +2803,7 @@ $content
                                         vertical: 12,
                                       ),
                                       decoration: BoxDecoration(
-                                        color: ext
-                                            .primary,
+                                        color: ext.primary,
                                         borderRadius: BorderRadius.circular(24),
                                         boxShadow: [
                                           BoxShadow(
@@ -2630,8 +2819,7 @@ $content
                                         child: Text(
                                           "保存成功",
                                           style: TextStyle(
-                                            color: ext
-                                                .textOnPrimary,
+                                            color: ext.textOnPrimary,
                                             fontSize: 14,
                                             fontWeight: FontWeight.w500,
                                           ),
@@ -2649,8 +2837,7 @@ $content
                           },
                           style: ElevatedButton.styleFrom(
                             backgroundColor: ext.primary,
-                            foregroundColor:
-                                ext.textOnPrimary,
+                            foregroundColor: ext.textOnPrimary,
                           ),
                           child: const Text("保存"),
                         ),
@@ -2842,9 +3029,7 @@ $content
             style: TextStyle(
               fontSize: 16,
               height: 1.6,
-              color: isArchived
-                  ? ext.textHint
-                  : ext.textPrimary,
+              color: isArchived ? ext.textHint : ext.textPrimary,
               decoration: isArchived ? TextDecoration.lineThrough : null,
             ),
           )
@@ -2855,9 +3040,7 @@ $content
             baseStyle: TextStyle(
               fontSize: 16,
               height: 1.6,
-              color: isArchived
-                  ? ext.textHint
-                  : ext.textPrimary,
+              color: isArchived ? ext.textHint : ext.textPrimary,
               decoration: isArchived ? TextDecoration.lineThrough : null,
             ),
             onTimeTap: (entity) => _handleTimeEntityTap(diaryId, entity),
@@ -2995,9 +3178,7 @@ $content
                 child: Icon(
                   Icons.favorite_border,
                   size: 18,
-                  color: ext.textHint.withValues(
-                    alpha: 0.2,
-                  ),
+                  color: ext.textHint.withValues(alpha: 0.2),
                 ),
               ),
             ),
@@ -3019,11 +3200,7 @@ $content
 
     // 按钮颜色逻辑
     Color btnColor = ext.fabReady;
-    Widget btnChild = Icon(
-      Icons.mic,
-      color: ext.textOnPrimary,
-      size: 40,
-    );
+    Widget btnChild = Icon(Icons.mic, color: ext.textOnPrimary, size: 40);
     VoidCallback? onBtnPressed = startListening;
 
     // 获取当前屏幕的媒体查询数据
@@ -3035,11 +3212,7 @@ $content
     } else if (isListening) {
       // 正在录音状态：红色背景，停止方块图标
       btnColor = ext.fabRecording;
-      btnChild = Icon(
-        Icons.stop,
-        color: ext.textOnPrimary,
-        size: 40,
-      );
+      btnChild = Icon(Icons.stop, color: ext.textOnPrimary, size: 40);
     } else if (isProcessing) {
       // 识别中状态：橙色背景，显示转圈圈的 Loading
       btnColor = ext.fabProcessing;
@@ -3062,145 +3235,132 @@ $content
       backgroundColor: ext.scaffoldBackground,
       body: Stack(
         children: [
-          // 1. 渐变背景层
-          Positioned.fill(
-            child: Container(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    ext.scaffoldBackground,
-                    ext.scaffoldBackground.withValues(alpha: 0.8),
+          // 1. 渐变背景层 + 2. 彩色光晕层（玻璃拟态专属；新拟物主题实底化，
+          // 2026-09-17 用户拍板：拟物主题下去光晕+毛玻璃，Scaffold 纯 #E0E5EC 底）
+          if (!ext.isNeumorphic) ...[
+            Positioned.fill(
+              child: Container(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      ext.scaffoldBackground,
+                      ext.scaffoldBackground.withValues(alpha: 0.8),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+
+            // 彩色光晕层（增强玻璃拟态层次感）
+            Positioned(
+              left: -50,
+              top: -50,
+              child: Container(
+                width: 200,
+                height: 200,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(
+                      color: ext.primary.withValues(alpha: 0.3),
+                      blurRadius: 80,
+                      spreadRadius: 40,
+                    ),
                   ],
                 ),
               ),
             ),
-          ),
-
-          // 2. 彩色光晕层（增强玻璃拟态层次感）
-          Positioned(
-            left: -50,
-            top: -50,
-            child: Container(
-              width: 200,
-              height: 200,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                boxShadow: [
-                  BoxShadow(
-                    color: ext.primary.withValues(
-                      alpha: 0.3,
+            Positioned(
+              right: 200,
+              top: -30,
+              child: Container(
+                width: 180,
+                height: 180,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(
+                      color: ext.timeHighlight.withValues(alpha: 0.25),
+                      blurRadius: 70,
+                      spreadRadius: 35,
                     ),
-                    blurRadius: 80,
-                    spreadRadius: 40,
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
-          ),
-          Positioned(
-            right: 200,
-            top: -30,
-            child: Container(
-              width: 180,
-              height: 180,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                boxShadow: [
-                  BoxShadow(
-                    color: ext.timeHighlight.withValues(
-                      alpha: 0.25,
+            Positioned(
+              left: -80,
+              top: 300,
+              child: Container(
+                width: 150,
+                height: 150,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(
+                      color: ext.primary.withValues(alpha: 0.15),
+                      blurRadius: 60,
+                      spreadRadius: 30,
                     ),
-                    blurRadius: 70,
-                    spreadRadius: 35,
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
-          ),
-          Positioned(
-            left: -80,
-            top: 300,
-            child: Container(
-              width: 150,
-              height: 150,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                boxShadow: [
-                  BoxShadow(
-                    color: ext.primary.withValues(
-                      alpha: 0.15,
-                    ),
-                    blurRadius: 60,
-                    spreadRadius: 30,
-                  ),
-                ],
-              ),
-            ),
-          ),
+          ],
 
           // 3. 列表内容层
           Column(
             children: [
               const SizedBox(height: 60), // 顶部留白
-              // 搜索框和导出按钮（玻璃拟态）
+              // 搜索框和导出按钮（玻璃拟态；新拟物主题为凹陷实底框）
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 20),
                 child: Row(
                   children: [
                     // 搜索框
                     Expanded(
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(24),
-                        child: BackdropFilter(
-                          filter: ui.ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: ext.cardBackground.withValues(
-                                alpha: 0.4,
-                              ),
+                      // 新拟物主题：三层硬边凹陷（NeuInset，圆角档 24，2026-09-18
+                      // 真机反馈渐变版读不出凹感后换实现），无毛玻璃；
+                      // 其余主题保持 ClipRRect+BackdropFilter 玻璃拟态
+                      child: ext.isNeumorphic
+                          ? NeuInset(
+                              radius: 24,
+                              child: _buildDiarySearchField(ext),
+                            )
+                          : ClipRRect(
                               borderRadius: BorderRadius.circular(24),
-                              border: Border.all(
-                                color: ext
-                                    .divider, // 浅色主题=black 8%，黑金=white 25%（深底可见）
-                                width: 1,
-                              ),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withValues(alpha: 0.05),
-                                  blurRadius: 8,
-                                  offset: const Offset(0, 2),
+                              child: BackdropFilter(
+                                filter: ui.ImageFilter.blur(
+                                  sigmaX: 8,
+                                  sigmaY: 8,
                                 ),
-                              ],
-                            ),
-                            child: TextField(
-                              controller: _searchController,
-                              onChanged: (val) {
-                                // 250ms 防抖（性能审查 Top3）：连续输入只在
-                                // 停顿后查一次库；搜索纯过滤，不清解析缓存
-                                _searchDebounce?.cancel();
-                                _searchDebounce = Timer(
-                                  _searchDebounceDelay,
-                                  () => refreshList(clearParseCaches: false),
-                                );
-                              },
-                              decoration: InputDecoration(
-                                hintText: "搜索回忆...",
-                                prefixIcon: Icon(
-                                  Icons.search,
-                                  color: ext.primary,
-                                ),
-                                border: InputBorder.none,
-                                contentPadding: const EdgeInsets.symmetric(
-                                  vertical: 15,
-                                  horizontal: 20,
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    color: ext.cardBackground.withValues(
+                                      alpha: 0.4,
+                                    ),
+                                    borderRadius: BorderRadius.circular(24),
+                                    border: Border.all(
+                                      color: ext
+                                          .divider, // 浅色主题=black 8%，黑金=white 25%（深底可见）
+                                      width: 1,
+                                    ),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: Colors.black.withValues(
+                                          alpha: 0.05,
+                                        ),
+                                        blurRadius: 8,
+                                        offset: const Offset(0, 2),
+                                      ),
+                                    ],
+                                  ),
+                                  child: _buildDiarySearchField(ext),
                                 ),
                               ),
                             ),
-                          ),
-                        ),
-                      ),
                     ),
                     const SizedBox(width: 12),
                     // 导出按钮（长按可重新选择目录）
@@ -3217,9 +3377,7 @@ $content
                       icon: const Icon(Icons.download_rounded),
                       tooltip: '导出为 Markdown（长按重新选择目录）',
                       style: IconButton.styleFrom(
-                        backgroundColor: ext.primary.withValues(
-                          alpha: 0.1,
-                        ),
+                        backgroundColor: ext.primary.withValues(alpha: 0.1),
                         foregroundColor: ext.primary,
                       ),
                     ),
@@ -3233,9 +3391,7 @@ $content
                     ? Center(
                         child: Text(
                           _isLoadingList ? "加载中..." : "还没有日记，试着说句话吧",
-                          style: TextStyle(
-                            color: ext.textHint,
-                          ),
+                          style: TextStyle(color: ext.textHint),
                         ),
                       )
                     : ListView.builder(
@@ -3292,10 +3448,8 @@ $content
                               if (separator != null) separator,
                               SwipeDismissCard(
                                 icon: isArchived ? Icons.delete : Icons.archive,
-                                iconColor:
-                                    ext.textSecondary,
-                                circleColor:
-                                    ext.textHint,
+                                iconColor: ext.textSecondary,
+                                circleColor: ext.textHint,
                                 onDismissed: () {
                                   _haptic('click');
                                   log(
@@ -3350,44 +3504,57 @@ $content
                                       );
                                     }
                                   },
-                                  child: ClipRRect(
-                                    borderRadius: BorderRadius.circular(16),
-                                    child: BackdropFilter(
-                                      filter: ui.ImageFilter.blur(
-                                        sigmaX: 10,
-                                        sigmaY: 10,
-                                      ),
-                                      child: Container(
-                                        margin: const EdgeInsets.only(
-                                          bottom: 12,
-                                        ),
-                                        padding: const EdgeInsets.all(16),
-                                        decoration: BoxDecoration(
-                                          color: ext.cardBackground.withValues(
-                                            alpha: 0.7,
+                                  // 新拟物主题：实底凸起卡片（无毛玻璃/描边）；
+                                  // 其余主题保持 ClipRRect+BackdropFilter 玻璃拟态
+                                  child: ext.isNeumorphic
+                                      ? Container(
+                                          margin: const EdgeInsets.only(
+                                            bottom: 12,
                                           ),
+                                          padding: const EdgeInsets.all(16),
+                                          decoration: neuRaisedDecoration(
+                                            context,
+                                            radius: 18,
+                                          ),
+                                          child: _buildNormalCard(item),
+                                        )
+                                      : ClipRRect(
                                           borderRadius: BorderRadius.circular(
                                             16,
                                           ),
-                                          border: Border.all(
-                                            color: ext
-                                                .divider, // 浅色主题=black 8%，黑金=white 25%（深底可见）
-                                            width: 1,
-                                          ),
-                                          boxShadow: [
-                                            BoxShadow(
-                                              color: Colors.black.withValues(
-                                                alpha: 0.05,
-                                              ),
-                                              blurRadius: 10,
-                                              offset: const Offset(0, 4),
+                                          child: BackdropFilter(
+                                            filter: ui.ImageFilter.blur(
+                                              sigmaX: 10,
+                                              sigmaY: 10,
                                             ),
-                                          ],
+                                            child: Container(
+                                              margin: const EdgeInsets.only(
+                                                bottom: 12,
+                                              ),
+                                              padding: const EdgeInsets.all(16),
+                                              decoration: BoxDecoration(
+                                                color: ext.cardBackground
+                                                    .withValues(alpha: 0.7),
+                                                borderRadius:
+                                                    BorderRadius.circular(16),
+                                                border: Border.all(
+                                                  color: ext
+                                                      .divider, // 浅色主题=black 8%，黑金=white 25%（深底可见）
+                                                  width: 1,
+                                                ),
+                                                boxShadow: [
+                                                  BoxShadow(
+                                                    color: Colors.black
+                                                        .withValues(alpha: 0.05),
+                                                    blurRadius: 10,
+                                                    offset: const Offset(0, 4),
+                                                  ),
+                                                ],
+                                              ),
+                                              child: _buildNormalCard(item),
+                                            ),
+                                          ),
                                         ),
-                                        child: _buildNormalCard(item),
-                                      ),
-                                    ),
-                                  ),
                                 ),
                               ),
                             ],
@@ -3398,6 +3565,32 @@ $content
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  /// 日记搜索框的输入域（玻璃拟态与拟物凹陷两种外框共用）
+  ///
+  /// 250ms 防抖（性能审查 Top3）：连续输入只在停顿后查一次库；
+  /// 搜索纯过滤，不清解析缓存
+  Widget _buildDiarySearchField(AppThemeExtension ext) {
+    return TextField(
+      controller: _searchController,
+      onChanged: (val) {
+        _searchDebounce?.cancel();
+        _searchDebounce = Timer(
+          _searchDebounceDelay,
+          () => refreshList(clearParseCaches: false),
+        );
+      },
+      decoration: InputDecoration(
+        hintText: "搜索回忆...",
+        prefixIcon: Icon(Icons.search, color: ext.primary),
+        border: InputBorder.none,
+        contentPadding: const EdgeInsets.symmetric(
+          vertical: 15,
+          horizontal: 20,
+        ),
       ),
     );
   }

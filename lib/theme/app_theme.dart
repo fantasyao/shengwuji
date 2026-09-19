@@ -77,7 +77,7 @@ class AppThemeDefinition {
 /// 新增主题只需在 `_all` 里加一项即可，设置页会自动遍历显示。
 class AppThemes {
   /// 所有预设主题列表（顺序即设置页显示顺序）
-  static const all = [defaultTeal, warmOrange, forestGreen, skyBlue];
+  static const all = [defaultTeal, warmOrange, forestGreen, skyBlue, neumorphism];
 
   /// 默认主题（应用首次启动时使用）
   static const defaultTheme = defaultTeal;
@@ -246,6 +246,53 @@ class AppThemes {
       fabDisabled: Colors.grey,
       divider: Color(0x14000000),
       isDarkOverlay: false,
+    ),
+  );
+
+  /// 新拟物主题（Neumorphism）
+  ///
+  /// 2026-09-17 用户拍板：经典拟物灰底 + 轻盈阴影（外 4px/blur8、凹 2px/blur4）、
+  /// 主 CTA 纯同色凸起、开关凹槽轨道+凸滑块、随手记实底化（仅本主题下）。
+  /// 关键不变量：scaffoldBackground == cardBackground == surface（#E0E5EC）——
+  /// 拟物"背景与组件同色"是双阴影成立的前提，三槽必须保持一致。
+  /// 悬浮窗不适用本主题（透明窗口会裁剪外扩散阴影，见 overlay_app.dart 降级逻辑）。
+  /// 2026-09-19 Pro 化：isPro=true，与晴空蓝同走 ProGate 门禁（授权码解锁/7 天试用）。
+  static const neumorphism = AppThemeDefinition(
+    id: 'neumorphism',
+    name: '新拟物',
+    seedColor: Color(0xFF009688),
+    isPro: true,
+    extension: AppThemeExtension(
+      primary: Color(0xFF009688),
+      primaryLight: Color(0xFFB2DFDB),
+      primaryDark: Color(0xFF00806F),
+      surface: Color(0xFFE0E5EC),
+      cardBackground: Color(0xFFE0E5EC),
+      scaffoldBackground: Color(0xFFE0E5EC),
+      textPrimary: Color(0xFF3D4A5C),
+      textSecondary: Color(0xFF7D8AA0),
+      textHint: Color(0xFF9DABBD),
+      textOnPrimary: Colors.white,
+      positiveAccent: Color(0xFFDEEBE8),
+      positiveText: Color(0xFF00806F),
+      warningAccent: Color(0xFFF0E8DC),
+      warningText: Color(0xFFE65100),
+      dangerAccent: Color(0xFFE57373),
+      timeHighlight: Color(0xFF1976D2),
+      timeHighlightBg: Color(0xFFD6E4F5),
+      splashBackground: Color(0xFF2C3E50),
+      goldAccent: Color(0xFFD4A437),
+      goldLight: Color(0xFFFFF8E7),
+      goldBorder: Color(0xFFE6C158),
+      fabReady: Color(0xFF009688),
+      fabRecording: Color(0xFFFF5252),
+      fabProcessing: Color(0xFFFFAB40),
+      fabDisabled: Colors.grey,
+      divider: Color(0x1F3D4A5C),
+      isDarkOverlay: false,
+      neuShadowDark: Color(0xFFAEB9C9),
+      neuShadowLight: Color(0xFFFFFFFF),
+      isNeumorphic: true,
     ),
   );
 }

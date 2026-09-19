@@ -255,4 +255,29 @@ void main() {
       );
     });
   });
+
+  // ============================================================
+  // VolumeLongPressMs.normalize（长按阈值档位校验）
+  // ============================================================
+  group('VolumeLongPressMs.normalize 长按阈值档位校验', () {
+    test('4 个合法档位原样返回', () {
+      for (final ms in VolumeLongPressMs.choices) {
+        expect(VolumeLongPressMs.normalize(ms), ms);
+      }
+    });
+
+    test('null（从未设置）→ 默认 500', () {
+      expect(VolumeLongPressMs.normalize(null), VolumeLongPressMs.defaultMs);
+      expect(VolumeLongPressMs.defaultMs, 500);
+    });
+
+    test('非法值（越界/档位间隙脏值）→ 默认 500', () {
+      // 300 在刻意单击误触区间内，档位刻意不收录——脏值落进来也要回落
+      expect(VolumeLongPressMs.normalize(300), VolumeLongPressMs.defaultMs);
+      expect(VolumeLongPressMs.normalize(501), VolumeLongPressMs.defaultMs);
+      expect(VolumeLongPressMs.normalize(0), VolumeLongPressMs.defaultMs);
+      expect(VolumeLongPressMs.normalize(2000), VolumeLongPressMs.defaultMs);
+      expect(VolumeLongPressMs.normalize(-500), VolumeLongPressMs.defaultMs);
+    });
+  });
 }

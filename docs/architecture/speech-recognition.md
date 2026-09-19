@@ -34,6 +34,12 @@
 - **用途**: 简单的错误=正确 映射
 - **特点**: 用户可通过设置界面编辑，保存到应用文档目录
 
+#### 第三阶段：同音词上下文纠错（TextProcessor 之后）
+- **文件**: lib/correction/（编排入口 `ContextCorrector.correct`）
+- **用途**: 「质朴/智谱」这类同音词按上下文自动选对写法，拿不准不改
+- **特点**: 设置页「智能修正学习」分区可开关；自动纠错结果不回流训练数据
+- 详情见 @architecture/context-correction.md
+
 ### 4. 清单提取（ListExtractor）
 - **文件**: lib/list_extractor.dart
 - 纠错后、智能分割前执行
@@ -175,8 +181,12 @@ worker 单线程逐条处理消息，天然 FIFO：搬家模式 VAD 连发多段
 - 详情见 @architecture/volume-key-shortcuts.md
 
 ### 快捷方式（系统）
-- Android 静态快捷方式：快速录音、新建文本笔记
+- Android 静态快捷方式：快速录音、新建文本笔记、悬浮窗语音速记（toggle，2026-09-12 起，供努比亚滑动键等系统级硬件自定义映射，见 @architecture/volume-key-shortcuts.md「外部硬件快捷方式」）
 - 桌面长按图标触发
+
+**快捷录音「退出即停」（2026-09-12 起）**：快捷方式/音量键拉起的录音会话（`startListening(lockedMode: true)`）在 App 退到后台**且屏幕仍亮着**时自动停止并照常转写保存（`DiaryTab.didChangeAppLifecycleState`，延迟 800ms 复核；判定纯函数 `lib/utils/quick_record_exit_policy.dart`）。背景：努比亚滑动键下滑"退出应用"后录音不停的反馈。息屏豁免——锁屏快捷录音中按电源键续录是既有行为；App 内手动点录音按钮的会话不受影响（后台续录不变）。
+
+**快捷录音「说完自动停止」（2026-09-15 起）**：快速录音会话中检测到**说完话之后**静音满设定秒数，自动停止并走既有转写链路。覆盖两个入口：主 App 快速录音（仅 `lockedMode`，普通点按钮录音不启用——手就在屏幕上无此需求）与悬浮窗语音速记。设置项在设置页「音量键快捷操作」→「说完自动停止」开关 + 静音等待秒数 ChoiceChip（3/5/8 档，默认 3；prefs key `quick_record_auto_stop_enabled` / `quick_record_auto_stop_seconds`，两入口开录时 reload 后读，跨 engine 惯例）。实现（`lib/utils/quick_record_auto_stop.dart`）：录音流 PCM16 chunk 实时喂 Silero VAD（复用 `VadSingleton`，与搬家模式共用同一 per-isolate 单例，麦克风互斥保证两场景永不并发），逐窗 `isDetected()` 进 `SilenceTimer` 状态机——关键设计：**说过话才开始计静音**，一次都没说话永不自动停（用户可能还在组织语言，也防频繁产生空录音，该场景留给录音上限兜底）；触发后调用方走各自既有停止链路（diary 走 `stopListening` 与「退出即停」同款程序化停止；悬浮窗走 `stop()` 含 `voiceMemoStopped` 回执，与 300s 上限 Timer 自动停同款），Kotlin 侧零改动。边界：VAD 的 `isDetected()` 在实际静音约 `minSilenceDuration`（0.6s，单例固定配置）后才翻 false，实际等待 ≈ 设定秒数 + 0.6s（偏保守不易误停）；VAD 初始化与开麦并行不 await，未就绪期间喂入跳过只延迟触发起点不漏停；录音会话结束 `dispose()` 释放 VAD 单例清残留样本/段（对齐 diary 长录音分段兜底"用完即释放"惯例，后续用途 initialize 幂等重建）。静音状态机为纯逻辑（注入时钟可测），测试见 `test/quick_record_auto_stop_test.dart`。**静音倒计时可视化（用户拍板补充）**：静音倒计时进行中两端 UI 实时提示剩余秒数——悬浮窗录音胶囊把 mm:ss 换成「N 秒后自动停」（胶囊宽度按下限 `voiceMemoAutoStopMinWidth` 兜底防短录音早期文字截断），主 App 快速录音把 statusText 换成「N 秒后自动停止」（流回调里整数秒变化才 setState 节流）；恢复说话立即回到原计时/文案。状态机暴露 `countingDown` / `remainingSeconds`（说话进行中不算倒计时，避免无谓紧张感），剩余秒数向上取整。
 
 ## 搬家模式（持续录音 + VAD 切段 + TTS 播报 + 语音撤销）
 

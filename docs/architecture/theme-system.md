@@ -2,7 +2,7 @@
 
 ## 概述
 
-声物记支持 4 套预设主题皮肤，所有颜色通过 `ThemeExtension` 统一收口。新增主题只需在注册表加一项，UI 自动跟随，无需逐文件改色。
+声物记支持 5 套预设主题皮肤，所有颜色通过 `ThemeExtension` 统一收口。新增主题只需在注册表加一项，UI 自动跟随，无需逐文件改色。
 
 | ID | 名称 | 种子色 | Pro | 说明 |
 |---|---|---|---|---|
@@ -10,8 +10,10 @@
 | `warm_orange` | 暖橙 | `#E65100` | 否 | 暖色调主题 |
 | `forest_green` | 墨绿 | `#2E7D32` | 否 | 森林绿主题 |
 | `sky_blue` | 晴空蓝 | `#7CCAF4` | 是 | 浅色主题，主色背景上使用深蓝黑文字保证对比度 |
+| `neumorphism` | 新拟物 | `#009688` | 是 | 经典拟物灰底（2026-09-17 新增；2026-09-19 Pro 化），组件用双向凸/凹阴影 |
 
 > 历史 handoff 中曾为"黑金"主题，后根据用户反馈替换为"晴空蓝"，但 Pro 门禁逻辑不变。
+> 新拟物主题的不变量（scaffoldBackground == cardBackground == surface）与组件库见 `lib/widgets/neu_widgets.dart` 头注释；悬浮窗不适用本主题（透明窗口裁剪外扩散阴影，overlay_app.dart 有降级逻辑）。
 
 ## 核心组件
 
@@ -57,19 +59,23 @@ return Container(color: ext.positiveAccent);
 ```
 设置页点击主题卡片
   → _onThemeTap(theme)
-    → ProGate.tryAccess(theme.isPro) 拦截未解锁的 Pro 主题
+    → theme.isPro 时 await ProGate.tryAccess(context)：不可用弹 ProUnlockDialog
+      （试用激活/输码成功返回 true 继续应用；失败留在选择器）
     → prefs.setString('selected_theme', theme.id)
     → AppRoot.themeNotifier.value = theme
     → 全树重建，所有取 ext 的组件颜色更新
 ```
 
+启动恢复（main.dart）：Pro 主题且不可用（试用过期/未解锁）→ 回退 `default_teal` 并写回 prefs，首帧 SnackBar 提示一次（"下次启动回退"策略，当次会话不中断）。
+
 ## Pro 门禁
 
-**文件**: [lib/utils/pro_gate.dart](../../lib/utils/pro_gate.dart)
+**文件**: [lib/utils/pro_gate.dart](../../lib/utils/pro_gate.dart)、[pro-license.md](pro-license.md)（授权体系权威文档）
 
-- `ProGate.tryAccess(context, isPro)`：若 `isPro=true` 且未解锁，调起 `ProUnlockDialog`
+- `ProGate.tryAccess(context)`：Pro 不可用（未解锁且试用过期）时弹 `ProUnlockDialog`，返回弹窗关闭时 Pro 是否已可用（试用激活或输码成功为 true）
+- `ProGate.isProActive()`：永久解锁（`is_pro_unlocked`）或试用中（`pro_trial_deadline_ms` 未到）任一满足
 - 主题选择 UI 中，Pro 主题卡片右上角显示金色 "Pro" 徽章
-- 晴空蓝主题为当前唯一的 Pro 主题
+- Pro 主题：晴空蓝、新拟物（2026-09-19 起）
 
 ## 设计原则
 
@@ -90,3 +96,4 @@ return Container(color: ext.positiveAccent);
 
 - [ui-patterns.md](../guides/ui-patterns.md#外观设置) - 外观设置 UI 说明
 - [icon-pack-switching.md](icon-pack-switching.md) - Android 图标包切换
+- [pro-license.md](pro-license.md) - Pro 授权码体系 + 7 天试用

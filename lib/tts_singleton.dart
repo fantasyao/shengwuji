@@ -87,8 +87,9 @@ class TtsSingleton {
       // 校验关键文件存在性（onnx + tokens + espeak-ng-data 目录）
       final modelOk = File(p.join(dir, _kModelFileName)).existsSync();
       final tokensOk = File(p.join(dir, _kTokensFileName)).existsSync();
-      final dataDirOk =
-          Directory(p.join(dir, _kEspeakDataDirName)).existsSync();
+      final dataDirOk = Directory(
+        p.join(dir, _kEspeakDataDirName),
+      ).existsSync();
       if (modelOk && tokensOk && dataDirOk) {
         instance._bundledTtsDir = dir;
         log("📍 [TTS] preloadModelPath: 内置模型已就绪, dir=$dir");
@@ -153,26 +154,35 @@ class TtsSingleton {
     final copySw = Stopwatch()..start();
 
     // 1. 拷贝 onnx（20MB，直接 rootBundle.load）
-    final onnxData =
-        await rootBundle.load('assets/tts-model/$_kModelFileName');
+    final onnxData = await rootBundle.load('assets/tts-model/$_kModelFileName');
     await modelFile.writeAsBytes(
-      onnxData.buffer.asUint8List(onnxData.offsetInBytes, onnxData.lengthInBytes),
+      onnxData.buffer.asUint8List(
+        onnxData.offsetInBytes,
+        onnxData.lengthInBytes,
+      ),
     );
 
     // 2. 拷贝 tokens.txt
-    final tokensData = await rootBundle.load('assets/tts-model/$_kTokensFileName');
+    final tokensData = await rootBundle.load(
+      'assets/tts-model/$_kTokensFileName',
+    );
     await tokensFile.writeAsBytes(
-      tokensData.buffer
-          .asUint8List(tokensData.offsetInBytes, tokensData.lengthInBytes),
+      tokensData.buffer.asUint8List(
+        tokensData.offsetInBytes,
+        tokensData.lengthInBytes,
+      ),
     );
 
     // 3. 解压 espeak-ng-data.zip 到 bundledDir/
     //    zip 内路径形如 "espeak-ng-data/cmn_dict", "espeak-ng-data/lang/aav/..."
     //    解压到 bundledDir/ 下保持同样的相对结构
-    final zipData =
-        await rootBundle.load('assets/tts-model/espeak-ng-data.zip');
-    final bytes =
-        zipData.buffer.asUint8List(zipData.offsetInBytes, zipData.lengthInBytes);
+    final zipData = await rootBundle.load(
+      'assets/tts-model/espeak-ng-data.zip',
+    );
+    final bytes = zipData.buffer.asUint8List(
+      zipData.offsetInBytes,
+      zipData.lengthInBytes,
+    );
     final archive = ZipDecoder().decodeBytes(bytes);
     int fileCount = 0;
     for (final file in archive) {
@@ -239,7 +249,8 @@ class TtsSingleton {
   void _logEspeakDataDiagnosis(String bundledDir) {
     final espeakDir = Directory(p.join(bundledDir, 'espeak-ng-data'));
     if (espeakDir.existsSync()) {
-      final topFiles = espeakDir.listSync()
+      final topFiles = espeakDir
+          .listSync()
           .whereType<File>()
           .map((f) {
             final size = f.lengthSync();
@@ -376,7 +387,9 @@ class TtsSingleton {
       //       （与 record_tab.dart _sfxPlayer 同款配置，详见字段注释）
       final player = AudioPlayer();
       await player.setAudioContext(
-        AudioContextConfig(focus: AudioContextConfigFocus.mixWithOthers).build(),
+        AudioContextConfig(
+          focus: AudioContextConfigFocus.mixWithOthers,
+        ).build(),
       );
       await player.play(DeviceFileSource(wavPath));
 

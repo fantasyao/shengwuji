@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>新拟物主题预览 — 声物记</title>
+<style>
+  /* ===== 展台(不变区域) ===== */
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-font-smoothing:antialiased}
+  body{background:#2C3E50;font-family:"Roboto","Noto Sans SC","Microsoft YaHei",sans-serif;min-height:100vh;padding:24px 16px 48px}
+  .topbar{max-width:1100px;margin:0 auto 20px;color:#fff}
+  .topbar h1{font-size:18px;font-weight:600;margin-bottom:8px}
+  .topbar .chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+  .chip{font-size:12px;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25);border-radius:999px;padding:4px 12px}
+  .chip b{color:#4DB6AC}
+  .controls{display:flex;flex-wrap:wrap;gap:18px}
+  .ctl{display:flex;flex-direction:column;gap:6px}
+  .ctl .lab{font-size:11px;opacity:.7;letter-spacing:1px}
+  .ctl .row{display:flex;gap:8px}
+  .ctl button{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25);color:#fff;border-radius:8px;padding:6px 14px;font-size:12px;cursor:pointer}
+  .ctl button.on{background:var(--primary);border-color:var(--primary)}
+
+  section{max-width:1100px;margin:0 auto 8px}
+  .sec-head-row{color:#fff;margin:26px 0 14px;display:flex;align-items:baseline;gap:10px}
+  .sec-head-row h2{font-size:16px;font-weight:600}
+  .sec-head-row .note{font-size:12px;opacity:.7}
+  .compare{display:flex;gap:28px;justify-content:center;flex-wrap:wrap}
+  .phone-col{display:flex;flex-direction:column;align-items:center}
+  .col-label{color:#fff;font-size:14px;font-weight:600;margin-bottom:10px;letter-spacing:1px}
+  .col-label .delta{font-weight:400;font-size:12px;opacity:.75;margin-left:8px}
+  .phone{border-radius:24px;overflow:hidden;box-shadow:0 12px 40px rgba(0,0,0,.45);width:390px;transition:width .25s;position:relative;display:flex;flex-direction:column;height:640px}
+  .appbar{padding:18px 16px 10px;text-align:center;font-size:17px;font-weight:700;flex:none}
+  .scroll{flex:1;overflow-y:auto;padding:4px 20px 20px}
+  .scroll::-webkit-scrollbar{width:0}
+  .gap{height:24px}.gap-sm{height:12px}
+
+  /* ===== 现状(默认青) ===== */
+  .classic{background:#F5F5F5;color:rgba(0,0,0,.87)}
+  .classic .appbar{color:rgba(0,0,0,.87)}
+  .ccard{background:#fff;border-radius:15px;box-shadow:0 4px 10px rgba(0,0,0,.03);padding:16px}
+  .ccard.flush{padding:0}
+  .centry{display:flex;align-items:center;gap:14px;padding:14px 16px;cursor:pointer}
+  .centry .ic{color:#009688;flex:none;display:flex}
+  .centry .body{flex:1;min-width:0}
+  .centry .t{font-size:15px;color:rgba(0,0,0,.87);display:flex;align-items:center;gap:6px}
+  .centry .s{font-size:12px;color:rgba(0,0,0,.54);margin-top:2px}
+  .centry .chev{color:#9E9E9E;flex:none;display:flex}
+  .sec-title{font-size:15px;font-weight:700;color:rgba(0,0,0,.54);margin:0 4px 10px}
+  .sec-head{display:flex;align-items:center;gap:6px;margin-bottom:4px}
+  .sec-head .ic{color:#009688;display:flex}
+  .sec-head .t{font-size:14px;font-weight:700;color:rgba(0,0,0,.87)}
+  .sec-head .sub{font-size:14px;font-weight:700;color:rgba(0,0,0,.54)}
+  .btn-row{display:flex;gap:12px;margin-top:10px}
+  .btn2{flex:1;border:1px solid rgba(0,0,0,.08);border-radius:12px;padding:9px 0;font-size:13px;font-weight:600;color:#E65100;background:#fff;display:flex;align-items:center;justify-content:center;gap:6px}
+  .divider{height:1px;background:rgba(0,0,0,.08)}
+  .switchrow{display:flex;align-items:flex-start;gap:14px;padding:12px 0}
+  .switchrow .txt{flex:1}
+  .switchrow .t{font-size:13px;color:rgba(0,0,0,.87)}
+  .switchrow .s{font-size:11px;color:#9E9E9E;margin-top:2px}
+  .track{width:34px;height:14px;border-radius:7px;background:#B0B0B0;position:relative;transition:.2s;flex:none;margin-top:2px}
+  .track.on{background:rgba(0,150,136,.5)}
+  .thumb{width:20px;height:20px;border-radius:50%;background:#FAFAFA;box-shadow:0 1px 3px rgba(0,0,0,.4);position:absolute;top:-3px;left:-2px;transition:.2s}
+  .track.on .thumb{left:16px;background:#009688}
+  .pro-badge{background:#D4A437;color:#fff;font-size:10px;font-weight:700;border-radius:6px;padding:2px 6px}
+  .dot{width:10px;height:10px;border-radius:50%;flex:none}
+  .dot.on{background:#00796B}
+  .gold-btn{width:100%;border:1px solid rgba(0,0,0,.08);border-radius:12px;padding:10px 0;font-size:13px;font-weight:600;color:#D4A437;background:#fff;display:flex;align-items:center;justify-content:center;gap:6px}
+  .addr{font-size:12.5px;color:#00796B;font-weight:600;padding:3px 0}
+  .hr-about{border:none;border-top:1px solid rgba(0,0,0,.1);margin:8px 0}
+  .fchip{font-size:13px;border-radius:999px;padding:5px 12px;background:rgba(0,0,0,.06);color:rgba(0,0,0,.87)}
+  .fchip.on{background:#009688;color:#fff}
+  /* 现状底部导航(M3) */
+  .cbar{flex:none;height:64px;background:#fff;display:flex;border-top:1px solid rgba(0,0,0,.05)}
+  .cbar .ni{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font-size:10.5px;color:#9E9E9E}
+  .cbar .ni .nic{width:44px;height:28px;border-radius:14px;display:flex;align-items:center;justify-content:center}
+  .cbar .ni.on{color:#009688;font-weight:700}
+  .cbar .ni.on .nic{background:rgba(0,150,136,.12)}
+  /* 现状玻璃拟态(随手记) */
+  .glass{background:linear-gradient(160deg,#E3F2F0 0%,#D6ECEF 55%,#E8F0F6 100%);color:rgba(0,0,0,.87)}
+  .glass .appbar{color:rgba(0,0,0,.87)}
+  .glowwrap{position:absolute;inset:0;overflow:hidden;pointer-events:none}
+  .glow{position:absolute;border-radius:50%}
+  .glow.g1{width:260px;height:260px;top:30px;right:-60px;background:radial-gradient(circle,rgba(0,150,136,.22),transparent 70%)}
+  .glow.g2{width:300px;height:300px;top:220px;left:-80px;background:radial-gradient(circle,rgba(25,118,210,.14),transparent 70%)}
+  .glass .gsearch{margin:6px 0 16px;height:46px;border-radius:24px;background:rgba(255,255,255,.45);border:1px solid rgba(255,255,255,.75);backdrop-filter:blur(6px);display:flex;align-items:center;gap:10px;padding:0 16px;color:#9E9E9E;font-size:13.5px}
+  .gcard{background:rgba(255,255,255,.72);backdrop-filter:blur(8px);border:1px solid rgba(0,0,0,.06);border-radius:16px;padding:14px 16px;box-shadow:0 4px 14px rgba(0,0,0,.05);margin-bottom:14px}
+  /* 现状浮动录音钮(已是黏土拟态) */
+  .cfab{position:absolute;right:22px;bottom:84px;width:94px;height:94px;border-radius:50%;background:#009688;display:flex;align-items:center;justify-content:center;color:#fff;box-shadow:inset -4px -4px 8px rgba(0,0,0,.20),inset 4px 4px 8px rgba(255,255,255,.40),4px 4px 10px rgba(0,0,0,.20);z-index:5}
+  .cfab .badge{position:absolute;top:-4px;right:2px;background:#fff;color:#009688;font-size:10px;font-weight:700;border-radius:999px;padding:3px 8px;box-shadow:0 2px 6px rgba(0,0,0,.2)}
+  .fstate{position:absolute;right:24px;bottom:62px;font-size:10.5px;color:rgba(0,0,0,.45);z-index:5}
+
+  /* ===== 新拟物 ===== */
+  body[data-variant="gray"]{--neu-bg:#E0E5EC;--neu-dark:#AEB9C9;--neu-light:#FFFFFF;--neu-text:#3D4A5C;--neu-text2:#7D8AA0;--neu-hint:#9DABBD}
+  body[data-variant="teal"]{--neu-bg:#E3EEEC;--neu-dark:#A9BFBB;--neu-light:#FFFFFF;--neu-text:#374B47;--neu-text2:#728883;--neu-hint:#97AAA5}
+  body[data-intensity="std"]{--d:6px;--b:12px;--di:3px;--bi:6px}
+  body[data-intensity="lite"]{--d:4px;--b:8px;--di:2px;--bi:4px}
+  .neu{background:var(--neu-bg);color:var(--neu-text)}
+  .neu .appbar{color:var(--neu-text)}
+  .raise{background:var(--neu-bg);border-radius:18px;box-shadow:var(--d) var(--d) var(--b) var(--neu-dark),calc(var(--d)*-1) calc(var(--d)*-1) var(--b) var(--neu-light)}
+  .inset{background:var(--neu-bg);border-radius:18px;box-shadow:inset var(--di) var(--di) var(--bi) var(--neu-dark),inset calc(var(--di)*-1) calc(var(--di)*-1) var(--bi) var(--neu-light)}
+  .press{cursor:pointer;transition:box-shadow .16s ease,transform .16s ease}
+  .press:active{box-shadow:inset var(--di) var(--di) var(--bi) var(--neu-dark),inset calc(var(--di)*-1) calc(var(--di)*-1) var(--bi) var(--neu-light)}
+  .ncard{padding:16px}
+  .ncard.flush{padding:0;overflow:hidden}
+  .nsec-title{font-size:15px;font-weight:700;color:var(--neu-text2);margin:0 4px 10px}
+  .nsec-head{display:flex;align-items:center;gap:6px;margin-bottom:4px}
+  .nsec-head .ic{color:#009688;display:flex}
+  .nsec-head .t{font-size:14px;font-weight:700;color:var(--neu-text)}
+  .nsec-head .sub{font-size:14px;font-weight:700;color:var(--neu-text2)}
+  .nentry{display:flex;align-items:center;gap:14px;padding:14px 16px}
+  .nentry .ic{color:#009688;flex:none;display:flex}
+  .nentry .body{flex:1;min-width:0}
+  .nentry .t{font-size:15px;color:var(--neu-text);display:flex;align-items:center;gap:6px;font-weight:600}
+  .nentry .s{font-size:12px;color:var(--neu-text2);margin-top:2px}
+  .nentry .chev{color:var(--neu-hint);flex:none;display:flex}
+  .ndivider{height:2px;border-radius:1px;background:var(--neu-bg);box-shadow:inset 0 1px 2px var(--neu-dark),inset 0 -1px 2px var(--neu-light);margin:0 16px}
+  .nbtn-row{display:flex;gap:14px;margin-top:12px}
+  .nbtn2{flex:1;border-radius:12px;padding:10px 0;font-size:13px;font-weight:700;color:#E65100;display:flex;align-items:center;justify-content:center;gap:6px}
+  .nswitchrow{display:flex;align-items:flex-start;gap:14px;padding:12px 0}
+  .nswitchrow .txt{flex:1}
+  .nswitchrow .t{font-size:13px;color:var(--neu-text);font-weight:600}
+  .nswitchrow .s{font-size:11px;color:var(--neu-hint);margin-top:2px}
+  /* 拟物开关:凹陷轨道 + 凸起滑块 */
+  .nsw{width:46px;height:26px;border-radius:13px;background:var(--neu-bg);box-shadow:inset var(--di) var(--di) var(--bi) var(--neu-dark),inset calc(var(--di)*-1) calc(var(--di)*-1) var(--bi) var(--neu-light);position:relative;cursor:pointer;transition:background .25s;flex:none;margin-top:2px}
+  .nsw .nth{position:absolute;top:2px;left:2px;width:22px;height:22px;border-radius:50%;background:var(--neu-bg);box-shadow:2px 2px 5px rgba(0,0,0,.28),-1px -1px 3px var(--neu-light);transition:left .25s}
+  .nsw.on{background:linear-gradient(145deg,#00A896,#00806F);box-shadow:inset var(--di) var(--di) var(--bi) rgba(0,60,52,.45),inset calc(var(--di)*-1) calc(var(--di)*-1) var(--bi) rgba(255,255,255,.35)}
+  .nsw.on .nth{left:22px}
+  .ndot{width:10px;height:10px;border-radius:50%;flex:none;box-shadow:inset 1px 1px 2px var(--neu-dark),inset -1px -1px 2px var(--neu-light)}
+  .ndot.on{background:#009688;box-shadow:none}
+  .npro-badge{background:linear-gradient(145deg,#E0B44C,#C3922B);color:#fff;font-size:10px;font-weight:700;border-radius:6px;padding:2px 6px;box-shadow:1px 1px 3px rgba(0,0,0,.15)}
+  .ngold-btn{width:100%;border-radius:12px;padding:11px 0;font-size:13px;font-weight:700;color:#C3922B;display:flex;align-items:center;justify-content:center;gap:6px}
+  .naddr{font-size:12.5px;color:#00806F;font-weight:600;padding:3px 0}
+  .nfchip{font-size:13px;border-radius:999px;padding:5px 12px;color:var(--neu-text);font-weight:600}
+  .nfchip.on{color:#00806F;box-shadow:inset var(--di) var(--di) var(--bi) var(--neu-dark),inset calc(var(--di)*-1) calc(var(--di)*-1) var(--bi) var(--neu-light)}
+  /* 拟物底部导航:选中项为凹陷坑 */
+  .nbar{flex:none;height:64px;background:var(--neu-bg);display:flex}
+  .nbar .ni{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font-size:10.5px;color:var(--neu-hint);cursor:pointer}
+  .nbar .ni .nic{width:44px;height:28px;border-radius:14px;display:flex;align-items:center;justify-content:center;transition:box-shadow .2s}
+  .nbar .ni.on{color:#00806F;font-weight:700}
+  .nbar .ni.on .nic{box-shadow:inset var(--di) var(--di) var(--bi) var(--neu-dark),inset calc(var(--di)*-1) calc(var(--di)*-1) var(--bi) var(--neu-light)}
+  /* 拟物浮动录音钮 */
+  .nfab{position:absolute;right:22px;bottom:84px;width:94px;height:94px;border-radius:50%;background:var(--neu-bg);display:flex;align-items:center;justify-content:center;box-shadow:var(--d) var(--d) var(--b) var(--neu-dark),calc(var(--d)*-1) calc(var(--d)*-1) var(--b) var(--neu-light);cursor:pointer;z-index:5}
+  .nfab .ring{width:64px;height:64px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#009688;box-shadow:inset var(--di) var(--di) var(--bi) var(--neu-dark),inset calc(var(--di)*-1) calc(var(--di)*-1) var(--bi) var(--neu-light)}
+  .nfab .badge{position:absolute;top:-2px;right:0;border-radius:999px;padding:4px 9px;font-size:10px;font-weight:700;color:#00806F}
+  .nfstate{position:absolute;right:24px;bottom:62px;font-size:10.5px;color:var(--neu-hint);z-index:5}
+  /* 拟物随手记 */
+  .nsearch{margin:6px 0 16px;height:46px;border-radius:24px;display:flex;align-items:center;gap:10px;padding:0 16px;color:var(--neu-hint);font-size:13.5px}
+  .ndcard{margin-bottom:16px;padding:14px 16px}
+  .ndtime{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+  .ndtime .chip-in{border-radius:999px;padding:3px 10px;font-size:11px;font-weight:700;color:#1976D2}
+  .ndtime .when{font-size:11px;color:var(--neu-hint)}
+  .ndbody{font-size:14px;line-height:1.55;color:var(--neu-text)}
+  .ncheck{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:12.5px;color:var(--neu-text2)}
+  .ncheck .cb{width:18px;height:18px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#00806F}
+  .ncheck.done{text-decoration:line-through;opacity:.75}
+  .nwave{margin-top:12px;height:38px;border-radius:12px;display:flex;align-items:center;gap:2.5px;padding:0 12px}
+  .nwave .w{width:3px;border-radius:2px;background:#009688;opacity:.85}
+  .nwave .cur{width:3px;border-radius:2px;background:#E65100;height:60%}
+  .nwave .tleft{margin-left:auto;font-size:10.5px;color:var(--neu-hint);padding-left:8px}
+  .nacts{display:flex;gap:12px;margin-top:12px}
+  .nact{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:var(--neu-text2)}
+  /* 拟物查物品 */
+  .nlcard{padding:14px 16px;margin-bottom:14px;display:flex;align-items:center;gap:12px}
+  .nlcard .name{font-size:15px;font-weight:700;color:var(--neu-text)}
+  .nlcard .loc{font-size:12.5px;color:var(--neu-text2);margin-top:3px}
+  .nlcard .del{margin-left:auto;width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#C94F4F;flex:none}
+  .nflbtn{position:absolute;right:22px;bottom:84px;width:56px;height:56px;border-radius:50%;background:var(--neu-bg);display:flex;align-items:center;justify-content:center;color:#009688;box-shadow:var(--d) var(--d) var(--b) var(--neu-dark),calc(var(--d)*-1) calc(var(--d)*-1) var(--b) var(--neu-light);z-index:5}
+  /* 拟物存物品 */
+  .nfield{border-radius:16px;padding:14px 16px;margin-bottom:14px}
+  .nfield .fl{font-size:11px;font-weight:700;color:var(--neu-hint);letter-spacing:.5px;margin-bottom:4px}
+  .nfield .fv{font-size:14px;color:var(--neu-text)}
+  .nfield .fv.ph{color:var(--neu-hint)}
+  .nrecord-bar{flex:none;height:118px;background:var(--neu-bg);display:flex;align-items:center;justify-content:center;gap:22px;position:relative;z-index:4}
+  .nbigbtn{width:76px;height:76px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#009688}
+  .nbigbtn .ring{width:52px;height:52px;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:inset var(--di) var(--di) var(--bi) var(--neu-dark),inset calc(var(--di)*-1) calc(var(--di)*-1) var(--bi) var(--neu-light)}
+  .ncta{border-radius:18px;padding:16px 26px;font-size:15px;font-weight:700;color:#fff;background:linear-gradient(145deg,#00B3A2,#00806F);box-shadow:var(--d) var(--d) var(--b) var(--neu-dark),calc(var(--d)*-1) calc(var(--d)*-1) var(--b) var(--neu-light);cursor:pointer;transition:box-shadow .16s}
+  .ncta:active{box-shadow:inset var(--di) var(--di) var(--bi) rgba(0,60,52,.5),inset calc(var(--di)*-1) calc(var(--di)*-1) var(--bi) rgba(255,255,255,.3)}
+  .nsaved{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--neu-text2);margin:2px 4px 14px}
+  .nring{width:16px;height:16px;border-radius:50%;background:conic-gradient(#009688 0 62%,var(--neu-bg) 62% 100%);box-shadow:inset 0 0 0 2px rgba(0,0,0,.03)}
+  /* 现状存物品钉底栏 */
+  .crecord-bar{flex:none;height:118px;background:#F5F5F5;display:flex;align-items:center;justify-content:center;gap:22px}
+  .cbigbtn{width:76px;height:76px;border-radius:50%;background:#009688;display:flex;align-items:center;justify-content:center;color:#fff;box-shadow:0 0 0 10px rgba(0,150,136,.12),0 8px 25px rgba(0,150,136,.3)}
+  .ccta{border-radius:18px;padding:16px 26px;font-size:15px;font-weight:700;color:#fff;background:#009688;box-shadow:0 4px 14px rgba(0,150,136,.35)}
+
+  /* ===== 组件规范图例 ===== */
+  .spec{max-width:1100px;margin:26px auto 0;border-radius:24px;padding:28px;display:flex;gap:36px;flex-wrap:wrap}
+  .spec .col{flex:1;min-width:240px;display:flex;flex-direction:column;gap:16px}
+  .spec h3{font-size:14px;font-weight:700;color:var(--neu-text);display:flex;align-items:center;gap:8px}
+  .spec h3 .tag{font-size:10px;font-weight:600;color:var(--neu-hint);letter-spacing:1px}
+  .demo{display:flex;gap:16px;flex-wrap:wrap;align-items:center}
+  .demo .box{width:120px;height:72px;border-radius:18px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;font-size:11.5px;font-weight:700;color:var(--neu-text2)}
+  .demo .box .cn{font-size:13px;color:var(--neu-text)}
+  .kv{font-size:12px;line-height:2;color:var(--neu-text2)}
+  .kv b{color:var(--neu-text);font-weight:700}
+  .kv .swatch{display:inline-block;width:12px;height:12px;border-radius:4px;vertical-align:-1px;margin-right:5px;box-shadow:0 0 0 1px rgba(0,0,0,.06)}
+
+  .legend{max-width:1100px;margin:22px auto 0;color:rgba(255,255,255,.85);font-size:12.5px;line-height:2}
+  .legend b{color:#4DB6AC}
+  svg{display:block}
+</style>
+</head>
+<body data-variant="gray" data-intensity="std">
+
+<svg style="display:none" xmlns="http://www.w3.org/2000/svg">
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></symbol>
+  <symbol id="i-autofix" viewBox="0 0 24 24"><path d="M22 11h-4.17l3.24-3.24-1.41-1.42L15 11h-2V9l4.66-4.66-1.42-1.41L13 6.17V2h-2v4.17L7.76 2.93 6.34 4.34 11 9v2H9L4.34 6.34 2.93 7.76 6.17 11H2v2h4.17l-3.24 3.24 1.41 1.42L9 13h2v2l-4.66 4.66 1.42 1.41L11 17.83V22h2v-4.17l3.24 3.24 1.42-1.41L13 15v-2h2l4.66 4.66 1.41-1.42L17.83 13H22z"/></symbol>
+  <symbol id="i-robot" viewBox="0 0 24 24"><path d="M20 9V7c0-1.1-.9-2-2-2h-3V3.5c0-.83-.67-1.5-1.5-1.5S12 2.67 12 3.5V5H9V3.5C9 2.67 8.33 2 7.5 2S6 2.67 6 3.5V5H4c-1.1 0-2 .9-2 2v2c-1.1 0-2 .9-2 2s.9 2 2 2v5c0 1.1.9 2 2 2h4v3.5c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5V20h2v3.5c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5V20h4c1.1 0 2-.9 2-2v-5c1.1 0 2-.9 2-2s-.9-2-2-2zM7.5 13.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5S9 11.17 9 12s-.67 1.5-1.5 1.5zm6.5 2H8v-1.5h8V15.5zm2.5-2c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/></symbol>
+  <symbol id="i-vol" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></symbol>
+  <symbol id="i-pip" viewBox="0 0 24 24"><path d="M19 11h-8v6h8v-6zm4 8V4.98C23 3.88 22.1 3 21 3H3c-1.1 0-2 .88-2 1.98V19c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2zm-2 .02H3V4.97h18v14.05z"/></symbol>
+  <symbol id="i-computer" viewBox="0 0 24 24"><path d="M20 18c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2H0v2h24v-2h-4zM4 6h16v10H4V6z"/></symbol>
+  <symbol id="i-backup" viewBox="0 0 24 24"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/></symbol>
+  <symbol id="i-restore" viewBox="0 0 24 24"><path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></symbol>
+  <symbol id="i-palette" viewBox="0 0 24 24"><path d="M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9c.83 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1.01-.23-.26-.38-.61-.38-.99 0-.83.67-1.5 1.5-1.5H16c2.76 0 5-2.24 5-5 0-4.42-4.03-8-9-8zm-5.5 9c-.83 0-1.5-.67-1.5-1.5S5.67 9 6.5 9 8 9.67 8 10.5 7.33 12 6.5 12zm3-4C8.67 8 8 7.33 8 6.5S8.67 5 9.5 5s1.5.67 1.5 1.5S10.33 8 9.5 8zm5 0c-.83 0-1.5-.67-1.5-1.5S13.67 5 14.5 5s1.5.67 1.5 1.5S15.33 8 14.5 8zm3 4c-.83 0-1.5-.67-1.5-1.5S16.67 9 17.5 9s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/></symbol>
+  <symbol id="i-shortcut" viewBox="0 0 24 24"><path d="M17 4h-3V2h-4v2H7c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-5 4.5L14.5 11 13 12.5V15h-2v-2.5L9.5 11 12 8.5zM7 18V8h10v10H7z"/></symbol>
+  <symbol id="i-fontsize" viewBox="0 0 24 24"><path d="M2.5 4v3h5v12h3V7h5V4h-13zm19 5h-9v3h3v7h3v-7h3V9z"/></symbol>
+  <symbol id="i-crown" viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zM9 6c0-1.66 1.34-3 3-3s3 1.34 3 3v2H9V6zm3 12c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><path d="M11 7h2v2h-2zm0 4h2v6h-2zm1-9C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></symbol>
+  <symbol id="i-book" viewBox="0 0 24 24"><path d="M18 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 4h5v8l-2.5-1.5L6 12V4z"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></symbol>
+  <symbol id="i-calendar" viewBox="0 0 24 24"><path d="M19 3h-1V1h-2v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11zM7 10h5v5H7z"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></symbol>
+  <symbol id="i-share" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z"/></symbol>
+  <symbol id="i-archive" viewBox="0 0 24 24"><path d="M20.54 5.23l-1.39-1.68C18.88 3.21 18.47 3 18 3H6c-.47 0-.88.21-1.16.55L3.46 5.23C3.17 5.57 3 6.02 3 6.5V19c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6.5c0-.48-.17-.93-.46-1.27zM12 17.5L6.5 12H10v-2h4v2h3.5L12 17.5zM5.12 5l.81-1h12l.94 1H5.12z"/></symbol>
+  <symbol id="i-delete" viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><path d="M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8-8 8z"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></symbol>
+</svg>
+
+<div class="topbar">
+  <h1>新拟物主题预览(Neumorphism)— 声物记</h1>
+  <div class="chips">
+    <span class="chip"><b>①</b> 新增第 5 套「新拟物」主题,现有 4 套主题不动,设置里可切换</span>
+    <span class="chip"><b>②</b> 随手记仅在拟物主题下变实底(旧主题保持玻璃拟态)</span>
+    <span class="chip"><b>③</b> 悬浮窗本期不动</span>
+    <span class="chip"><b>④</b> 入口/按钮可按住体验「凸起→凹陷」</span>
+  </div>
+  <div class="controls">
+    <div class="ctl"><span class="lab">宽度档</span>
+      <div class="row width-switch">
+        <button onclick="setWidth(360,this)">窄 360</button>
+        <button class="on" onclick="setWidth(390,this)">中 390</button>
+        <button onclick="setWidth(412,this)">宽 412</button>
+      </div>
+    </div>
+    <div class="ctl"><span class="lab">底色变体(拍板点)</span>
+      <div class="row">
+        <button class="on" onclick="setVariant('gray',this)">经典拟物灰 #E0E5EC</button>
+        <button onclick="setVariant('teal',this)">青瓷灰 #E3EEEC</button>
+      </div>
+    </div>
+    <div class="ctl"><span class="lab">阴影强度(拍板点)</span>
+      <div class="row">
+        <button class="on" onclick="setIntensity('std',this)">标准 6/12</button>
+        <button onclick="setIntensity('lite',this)">轻盈 4/8</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= ① 设置中心 ================= -->
+<section>
+  <div class="sec-head-row"><h2>① 设置中心</h2><span class="note">结构 = 线上现状,只换质感:卡片凸起 · 开关凹槽+凸滑块 · 入口按住凹陷</span></div>
+  <div class="compare">
+
+    <!-- 现状 -->
+    <div class="phone-col">
+      <div class="col-label">现状<span class="delta">默认青</span></div>
+      <div class="phone classic">
+        <div class="appbar">设置中心</div>
+        <div class="scroll">
+          <div class="ccard">
+            <div class="sec-head"><span class="ic"><svg width="22" height="22" fill="currentColor"><use href="#i-backup"/></svg></span><span class="t">数据备份</span></div>
+            <div style="font-size:12px;color:rgba(0,0,0,.54)">包含物品、日记和所有音频文件</div>
+            <div class="btn-row"><div class="btn2"><svg width="16" height="16" fill="currentColor"><use href="#i-restore"/></svg>导入备份</div><div class="btn2"><svg width="16" height="16" fill="currentColor"><use href="#i-backup"/></svg>导出备份</div></div>
+          </div>
+          <div class="gap-sm"></div>
+          <div class="ccard flush"><div class="centry"><span class="ic"><svg width="22" height="22" fill="currentColor"><use href="#i-autofix"/></svg></span><div class="body"><div class="t">识别与修正</div><div class="s">热词 3 条 · 修正对 12 条</div></div><span class="chev"><svg width="22" height="22" fill="currentColor"><use href="#i-chev"/></svg></span></div></div>
+          <div class="gap-sm"></div>
+          <div class="ccard flush"><div class="centry"><span class="ic"><svg width="22" height="22" fill="currentColor"><use href="#i-robot"/></svg></span><div class="body"><div class="t">AI 应用分享</div><div class="s">分享跳转:🤖 ChatGPT</div></div><span class="chev"><svg width="22" height="22" fill="currentColor"><use href="#i-chev"/></svg></span></div></div>
+          <div class="gap-sm"></div>
+          <div class="ccard flush"><div class="centry"><span class="ic"><svg width="22" height="22" fill="currentColor"><use href="#i-vol"/></svg></span><div class="body"><div class="t">音量键快捷操作<span class="dot on"></span></div><div class="s">已开启 · 长按/双击音量键快速唤起录音、笔记或悬浮窗</div></div><span class="chev"><svg width="22" height="22" fill="currentColor"><use href="#i-chev"/></svg></span></div></div>
+          <div class="gap-sm"></div>
+          <div class="ccard flush"><div class="centry"><span class="ic"><svg width="22" height="22" fill="currentColor"><use href="#i-pip"/></svg></span><div class="body"><div class="t">悬浮窗<span class="pro-badge">Pro</span></div><div class="s">右缘停靠 · 30 秒后自动隐藏</div></div><span class="chev"><svg width="22" height="22" fill="currentColor"><use href="#i-chev"/></svg></span></div></div>
+          <div class="gap-sm"></div>
+          <div class="ccard">
+            <div class="sec-head"><span class="ic"><svg width="22" height="22" fill="currentColor"><use href="#i-computer"/></svg></span><span class="sub" style="flex:1">电脑访问服务</span><div class="track on"><div class="thumb"></div></div></div>
+            <div style="font-size:12px;color:#9E9E9E;margin-top:4px">开启后,同一 Wi-Fi 下的电脑浏览器打开下方地址,即可查看、编辑、删除随手记(含录音播放)</div>
+            <div class="divider" style="margin:12px 0"></div>
+            <div class="addr">http://192.168.1.100:9527</div>
+            <div style="font-size:11px;color:#9E9E9E;margin-top:6px">手机与电脑需连同一 Wi-Fi;端口固定 9527</div>
+          </div>
+          <div class="gap"></div>
+          <div class="sec-title">日记智能与交互</div>
+          <div class="ccard">
+            <div class="switchrow"><div class="txt"><div class="t">日记智能识别物品</div><div class="s">识别"物品+位置"语句并显示转存按钮</div></div><div class="track on"><div class="thumb"></div></div></div>
+            <div class="switchrow"><div class="txt"><div class="t">日记智能查询物品位置</div><div class="s">识别"XX在哪儿"语句并显示答案区</div></div><div class="track on"><div class="thumb"></div></div></div>
+          </div>
+          <div class="gap"></div>
+          <div class="sec-title">功能页面</div>
+          <div class="ccard">
+            <div class="switchrow"><div class="txt"><div class="t">隐藏存物品页</div><div class="s">隐藏语音录入物品页,搬家模式一并隐藏</div></div><div class="track"><div class="thumb"></div></div></div>
+            <div class="switchrow"><div class="txt"><div class="t">隐藏查物品页</div><div class="s">隐藏物品位置列表页</div></div><div class="track"><div class="thumb"></div></div></div>
+          </div>
+          <div class="gap"></div>
+          <div class="sec-title">外观</div>
+          <div class="ccard">
+            <div class="centry" style="padding:14px 0"><span class="ic"><svg width="22" height="22" fill="currentColor"><use href="#i-palette"/></svg></span><div class="body"><div class="t">主题</div><div class="s">默认青</div></div><span class="chev"><svg width="22" height="22" fill="currentColor"><use href="#i-chev"/></svg></span></div>
+            <div class="divider"></div>
+            <div class="centry" style="padding:14px 0"><span class="ic"><svg width="22" height="22" fill="currentColor"><use href="#i-shortcut"/></svg></span><div class="body"><div class="t">图标</div><div class="s">默认</div></div><span class="chev"><svg width="22" height="22" fill="currentColor"><use href="#i-chev"/></svg></span></div>
+            <div class="divider"></div>
+            <div style="padding:14px 0">
+              <div style="display:flex;align-items:center;gap:14px"><span class="ic"><svg width="22" height="22" fill="currentColor"><use href="#i-fontsize"/></svg></span><div class="t" style="font-size:15px;color:rgba(0,0,0,.87)">字号</div></div>
+              <div style="margin:10px 0 0 36px;display:flex;gap:8px"><span class="fchip">小</span><span class="fchip on">中</span><span class="fchip">大</span><span class="fchip">特大</span></div>
+            </div>
+          </div>
+          <div class="gap"></div>
+          <div class="sec-title">支持作者</div>
+          <div class="ccard">
+            <div class="sec-head"><span class="ic" style="color:#D4A437"><svg width="22" height="22" fill="currentColor"><use href="#i-crown"/></svg></span><span class="sub">付费解锁 Pro 功能</span></div>
+            <div style="height:10px"></div>
+            <div class="gold-btn"><svg width="16" height="16" fill="currentColor"><use href="#i-lock"/></svg>付费解锁 Pro 功能</div>
+          </div>
+          <div class="gap"></div>
+          <hr class="hr-about">
+          <div style="height:8px"></div>
+          <div class="sec-title">关于</div>
+          <div class="ccard flush"><div class="centry"><span class="ic"><svg width="22" height="22" fill="currentColor"><use href="#i-info"/></svg></span><div class="body"><div class="t">声物记</div><div class="s">v1.2.0 · 完全离线 · 无需联网</div></div><span class="chev"><svg width="22" height="22" fill="currentColor"><use href="#i-chev"/></svg></span></div></div>
+        </div>
+        <div class="cbar">
+          <div class="ni"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-mic"/></svg></span>存物品</div>
+          <div class="ni"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-search"/></svg></span>查物品</div>
+          <div class="ni"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-book"/></svg></span>随手记</div>
+          <div class="ni on"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-settings"/></svg></span>设置</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 新拟物 -->
+    <div class="phone-col">
+      <div class="col-label">新拟物<span class="delta">第 5 套主题「新拟物」</span></div>
+      <div class="phone neu">
+        <div class="appbar">设置中心</div>
+        <div class="scroll">
+          <div class="raise ncard">
+            <div class="nsec-head"><span class="ic"><svg width="22" height="22" fill="currentColor"><use href="#i-backup"/></svg></span><span class="t">数据备份</span></div>
+            <div style="font-size:12px;color:var(--neu-text2)">包含物品、日记和所有音频文件</div>
+            <div class="nbtn-row"><div class="nbtn2 raise press"><svg width="16" height="16" fill="currentColor"><use href="#i-restore"/></svg>导入备份</div><div class="nbtn2 raise press"><svg width="16" height="16" fill="currentColor"><use href="#i-backup"/></svg>导出备份</div></div>
+          </div>
+          <div class="gap-sm"></div>
+          <div class="raise ncard flush press"><div class="nentry"><span class="ic"><svg width="22" height="22" fill="currentColor"><use href="#i-autofix"/></svg></span><div class="body"><div class="t">识别与修正</div><div class="s">热词 3 条 · 修正对 12 条</div></div><span class="chev"><svg width="22" height="22" fill="currentColor"><use href="#i-chev"/></svg></span></div></div>
+          <div class="gap-sm"></div>
+          <div class="raise ncard flush press"><div class="nentry"><span class="ic"><svg width="22" height="22" fill="currentColor"><use href="#i-robot"/></svg></span><div class="body"><div class="t">AI 应用分享</div><div class="s">分享跳转:🤖 ChatGPT</div></div><span class="chev"><svg width="22" height="22" fill="currentColor"><use href="#i-chev"/></svg></span></div></div>
+          <div class="gap-sm"></div>
+          <div class="raise ncard flush press"><div class="nentry"><span class="ic"><svg width="22" height="22" fill="currentColor"><use href="#i-vol"/></svg></span><div class="body"><div class="t">音量键快捷操作<span class="ndot on"></span></div><div class="s">已开启 · 长按/双击音量键快速唤起录音、笔记或悬浮窗</div></div><span class="chev"><svg width="22" height="22" fill="currentColor"><use href="#i-chev"/></svg></span></div></div>
+          <div class="gap-sm"></div>
+          <div class="raise ncard flush press"><div class="nentry"><span class="ic"><svg width="22" height="22" fill="currentColor"><use href="#i-pip"/></svg></span><div class="body"><div class="t">悬浮窗<span class="npro-badge">Pro</span></div><div class="s">右缘停靠 · 30 秒后自动隐藏</div></div><span class="chev"><svg width="22" height="22" fill="currentColor"><use href="#i-chev"/></svg></span></div></div>
+          <div class="gap-sm"></div>
+          <div class="raise ncard">
+            <div class="nsec-head"><span class="ic"><svg width="22" height="22" fill="currentColor"><use href="#i-computer"/></svg></span><span class="sub" style="flex:1">电脑访问服务</span><div class="nsw on" onclick="this.classList.toggle('on')"><div class="nth"></div></div></div>
+            <div style="font-size:12px;color:var(--neu-hint);margin-top:4px">开启后,同一 Wi-Fi 下的电脑浏览器打开下方地址,即可查看、编辑、删除随手记(含录音播放)</div>
+            <div class="ndivider" style="margin:12px 16px"></div>
+            <div class="naddr">http://192.168.1.100:9527</div>
+            <div style="font-size:11px;color:var(--neu-hint);margin-top:6px">手机与电脑需连同一 Wi-Fi;端口固定 9527</div>
+          </div>
+          <div class="gap"></div>
+          <div class="nsec-title">日记智能与交互</div>
+          <div class="raise ncard">
+            <div class="nswitchrow"><div class="txt"><div class="t">日记智能识别物品</div><div class="s">识别"物品+位置"语句并显示转存按钮</div></div><div class="nsw on" onclick="this.classList.toggle('on')"><div class="nth"></div></div></div>
+            <div class="nswitchrow"><div class="txt"><div class="t">日记智能查询物品位置</div><div class="s">识别"XX在哪儿"语句并显示答案区</div></div><div class="nsw on" onclick="this.classList.toggle('on')"><div class="nth"></div></div></div>
+          </div>
+          <div class="gap"></div>
+          <div class="nsec-title">功能页面</div>
+          <div class="raise ncard">
+            <div class="nswitchrow"><div class="txt"><div class="t">隐藏存物品页</div><div class="s">隐藏语音录入物品页,搬家模式一并隐藏</div></div><div class="nsw" onclick="this.classList.toggle('on')"><div class="nth"></div></div></div>
+            <div class="nswitchrow"><div class="txt"><div class="t">隐藏查物品页</div><div class="s">隐藏物品位置列表页</div></div><div class="nsw" onclick="this.classList.toggle('on')"><div class="nth"></div></div></div>
+          </div>
+          <div class="gap"></div>
+          <div class="nsec-title">外观</div>
+          <div class="raise ncard">
+            <div class="nentry" style="padding:14px 0"><span class="ic"><svg width="22" height="22" fill="currentColor"><use href="#i-palette"/></svg></span><div class="body"><div class="t">主题</div><div class="s">新拟物</div></div><span class="chev"><svg width="22" height="22" fill="currentColor"><use href="#i-chev"/></svg></span></div>
+            <div class="ndivider"></div>
+            <div class="nentry" style="padding:14px 0"><span class="ic"><svg width="22" height="22" fill="currentColor"><use href="#i-shortcut"/></svg></span><div class="body"><div class="t">图标</div><div class="s">默认</div></div><span class="chev"><svg width="22" height="22" fill="currentColor"><use href="#i-chev"/></svg></span></div>
+            <div class="ndivider"></div>
+            <div style="padding:14px 0">
+              <div style="display:flex;align-items:center;gap:14px"><span class="ic"><svg width="22" height="22" fill="currentColor"><use href="#i-fontsize"/></svg></span><div class="t" style="font-size:15px;color:var(--neu-text)">字号</div></div>
+              <div style="margin:10px 0 0 36px;display:flex;gap:8px"><span class="nfchip raise">小</span><span class="nfchip raise on">中</span><span class="nfchip raise">大</span><span class="nfchip raise">特大</span></div>
+            </div>
+          </div>
+          <div class="gap"></div>
+          <div class="nsec-title">支持作者</div>
+          <div class="raise ncard">
+            <div class="nsec-head"><span class="ic" style="color:#C3922B"><svg width="22" height="22" fill="currentColor"><use href="#i-crown"/></svg></span><span class="sub">付费解锁 Pro 功能</span></div>
+            <div style="height:10px"></div>
+            <div class="ngold-btn raise press"><svg width="16" height="16" fill="currentColor"><use href="#i-lock"/></svg>付费解锁 Pro 功能</div>
+          </div>
+          <div class="gap"></div>
+          <div class="ndivider" style="margin:8px 4px"></div>
+          <div style="height:8px"></div>
+          <div class="nsec-title">关于</div>
+          <div class="raise ncard flush press"><div class="nentry"><span class="ic"><svg width="22" height="22" fill="currentColor"><use href="#i-info"/></svg></span><div class="body"><div class="t">声物记</div><div class="s">v1.2.0 · 完全离线 · 无需联网</div></div><span class="chev"><svg width="22" height="22" fill="currentColor"><use href="#i-chev"/></svg></span></div></div>
+        </div>
+        <div class="nbar">
+          <div class="ni"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-mic"/></svg></span>存物品</div>
+          <div class="ni"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-search"/></svg></span>查物品</div>
+          <div class="ni"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-book"/></svg></span>随手记</div>
+          <div class="ni on"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-settings"/></svg></span>设置</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= ② 随手记 ================= -->
+<section>
+  <div class="sec-head-row"><h2>② 随手记(主页)</h2><span class="note">拟物主题下:去彩色光晕+毛玻璃 → 实底柔和平面 · 凹陷搜索框 · 凸起卡片 · 波形凹槽</span></div>
+  <div class="compare">
+
+    <div class="phone-col">
+      <div class="col-label">现状<span class="delta">玻璃拟态</span></div>
+      <div class="phone glass">
+        <div class="glowwrap"><div class="glow g1"></div><div class="glow g2"></div></div>
+        <div class="appbar">随手记</div>
+        <div class="scroll" style="position:relative">
+          <div class="gsearch"><svg width="20" height="20" fill="currentColor"><use href="#i-search"/></svg>搜索日记…</div>
+          <div class="gcard">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="background:rgba(25,118,210,.12);color:#1976D2;font-size:11px;font-weight:700;border-radius:999px;padding:3px 10px">刚刚</span><span style="font-size:11px;color:rgba(0,0,0,.4)">语音 · 18s</span></div>
+            <div style="font-size:14px;line-height:1.55;color:rgba(0,0,0,.87)">把体检报告放进书房抽屉第二层,和户口本放一起</div>
+            <div style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:12.5px;color:rgba(0,0,0,.54)"><span style="width:18px;height:18px;border-radius:5px;background:rgba(0,150,136,.15);color:#00796B;display:inline-flex;align-items:center;justify-content:center"><svg width="13" height="13" fill="currentColor"><use href="#i-check"/></svg></span>体检报告</div>
+            <div style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:12.5px;color:rgba(0,0,0,.54)"><span style="width:18px;height:18px;border-radius:5px;background:rgba(0,150,136,.15);color:#00796B;display:inline-flex;align-items:center;justify-content:center"><svg width="13" height="13" fill="currentColor"><use href="#i-check"/></svg></span>药盒</div>
+            <div style="display:flex;gap:14px;margin-top:12px;color:rgba(0,0,0,.4)">
+              <svg width="20" height="20" fill="currentColor"><use href="#i-calendar"/></svg><svg width="20" height="20" fill="currentColor"><use href="#i-edit"/></svg><svg width="20" height="20" fill="currentColor"><use href="#i-share"/></svg><svg width="20" height="20" fill="currentColor"><use href="#i-archive"/></svg>
+            </div>
+          </div>
+          <div class="gcard">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="font-size:11px;color:rgba(0,0,0,.45)">昨天 14:32</span></div>
+            <div style="font-size:14px;line-height:1.55;color:rgba(0,0,0,.87)">周三要用 PPT 汇报,记得带转接头</div>
+            <div style="margin-top:12px;height:38px;border-radius:12px;background:rgba(0,150,136,.08);display:flex;align-items:center;gap:2.5px;padding:0 12px">
+              <span style="width:3px;height:40%;border-radius:2px;background:#009688"></span><span style="width:3px;height:70%;border-radius:2px;background:#009688"></span><span style="width:3px;height:55%;border-radius:2px;background:#009688"></span><span style="width:3px;height:85%;border-radius:2px;background:#009688"></span><span style="width:3px;height:45%;border-radius:2px;background:#009688"></span><span style="width:3px;height:65%;border-radius:2px;background:#E65100"></span><span style="width:3px;height:35%;border-radius:2px;background:rgba(0,150,136,.35)"></span><span style="width:3px;height:50%;border-radius:2px;background:rgba(0,150,136,.35)"></span><span style="margin-left:auto;font-size:10.5px;color:rgba(0,0,0,.4);padding-left:8px">0:18 / 0:42</span>
+            </div>
+            <div style="display:flex;gap:14px;margin-top:12px;color:rgba(0,0,0,.4)">
+              <svg width="20" height="20" fill="currentColor"><use href="#i-calendar"/></svg><svg width="20" height="20" fill="currentColor"><use href="#i-edit"/></svg><svg width="20" height="20" fill="currentColor"><use href="#i-share"/></svg><svg width="20" height="20" fill="currentColor"><use href="#i-archive"/></svg>
+            </div>
+          </div>
+        </div>
+        <div class="cfab"><span class="badge">↑ Aa</span><svg width="34" height="34" fill="currentColor"><use href="#i-mic"/></svg></div>
+        <div class="fstate">高 · 点击开始</div>
+        <div class="cbar">
+          <div class="ni"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-mic"/></svg></span>存物品</div>
+          <div class="ni"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-search"/></svg></span>查物品</div>
+          <div class="ni on"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-book"/></svg></span>随手记</div>
+          <div class="ni"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-settings"/></svg></span>设置</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="phone-col">
+      <div class="col-label">新拟物<span class="delta">实底 · 无光晕无毛玻璃</span></div>
+      <div class="phone neu">
+        <div class="appbar">随手记</div>
+        <div class="scroll">
+          <div class="nsearch inset"><svg width="20" height="20" fill="currentColor"><use href="#i-search"/></svg>搜索日记…</div>
+          <div class="ndcard raise">
+            <div class="ndtime"><span class="chip-in inset" style="border-radius:999px">刚刚</span><span class="when">语音 · 18s</span></div>
+            <div class="ndbody">把体检报告放进书房抽屉第二层,和户口本放一起</div>
+            <div class="ncheck done"><span class="cb inset" style="border-radius:6px"><svg width="13" height="13" fill="currentColor"><use href="#i-check"/></svg></span>体检报告</div>
+            <div class="ncheck done"><span class="cb inset" style="border-radius:6px"><svg width="13" height="13" fill="currentColor"><use href="#i-check"/></svg></span>药盒</div>
+            <div class="nacts">
+              <div class="nact raise press"><svg width="18" height="18" fill="currentColor"><use href="#i-calendar"/></svg></div>
+              <div class="nact raise press"><svg width="18" height="18" fill="currentColor"><use href="#i-edit"/></svg></div>
+              <div class="nact raise press"><svg width="18" height="18" fill="currentColor"><use href="#i-share"/></svg></div>
+              <div class="nact raise press"><svg width="18" height="18" fill="currentColor"><use href="#i-archive"/></svg></div>
+            </div>
+          </div>
+          <div class="ndcard raise">
+            <div class="ndtime"><span class="when">昨天 14:32</span></div>
+            <div class="ndbody">周三要用 PPT 汇报,记得带转接头</div>
+            <div class="nwave inset">
+              <span class="w" style="height:40%"></span><span class="w" style="height:70%"></span><span class="w" style="height:55%"></span><span class="w" style="height:85%"></span><span class="w" style="height:45%"></span><span class="cur"></span><span class="w" style="height:35%;opacity:.35"></span><span class="w" style="height:50%;opacity:.35"></span><span class="tleft">0:18 / 0:42</span>
+            </div>
+            <div class="nacts">
+              <div class="nact raise press"><svg width="18" height="18" fill="currentColor"><use href="#i-calendar"/></svg></div>
+              <div class="nact raise press"><svg width="18" height="18" fill="currentColor"><use href="#i-edit"/></svg></div>
+              <div class="nact raise press"><svg width="18" height="18" fill="currentColor"><use href="#i-share"/></svg></div>
+              <div class="nact raise press"><svg width="18" height="18" fill="currentColor"><use href="#i-archive"/></svg></div>
+            </div>
+          </div>
+          <div class="ndcard raise" style="opacity:.62">
+            <div class="ndtime"><span class="when">9月14日 · 已归档</span></div>
+            <div class="ndbody">给绿萝换个大点的盆</div>
+          </div>
+        </div>
+        <div class="nfab"><span class="badge raise">↑ Aa</span><span class="ring"><svg width="30" height="30" fill="currentColor"><use href="#i-mic"/></svg></span></div>
+        <div class="nfstate">高 · 点击开始</div>
+        <div class="nbar">
+          <div class="ni"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-mic"/></svg></span>存物品</div>
+          <div class="ni"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-search"/></svg></span>查物品</div>
+          <div class="ni on"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-book"/></svg></span>随手记</div>
+          <div class="ni"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-settings"/></svg></span>设置</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= ③ 查物品 ================= -->
+<section>
+  <div class="sec-head-row"><h2>③ 查物品</h2><span class="note">凹陷搜索框 · 凸起物品卡 · 凸起语音查询圆钮</span></div>
+  <div class="compare">
+
+    <div class="phone-col">
+      <div class="col-label">现状<span class="delta">默认青</span></div>
+      <div class="phone classic">
+        <div class="appbar">物品列表</div>
+        <div class="scroll">
+          <div style="height:46px;border-radius:16px;background:#fff;box-shadow:0 4px 10px rgba(0,0,0,.03);display:flex;align-items:center;gap:10px;padding:0 16px;color:#9E9E9E;font-size:13.5px;margin:6px 0 16px"><svg width="20" height="20" fill="currentColor"><use href="#i-search"/></svg><span style="flex:1">搜索物品名称或位置…</span><svg width="18" height="18" fill="currentColor"><use href="#i-close"/></svg></div>
+          <div class="ccard" style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
+            <div style="flex:1"><div style="font-size:15px;font-weight:700">冬被</div><div style="font-size:12.5px;color:rgba(0,0,0,.54);margin-top:3px">📍 阳台储物箱第二层</div></div>
+            <div style="width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#C94F4F"><svg width="18" height="18" fill="currentColor"><use href="#i-delete"/></svg></div>
+          </div>
+          <div class="ccard" style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
+            <div style="flex:1"><div style="font-size:15px;font-weight:700">雨伞</div><div style="font-size:12.5px;color:rgba(0,0,0,.54);margin-top:3px">📍 玄关柜第二层</div></div>
+            <div style="width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#C94F4F"><svg width="18" height="18" fill="currentColor"><use href="#i-delete"/></svg></div>
+          </div>
+          <div class="ccard" style="display:flex;align-items:center;gap:12px">
+            <div style="flex:1"><div style="font-size:15px;font-weight:700">户口本</div><div style="font-size:12.5px;color:rgba(0,0,0,.54);margin-top:3px">📍 书房抽屉第二层</div></div>
+            <div style="width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#C94F4F"><svg width="18" height="18" fill="currentColor"><use href="#i-delete"/></svg></div>
+          </div>
+        </div>
+        <div style="position:absolute;right:22px;bottom:84px;width:56px;height:56px;border-radius:50%;background:#009688;display:flex;align-items:center;justify-content:center;color:#fff;box-shadow:0 6px 18px rgba(0,150,136,.4);z-index:5"><svg width="24" height="24" fill="currentColor"><use href="#i-mic"/></svg></div>
+        <div class="cbar">
+          <div class="ni"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-mic"/></svg></span>存物品</div>
+          <div class="ni on"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-search"/></svg></span>查物品</div>
+          <div class="ni"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-book"/></svg></span>随手记</div>
+          <div class="ni"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-settings"/></svg></span>设置</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="phone-col">
+      <div class="col-label">新拟物<span class="delta">第 5 套主题</span></div>
+      <div class="phone neu">
+        <div class="appbar">物品列表</div>
+        <div class="scroll">
+          <div class="nsearch inset"><svg width="20" height="20" fill="currentColor"><use href="#i-search"/></svg><span style="flex:1">搜索物品名称或位置…</span><svg width="18" height="18" fill="currentColor"><use href="#i-close"/></svg></div>
+          <div class="nlcard raise press">
+            <div><div class="name">冬被</div><div class="loc">📍 阳台储物箱第二层</div></div>
+            <div class="del raise"><svg width="17" height="17" fill="currentColor"><use href="#i-delete"/></svg></div>
+          </div>
+          <div class="nlcard raise press">
+            <div><div class="name">雨伞</div><div class="loc">📍 玄关柜第二层</div></div>
+            <div class="del raise"><svg width="17" height="17" fill="currentColor"><use href="#i-delete"/></svg></div>
+          </div>
+          <div class="nlcard raise press">
+            <div><div class="name">户口本</div><div class="loc">📍 书房抽屉第二层</div></div>
+            <div class="del raise"><svg width="17" height="17" fill="currentColor"><use href="#i-delete"/></svg></div>
+          </div>
+        </div>
+        <div class="nflbtn"><svg width="24" height="24" fill="currentColor"><use href="#i-mic"/></svg></div>
+        <div class="nbar">
+          <div class="ni"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-mic"/></svg></span>存物品</div>
+          <div class="ni on"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-search"/></svg></span>查物品</div>
+          <div class="ni"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-book"/></svg></span>随手记</div>
+          <div class="ni"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-settings"/></svg></span>设置</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= ④ 存物品 ================= -->
+<section>
+  <div class="sec-head-row"><h2>④ 存物品</h2><span class="note">开关行 · 凹陷输入框 · 钉底按钮栏(凸起圆钮 + 品牌青渐变 CTA)</span></div>
+  <div class="compare">
+
+    <div class="phone-col">
+      <div class="col-label">现状<span class="delta">默认青</span></div>
+      <div class="phone classic">
+        <div class="appbar">存物品</div>
+        <div class="scroll">
+          <div class="ccard">
+            <div class="switchrow"><div class="txt"><div class="t">搬家模式</div><div class="s">记录「物品 → 新位置」,按天归组</div></div><div class="track"><div class="thumb"></div></div></div>
+            <div class="divider"></div>
+            <div class="switchrow"><div class="txt"><div class="t">语音播报</div><div class="s">保存成功后朗读物品名与位置</div></div><div class="track on"><div class="thumb"></div></div></div>
+          </div>
+          <div class="gap"></div>
+          <div style="height:52px;border-radius:16px;background:#fff;box-shadow:0 4px 10px rgba(0,0,0,.03);display:flex;flex-direction:column;justify-content:center;padding:0 16px;margin-bottom:14px"><span style="font-size:11px;color:#9E9E9E;font-weight:700">物品名称</span><span style="font-size:14px;color:rgba(0,0,0,.87)">冬被</span></div>
+          <div style="height:52px;border-radius:16px;background:#fff;box-shadow:0 4px 10px rgba(0,0,0,.03);display:flex;flex-direction:column;justify-content:center;padding:0 16px;margin-bottom:14px"><span style="font-size:11px;color:#9E9E9E;font-weight:700">存放位置</span><span style="font-size:14px;color:#9E9E9E">例如:阳台储物箱第二层</span></div>
+          <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:rgba(0,0,0,.54);margin:2px 4px"><span style="width:16px;height:16px;border-radius:50%;background:conic-gradient(#009688 0 62%,#E0E0E0 62% 100%)"></span>已保存 12 条(搬家进行中 62%)</div>
+        </div>
+        <div class="crecord-bar">
+          <div class="cbigbtn"><svg width="30" height="30" fill="currentColor"><use href="#i-mic"/></svg></div>
+          <div class="ccta">确认保存</div>
+        </div>
+        <div class="cbar">
+          <div class="ni on"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-mic"/></svg></span>存物品</div>
+          <div class="ni"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-search"/></svg></span>查物品</div>
+          <div class="ni"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-book"/></svg></span>随手记</div>
+          <div class="ni"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-settings"/></svg></span>设置</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="phone-col">
+      <div class="col-label">新拟物<span class="delta">第 5 套主题</span></div>
+      <div class="phone neu">
+        <div class="appbar">存物品</div>
+        <div class="scroll">
+          <div class="raise ncard">
+            <div class="nswitchrow"><div class="txt"><div class="t">搬家模式</div><div class="s">记录「物品 → 新位置」,按天归组</div></div><div class="nsw" onclick="this.classList.toggle('on')"><div class="nth"></div></div></div>
+            <div class="ndivider"></div>
+            <div class="nswitchrow"><div class="txt"><div class="t">语音播报</div><div class="s">保存成功后朗读物品名与位置</div></div><div class="nsw on" onclick="this.classList.toggle('on')"><div class="nth"></div></div></div>
+          </div>
+          <div class="gap"></div>
+          <div class="nfield inset"><div class="fl">物品名称</div><div class="fv">冬被</div></div>
+          <div class="nfield inset"><div class="fl">存放位置</div><div class="fv ph">例如:阳台储物箱第二层</div></div>
+          <div class="nsaved"><span class="nring"></span>已保存 12 条(搬家进行中 62%)</div>
+        </div>
+        <div class="nrecord-bar">
+          <div class="nbigbtn raise press"><span class="ring"><svg width="26" height="26" fill="currentColor"><use href="#i-mic"/></svg></span></div>
+          <div class="ncta press">确认保存</div>
+        </div>
+        <div class="nbar">
+          <div class="ni on"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-mic"/></svg></span>存物品</div>
+          <div class="ni"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-search"/></svg></span>查物品</div>
+          <div class="ni"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-book"/></svg></span>随手记</div>
+          <div class="ni"><span class="nic"><svg width="20" height="20" fill="currentColor"><use href="#i-settings"/></svg></span>设置</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= ⑤ 组件规范 ================= -->
+<section>
+  <div class="sec-head-row"><h2>⑤ 组件规范(随顶部「底色变体 / 阴影强度」联动)</h2></div>
+  <div class="spec neu">
+    <div class="col">
+      <h3>三态 <span class="tag">RAISED / INSET / PRESSED</span></h3>
+      <div class="demo">
+        <div class="box raise"><span class="cn">凸起</span>卡片 · 按钮 · 导航选中</div>
+        <div class="box inset"><span class="cn">凹陷</span>输入框 · 搜索 · 开关槽</div>
+        <div class="box raise press"><span class="cn">按压我</span>按住看凹陷态</div>
+      </div>
+      <h3>开关 <span class="tag">46×26</span></h3>
+      <div class="demo">
+        <div style="display:flex;align-items:center;gap:10px;font-size:12px;color:var(--neu-text2)">关<div class="nsw"><div class="nth"></div></div></div>
+        <div style="display:flex;align-items:center;gap:10px;font-size:12px;color:var(--neu-text2)">开<div class="nsw on"><div class="nth"></div></div></div>
+        <div style="display:flex;align-items:center;gap:10px;font-size:12px;color:var(--neu-text2)">CTA<button class="ncta press" style="padding:10px 18px;font-size:13px">确认保存</button></div>
+      </div>
+    </div>
+    <div class="col">
+      <h3>色值 <span class="tag">COLORS</span></h3>
+      <div class="kv">
+        <div><span class="swatch" style="background:#E0E5EC"></span><b>经典拟物灰</b> 底 #E0E5EC · 暗 #AEB9C9 · 亮 #FFFFFF</div>
+        <div><span class="swatch" style="background:#E3EEEC"></span><b>青瓷灰</b> 底 #E3EEEC · 暗 #A9BFBB · 亮 #FFFFFF</div>
+        <div><span class="swatch" style="background:#3D4A5C"></span>文字主 #3D4A5C / 次 #7D8AA0 / 弱 #9DABBD(灰变体)</div>
+        <div><span class="swatch" style="background:#009688"></span>品牌强调 #009688(选中态 · 图标 · CTA 渐变 #00B3A2→#00806F)</div>
+      </div>
+      <h3>参数 <span class="tag">SPEC</span></h3>
+      <div class="kv">
+        <div><b>阴影</b> 标准:外 6px/blur12 · 凹陷 3px/blur6;轻盈:外 4px/blur8 · 凹陷 2px/blur4</div>
+        <div><b>圆角</b> 24 搜索框 · 18 卡片/大按钮 · 12 小按钮/徽章 · 999 开关</div>
+        <div><b>字体</b> 正式实现用霞鹜文楷等宽(同现状),预览为系统字体示意</div>
+        <div><b>不适用</b> 悬浮窗(透明窗口会裁剪外阴影)、现有 4 套主题</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="legend">
+  <b>拍板点</b>:① 底色变体(经典拟物灰 / 青瓷灰,顶部切换对比) ② 阴影强度(标准 6/12 或轻盈 4/8) ③ 圆角档位(搜索 24 · 卡片 18 · 小件 12) ④ 开关样式(凹槽轨道+凸滑块,选中轨道染青) ⑤ 主 CTA 保留品牌青渐变还是改纯同色凸起 ⑥ 随手记实底化的观感是否接受<br>
+  <b>实现口径</b>:新增第 5 套主题,现有 4 套不动;所有拟物组件只在选中该主题时生效;悬浮窗与旧主题渲染路径零变化。确认后我再动 Dart 代码。
+</div>
+
+<script>
+  function setWidth(w,btn){
+    document.querySelectorAll('.phone').forEach(p=>p.style.width=w+'px');
+    btn.parentElement.querySelectorAll('button').forEach(b=>b.classList.remove('on'));
+    btn.classList.add('on');
+  }
+  function setVariant(v,btn){
+    document.body.dataset.variant=v;
+    btn.parentElement.querySelectorAll('button').forEach(b=>b.classList.remove('on'));
+    btn.classList.add('on');
+  }
+  function setIntensity(i,btn){
+    document.body.dataset.intensity=i;
+    btn.parentElement.querySelectorAll('button').forEach(b=>b.classList.remove('on'));
+    btn.classList.add('on');
+  }
+</script>
+</body>
+</html>

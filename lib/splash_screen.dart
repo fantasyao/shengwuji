@@ -232,7 +232,10 @@ class _SplashScreenState extends State<SplashScreen> {
                   const SizedBox(height: 24),
                   const Text(
                     '麦克风权限被拒绝，语音功能将无法使用',
-                    style: TextStyle(color: Color(0xFFFF8A80), fontSize: 13), // 所有主题共用错误提示色，不参与主题切换
+                    style: TextStyle(
+                      color: Color(0xFFFF8A80),
+                      fontSize: 13,
+                    ), // 所有主题共用错误提示色，不参与主题切换
                   ),
                   const SizedBox(height: 8),
                   TextButton(

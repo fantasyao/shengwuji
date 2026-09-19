@@ -4,6 +4,9 @@ import 'package:package_info_plus/package_info_plus.dart'; // 读取 build numbe
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
+import 'correction/context_learner.dart';
+import 'correction/pair_context.dart';
+import 'utils/correction_learner.dart';
 
 class DbHelper {
   static Database? _db;
@@ -18,10 +21,10 @@ class DbHelper {
   // 初始化数据库
   initDb() async {
     String path = join(await getDatabasesPath(), 'items.db');
-    // 版本升级：3->4 时长, 4->5 归档, 5->6 导出标记, 6->7 lists 表, 7->8 清单合并到日记, 8->9 dismissed_splits 表, 9->10 diary.tag 标注列
+    // 版本升级：3->4 时长, 4->5 归档, 5->6 导出标记, 6->7 lists 表, 7->8 清单合并到日记, 8->9 dismissed_splits 表, 9->10 diary.tag 标注列, 10->11 correction_pairs 错误-修正表, 11->12 上下文纠错统计表, 12->13 修正对语境档案表
     return await openDatabase(
       path,
-      version: 10,
+      version: 13,
       onCreate: (db, version) async {
         // 创建物品表：id, name (物品), location (位置)
         await db.execute(
@@ -36,6 +39,34 @@ class DbHelper {
         // 同一 content UNIQUE，避免重复入库
         await db.execute(
           "CREATE TABLE dismissed_splits(id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL UNIQUE, created_at TEXT)",
+        );
+        // correction_pairs 表：错误-修正学习表（V11 新增）。
+        // 用户手动修改识别文本时，对比「识别原文 → 保存文字」学到的片段级
+        // 替换对（见 CorrectionLearner）；下次识别再出现相同错误片段时
+        // 提示用户一键修正。(error_text, corrected_text) 联合 UNIQUE 去重
+        await db.execute(
+          "CREATE TABLE correction_pairs(id INTEGER PRIMARY KEY AUTOINCREMENT, error_text TEXT NOT NULL, corrected_text TEXT NOT NULL, hit_count INTEGER NOT NULL DEFAULT 1, created_at TEXT, last_used_at TEXT, UNIQUE(error_text, corrected_text))",
+        );
+        // correction_context_stats 表：同音词×上下文词共现统计（V12 新增）。
+        // 用户编辑/一键修正确认了同音组纠错（如 质朴→智谱）时累加
+        // 「用户选的词 × 上下文词」计数，供 ContextScorer 做上下文加权评分；
+        // 与 correction_pairs 互补：同音组对绝不进盲替换表，只进这里
+        await db.execute(
+          "CREATE TABLE correction_context_stats(source_word TEXT NOT NULL, context_word TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(source_word, context_word))",
+        );
+        // correction_user_words 表：用户选用词频（V12 新增）。
+        // log(1+frequency)×小系数 作为评分弱先验（只做 tiebreaker，
+        // 不允许词频单独决定替换）
+        await db.execute(
+          "CREATE TABLE correction_user_words(word TEXT PRIMARY KEY, frequency INTEGER NOT NULL DEFAULT 0, last_used_at TEXT)",
+        );
+        // correction_pair_contexts 表：修正对语境档案（V13 新增）。
+        // 普通修正对（非同音组）被学到时，顺带记录错误片段在识别原文中
+        // 出现位置的左右邻接字符（PairContextGate 归一化）；提示一键修正前
+        // 比对当前文本的邻接字符，语境吻合才弹提示（语境门控），
+        // 「互联网影视可控」学到的「影视→隐私」不会打扰「今晚看的影视不错」
+        await db.execute(
+          "CREATE TABLE correction_pair_contexts(error_text TEXT NOT NULL, corrected_text TEXT NOT NULL, left_context TEXT NOT NULL DEFAULT '', right_context TEXT NOT NULL DEFAULT '', hit_count INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(error_text, corrected_text, left_context, right_context))",
         );
         // 首次创建数据库时内置说明卡片（点击复制、长按编辑等 8 条功能引导）
         await _seedTutorialDiaries(db);
@@ -128,6 +159,45 @@ class DbHelper {
             log("数据库迁移 v9→v10 失败（不阻止升级）：$e");
           }
         }
+        // 数据库升级：从版本10升级到版本11，新增 correction_pairs 错误-修正学习表
+        //（用户手动修改识别文本 → 学习「识别原文片段 → 修正片段」替换对）
+        if (oldVersion < 11) {
+          try {
+            await db.execute(
+              "CREATE TABLE correction_pairs(id INTEGER PRIMARY KEY AUTOINCREMENT, error_text TEXT NOT NULL, corrected_text TEXT NOT NULL, hit_count INTEGER NOT NULL DEFAULT 1, created_at TEXT, last_used_at TEXT, UNIQUE(error_text, corrected_text))",
+            );
+            log("数据库迁移 v10→v11：已创建 correction_pairs 错误-修正表");
+          } catch (e) {
+            log("数据库迁移 v10→v11 失败（不阻止升级）：$e");
+          }
+        }
+        // 数据库升级：从版本11升级到版本12，新增上下文纠错两张统计表
+        //（correction_context_stats 同音词×上下文词共现 + correction_user_words 用户词频弱先验）
+        if (oldVersion < 12) {
+          try {
+            await db.execute(
+              "CREATE TABLE correction_context_stats(source_word TEXT NOT NULL, context_word TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(source_word, context_word))",
+            );
+            await db.execute(
+              "CREATE TABLE correction_user_words(word TEXT PRIMARY KEY, frequency INTEGER NOT NULL DEFAULT 0, last_used_at TEXT)",
+            );
+            log("数据库迁移 v11→v12：已创建上下文纠错统计表");
+          } catch (e) {
+            log("数据库迁移 v11→v12 失败（不阻止升级）：$e");
+          }
+        }
+        // 数据库升级：从版本12升级到版本13，新增修正对语境档案表
+        //（普通修正对学到时记录错误片段左右邻接字符，提示前做语境门控）
+        if (oldVersion < 13) {
+          try {
+            await db.execute(
+              "CREATE TABLE correction_pair_contexts(error_text TEXT NOT NULL, corrected_text TEXT NOT NULL, left_context TEXT NOT NULL DEFAULT '', right_context TEXT NOT NULL DEFAULT '', hit_count INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(error_text, corrected_text, left_context, right_context))",
+            );
+            log("数据库迁移 v12→v13：已创建修正对语境档案表");
+          } catch (e) {
+            log("数据库迁移 v12→v13 失败（不阻止升级）：$e");
+          }
+        }
       },
     );
   }
@@ -160,7 +230,7 @@ class DbHelper {
       },
       {
         'content':
-            '↩️ 搬家模式撤销\n搬家模式听错时（如把“电扇”听成“电脑”），10 秒内说“不对”“撤销”“错了”任一关键词，会自动删除上一条物品记录并播报“已撤销”。',
+            '↩️ 搬家模式撤销\n搬家模式听错时（如把“电扇”听成“电脑”），10 秒内说“不对”“撤销”“错了”“取消”“删掉”“删除”“报销”等任一关键词（或“这条不对”“删除上一条”），会自动删除上一条物品记录并播报“已撤销”。',
         'offsetSec': 2,
       },
       {
@@ -378,6 +448,19 @@ class DbHelper {
     ''');
   }
 
+  // 按 id 查单条日记（电脑访问服务 PUT/DELETE 前定位 audio_path 用，见
+  // web_server/diary_web_server.dart）
+  Future<Map<String, dynamic>?> getDiaryById(int id) async {
+    final dbClient = await db;
+    final rows = await dbClient.query(
+      'diary',
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : rows.first;
+  }
+
   // 3. 删除某条日记
   Future<int> deleteDiary(int id) async {
     final dbClient = await db;
@@ -547,5 +630,298 @@ class DbHelper {
     final dbClient = await db;
     await dbClient.delete('dismissed_splits');
     log("[DbHelper] 已清空所有 dismiss 记录");
+  }
+
+  // ==================== correction_pairs（错误-修正学习表）====================
+
+  /// 表容量上限：超过时按 last_used_at 淘汰最久未命中的记录，
+  /// 防止学习表无限膨胀（每条都是极小文本，500 条上限绰绰有余）
+  static const int _kCorrectionPairsCap = 500;
+
+  /// 学习「错误-修正」对：同一 (error, corrected) 已存在 → hit_count+1 并刷新
+  /// last_used_at；否则插入新行。SQLite 版本兼容考虑（Android 老机 UPSERT
+  /// 语法不可靠），用"先查后更/插"的事务实现。
+  /// 调用方：日记编辑保存 / 录入页保存 / 悬浮窗编辑保存（用户主动修改识别
+  /// 文本时）+ 一键修正被采纳时（强化计数）
+  Future<void> learnCorrectionPairs(List<CorrectionPair> pairs) async {
+    if (pairs.isEmpty) return;
+    final dbClient = await db;
+    final now = DateTime.now().toIso8601String();
+    // 同一批次内先按 (error, correct) 去重，避免 batch 里 SELECT 看不到
+    // 同事务未提交的插入导致重复建行
+    final deduped = <CorrectionPair>{...pairs}.toList();
+    await dbClient.transaction((txn) async {
+      for (final p in deduped) {
+        if (p.error.isEmpty || p.error == p.correct) continue;
+        final rows = await txn.query(
+          'correction_pairs',
+          columns: ['id'],
+          where: 'error_text = ? AND corrected_text = ?',
+          whereArgs: [p.error, p.correct],
+          limit: 1,
+        );
+        if (rows.isNotEmpty) {
+          await txn.rawUpdate(
+            'UPDATE correction_pairs SET hit_count = hit_count + 1, last_used_at = ? WHERE id = ?',
+            [now, rows.first['id']],
+          );
+          log("[DbHelper] 修正对命中+1: ${p.error} → ${p.correct}");
+        } else {
+          await txn.insert('correction_pairs', {
+            'error_text': p.error,
+            'corrected_text': p.correct,
+            'hit_count': 1,
+            'created_at': now,
+            'last_used_at': now,
+          });
+          log("[DbHelper] 新学修正对: ${p.error} → ${p.correct}");
+        }
+      }
+      // 容量控制：超出上限时淘汰最久未命中的行
+      await txn.rawDelete(
+        'DELETE FROM correction_pairs WHERE id IN ('
+        'SELECT id FROM correction_pairs ORDER BY last_used_at DESC LIMIT -1 OFFSET ?)',
+        [_kCorrectionPairsCap],
+      );
+    });
+    log("[DbHelper] 已学习 ${deduped.length} 条修正对");
+  }
+
+  /// 查出 text 中命中的修正对（按错误片段长度降序=先长后短替换更精确）。
+  /// 每次识别回填/识别填框时调用一次，表容量有上限（≤500 行），全表扫描无压力
+  Future<List<CorrectionPair>> matchCorrectionPairs(String text) async {
+    if (text.isEmpty) return const [];
+    final all = await getAllCorrectionPairs();
+    return all.where((p) => text.contains(p.error)).toList();
+  }
+
+  /// 全量修正对（按错误片段长度降序、命中次数降序）。
+  /// 录入页物品/位置两个字段分别匹配时复用一次查询
+  Future<List<CorrectionPair>> getAllCorrectionPairs() async {
+    final dbClient = await db;
+    final rows = await dbClient.query(
+      'correction_pairs',
+      orderBy: 'LENGTH(error_text) DESC, hit_count DESC',
+    );
+    return rows
+        .map(
+          (r) => CorrectionPair(
+            error: (r['error_text'] as String?) ?? '',
+            correct: (r['corrected_text'] as String?) ?? '',
+            hitCount: (r['hit_count'] as int?) ?? 1,
+          ),
+        )
+        .where((p) => p.error.isNotEmpty && p.error != p.correct)
+        .toList();
+  }
+
+  /// 清空所有修正对（设置页修正管理页"清空全部"按钮用）。
+  /// 语境档案一并清空（无主修正对的档案留着只会占容量）
+  Future<void> clearAllCorrectionPairs() async {
+    final dbClient = await db;
+    await dbClient.delete('correction_pairs');
+    await dbClient.delete('correction_pair_contexts');
+    log("[DbHelper] 已清空所有错误-修正对");
+  }
+
+  /// 删除单条修正对（设置页修正管理页每行的删除按钮用）。
+  /// 表没有暴露自增 id 到 UI 层，按 (error, corrected) 业务键删除；
+  /// 该对的语境档案级联删除
+  Future<int> deleteCorrectionPair(String error, String correct) async {
+    final dbClient = await db;
+    final count = await dbClient.delete(
+      'correction_pairs',
+      where: 'error_text = ? AND corrected_text = ?',
+      whereArgs: [error, correct],
+    );
+    await dbClient.delete(
+      'correction_pair_contexts',
+      where: 'error_text = ? AND corrected_text = ?',
+      whereArgs: [error, correct],
+    );
+    log("[DbHelper] 已删除修正对: $error → $correct");
+    return count;
+  }
+
+  // ==================== correction_pair_contexts（修正对语境档案）====================
+
+  /// 语境档案表容量上限（PairContextGate.tableCap 的 DB 侧同步）
+  static const int _kPairContextsCap = PairContextGate.tableCap;
+
+  /// 记录修正对语境档案（学习普通修正对时顺带，PairContextGate.extract 产出）：
+  /// 同一 (error, correct, left, right) 已存在 → hit_count+1；否则插入。
+  /// 事务内"先查后更/插"（同 learnCorrectionPairs 的老机 UPSERT 兼容写法）；
+  /// 末尾按 hit_count 淘汰超限行，防止档案表无限膨胀
+  Future<void> learnPairContexts(List<PairContextRecord> records) async {
+    if (records.isEmpty) return;
+    final dbClient = await db;
+    final deduped = <PairContextRecord>{...records}.toList();
+    await dbClient.transaction((txn) async {
+      for (final r in deduped) {
+        if (r.error.isEmpty) continue;
+        final rows = await txn.query(
+          'correction_pair_contexts',
+          columns: ['rowid'],
+          where:
+              'error_text = ? AND corrected_text = ? AND left_context = ? AND right_context = ?',
+          whereArgs: [r.error, r.correct, r.leftContext, r.rightContext],
+          limit: 1,
+        );
+        if (rows.isNotEmpty) {
+          await txn.rawUpdate(
+            'UPDATE correction_pair_contexts SET hit_count = hit_count + 1 WHERE rowid = ?',
+            [rows.first['rowid']],
+          );
+        } else {
+          await txn.insert('correction_pair_contexts', {
+            'error_text': r.error,
+            'corrected_text': r.correct,
+            'left_context': r.leftContext,
+            'right_context': r.rightContext,
+            'hit_count': 1,
+          });
+        }
+      }
+      // 容量控制：保 hit_count 最高的行（同分保留较新的）
+      await txn.rawDelete(
+        'DELETE FROM correction_pair_contexts WHERE rowid IN ('
+        'SELECT rowid FROM correction_pair_contexts '
+        'ORDER BY hit_count ASC, rowid DESC LIMIT -1 OFFSET ?)',
+        [_kPairContextsCap],
+      );
+    });
+    log("[DbHelper] 已记录 ${deduped.length} 条修正对语境档案");
+  }
+
+  /// 全量语境档案（提示点一次读全表建分组索引；容量有上限 ≤2000 行无压力）
+  Future<List<PairContextRecord>> getAllPairContexts() async {
+    final dbClient = await db;
+    final rows = await dbClient.query('correction_pair_contexts');
+    return rows
+        .map(
+          (r) => PairContextRecord(
+            error: (r['error_text'] as String?) ?? '',
+            correct: (r['corrected_text'] as String?) ?? '',
+            leftContext: (r['left_context'] as String?) ?? '',
+            rightContext: (r['right_context'] as String?) ?? '',
+            hitCount: (r['hit_count'] as int?) ?? 1,
+          ),
+        )
+        .where((r) => r.error.isNotEmpty)
+        .toList();
+  }
+
+  // ============ correction_context_stats / correction_user_words（上下文纠错）============
+
+  /// 共现统计表容量上限（CorrectionConfig.contextStatsCap 的 DB 侧副本，
+  /// 不 import correction 模块避免反向依赖：DB 层只认 context_learner 的模型类）
+  static const int _kContextStatsCap = 3000;
+
+  /// 批量累加「同音词×上下文词」共现统计 + 用户选用词频
+  /// （ContextLearner 产出的增量，用户明确纠错行为触发）。
+  /// 事务内"先查后更/插"（同 learnCorrectionPairs 的老机 UPSERT 兼容写法）；
+  /// 末尾按 count 淘汰超限行，防止统计表无限膨胀
+  Future<void> applyContextLearning(
+    List<ContextStatBump> statBumps,
+    List<String> userWordBumps,
+  ) async {
+    if (statBumps.isEmpty && userWordBumps.isEmpty) return;
+    final dbClient = await db;
+    final now = DateTime.now().toIso8601String();
+    // 同批次先聚合（事务内 SELECT 看不到未提交插入，不聚合会重复建行）
+    final agg = <String, Map<String, int>>{};
+    for (final b in statBumps) {
+      if (b.source.isEmpty || b.context.isEmpty) continue;
+      final inner = agg.putIfAbsent(b.source, () => {});
+      inner[b.context] = (inner[b.context] ?? 0) + b.delta;
+    }
+    final freqAgg = <String, int>{};
+    for (final w in userWordBumps) {
+      if (w.isEmpty) continue;
+      freqAgg[w] = (freqAgg[w] ?? 0) + 1;
+    }
+    if (agg.isEmpty && freqAgg.isEmpty) return;
+    await dbClient.transaction((txn) async {
+      for (final entry in agg.entries) {
+        for (final e in entry.value.entries) {
+          final rows = await txn.query(
+            'correction_context_stats',
+            columns: ['rowid'],
+            where: 'source_word = ? AND context_word = ?',
+            whereArgs: [entry.key, e.key],
+            limit: 1,
+          );
+          if (rows.isNotEmpty) {
+            await txn.rawUpdate(
+              'UPDATE correction_context_stats SET count = count + ? WHERE source_word = ? AND context_word = ?',
+              [e.value, entry.key, e.key],
+            );
+          } else {
+            await txn.insert('correction_context_stats', {
+              'source_word': entry.key,
+              'context_word': e.key,
+              'count': e.value,
+            });
+          }
+        }
+      }
+      for (final w in freqAgg.entries) {
+        final rows = await txn.query(
+          'correction_user_words',
+          columns: ['rowid'],
+          where: 'word = ?',
+          whereArgs: [w.key],
+          limit: 1,
+        );
+        if (rows.isNotEmpty) {
+          await txn.rawUpdate(
+            'UPDATE correction_user_words SET frequency = frequency + ?, last_used_at = ? WHERE word = ?',
+            [w.value, now, w.key],
+          );
+        } else {
+          await txn.insert('correction_user_words', {
+            'word': w.key,
+            'frequency': w.value,
+            'last_used_at': now,
+          });
+        }
+      }
+      // 容量控制：保 count 最高的行（同分保留较新的）
+      await txn.rawDelete(
+        'DELETE FROM correction_context_stats WHERE rowid IN ('
+        'SELECT rowid FROM correction_context_stats '
+        'ORDER BY count ASC, rowid DESC LIMIT -1 OFFSET ?)',
+        [_kContextStatsCap],
+      );
+    });
+    log(
+      "[DbHelper] 上下文纠错统计已累加: 共现 ${agg.length} 词组、词频 ${freqAgg.length} 词",
+    );
+  }
+
+  /// 全量共现统计（上下文纠错单例启动时一次预载进内存；
+  /// 表容量有上限 ≤3000 行，全表读无压力）
+  Future<Map<String, Map<String, int>>> getAllCorrectionContextStats() async {
+    final dbClient = await db;
+    final rows = await dbClient.query('correction_context_stats');
+    final result = <String, Map<String, int>>{};
+    for (final r in rows) {
+      final source = (r['source_word'] as String?) ?? '';
+      final context = (r['context_word'] as String?) ?? '';
+      if (source.isEmpty || context.isEmpty) continue;
+      (result[source] ??= {})[context] = (r['count'] as int?) ?? 0;
+    }
+    return result;
+  }
+
+  /// 全量用户选用词频（同上，预载进内存做评分弱先验）
+  Future<Map<String, int>> getAllUserWords() async {
+    final dbClient = await db;
+    final rows = await dbClient.query('correction_user_words');
+    return {
+      for (final r in rows)
+        if (((r['word'] as String?) ?? '').isNotEmpty)
+          r['word'] as String: (r['frequency'] as int?) ?? 0,
+    };
   }
 }

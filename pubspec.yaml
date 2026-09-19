@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.1.0+21
+version: 1.3.0+24
 
 environment:
   sdk: ^3.10.3
@@ -61,11 +61,15 @@ dependencies:
   package_info_plus: ^9.0.1  # 读取应用版本号
   gal: ^2.3.1  # 保存付款码图片到相册（Pro 解锁弹窗）
   flutter_overlay_window: ^0.5.0  # 系统级悬浮窗（闪念胶囊）
+  dart_jieba: ^1.0.1  # 中文分词（修正对学习取词：错误片段补全到完整词，见 docs/architecture/context-correction.md）
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_launcher_icons: ^0.13.1
+  # 仅测试用：悬浮窗语音速记停止按钮的 widget 测试需要替换 RecordPlatform.instance
+  # 为假实现（真实插件 stop() 在测试环境永不完成）；版本对齐 record ^6.x 的传递依赖
+  record_platform_interface: ^1.5.0
 
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is
@@ -89,6 +93,9 @@ flutter:
   assets:
     - assets/rules.txt
     - assets/hotwords.txt
+    - assets/homophones.json   # 同音词候选组（上下文纠错：词库只出候选，上下文定答案）
+    - assets/domain_words.json # 专有名词 related/conflict 上下文词表（上下文纠错评分用）
+    - assets/jieba_dict.dgz    # jieba 二进制词典（修正对学习取词补全用，运行时拷到文档目录供 dart:io 读取）
     - assets/icon/app_icon.png
     - assets/icon/icon2.png
     - assets/icon/icon2_fg_white.png

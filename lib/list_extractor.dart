@@ -99,11 +99,7 @@ class _IntentResult {
   final String? type; // "购物"、"任务"、"清单"
   final int score; // 评分，调试用
 
-  const _IntentResult({
-    required this.isList,
-    this.type,
-    this.score = 0,
-  });
+  const _IntentResult({required this.isList, this.type, this.score = 0});
 }
 
 // ============================================================
@@ -147,16 +143,7 @@ class ListExtractor {
   ];
 
   /// 购物动词（意图检测 + 分类用）
-  static const _shoppingVerbs = [
-    '买',
-    '购',
-    '拿',
-    '带',
-    '取',
-    '领',
-    '抢',
-    '补',
-  ];
+  static const _shoppingVerbs = ['买', '购', '拿', '带', '取', '领', '抢', '补'];
 
   /// 任务动词（意图检测 + 分类用）
   static const _taskVerbs = [
@@ -229,14 +216,7 @@ class ListExtractor {
   ];
 
   /// 量级修饰词（Stage 4 中去除）
-  static const _quantityModifiers = [
-    '一点儿',
-    '一点',
-    '点儿',
-    '一些',
-    '些',
-    '点',
-  ];
+  static const _quantityModifiers = ['一点儿', '一点', '点儿', '一些', '些', '点'];
 
   /// 中文量词正则（用于数量提取）
   static const _measureWordPattern =
@@ -247,63 +227,14 @@ class ListExtractor {
       '|毫米|公里|寸|尺|丈)';
 
   /// 中文数字到阿拉伯数字的映射
-  static const _chineseNumberMap = {
-    '两': '2',
-    '十': '10',
-    '百': '100',
-  };
+  static const _chineseNumberMap = {'两': '2', '十': '10', '百': '100'};
 
   /// 类别关键词映射（Stage 5 分类用）
   static const _categoryKeywords = <String, List<String>>{
-    '购物': [
-      '买',
-      '购',
-      '拿',
-      '带',
-      '超市',
-      '商店',
-      '市场',
-      '网购',
-      '下单',
-      '补货',
-    ],
-    '家务': [
-      '打扫',
-      '清理',
-      '洗',
-      '拖',
-      '擦',
-      '整理',
-      '收拾',
-      '晾',
-      '叠',
-      '倒垃圾',
-      '保洁',
-    ],
-    '工作': [
-      '开会',
-      '报告',
-      '提交',
-      '审核',
-      '审批',
-      '方案',
-      '文档',
-      '会议',
-      '邮件',
-      '联系',
-      '汇报',
-    ],
-    '生活': [
-      '预约',
-      '缴费',
-      '取快递',
-      '送修',
-      '叫外卖',
-      '打车',
-      '叫保洁',
-      '理发',
-      '体检',
-    ],
+    '购物': ['买', '购', '拿', '带', '超市', '商店', '市场', '网购', '下单', '补货'],
+    '家务': ['打扫', '清理', '洗', '拖', '擦', '整理', '收拾', '晾', '叠', '倒垃圾', '保洁'],
+    '工作': ['开会', '报告', '提交', '审核', '审批', '方案', '文档', '会议', '邮件', '联系', '汇报'],
+    '生活': ['预约', '缴费', '取快递', '送修', '叫外卖', '打车', '叫保洁', '理发', '体检'],
   };
 
   /// 时间关键词正则（简单匹配）
@@ -344,10 +275,7 @@ class ListExtractor {
 
     if (triggerWord == null) {
       log('[ListExtractor] 未命中触发词"代办/待办"，跳过清单提取');
-      return ExtractionResult(
-        isList: false,
-        normalizedText: cleaned,
-      );
+      return ExtractionResult(isList: false, normalizedText: cleaned);
     }
 
     // 剥离触发词后送入后续管道
@@ -364,18 +292,17 @@ class ListExtractor {
     if (payload.isEmpty) {
       // 只有触发词没有实际内容，不算清单
       log('[ListExtractor] 触发词后无内容，跳过清单提取');
-      return ExtractionResult(
-        isList: false,
-        normalizedText: cleaned,
-      );
+      return ExtractionResult(isList: false, normalizedText: cleaned);
     }
 
     // Stage 2: 意图检测（保留分类逻辑用于打"购物/任务/家务"标签）
     // 注意：isList 已由触发词门禁决定，_detectIntent 内部的评分判定不再生效
     // 仅 intent.type（分类标签）仍有意义
     final intent = _detectIntent(payload);
-    log('[ListExtractor] 意图检测(仅用于分类): type=${intent.type}, '
-        'score=${intent.score}');
+    log(
+      '[ListExtractor] 意图检测(仅用于分类): type=${intent.type}, '
+      'score=${intent.score}',
+    );
 
     // Stage 3: 条目拆分
     final segments = _splitEntries(payload);
@@ -383,15 +310,13 @@ class ListExtractor {
 
     if (segments.length < 2) {
       // 拆分后只有一条，不算清单
-      return ExtractionResult(
-        isList: false,
-        normalizedText: cleaned,
-      );
+      return ExtractionResult(isList: false, normalizedText: cleaned);
     }
 
     // Stage 4: 结构提取
-    final items =
-        segments.map((s) => _extractStructure(s, intent.type ?? '清单')).toList();
+    final items = segments
+        .map((s) => _extractStructure(s, intent.type ?? '清单'))
+        .toList();
 
     // Stage 5: 分类
     final classified = _classify(items, intent.type ?? '清单');
@@ -437,8 +362,7 @@ class ListExtractor {
 
     // 逗号分隔片段 >= 3（多个并列短语是清单的强信号）
     // 但纯逗号分段是弱信号——日记也经常用逗号分段
-    final commaParts =
-        text.split('，').where((s) => s.trim().isNotEmpty).length;
+    final commaParts = text.split('，').where((s) => s.trim().isNotEmpty).length;
     if (commaParts >= 5) {
       score += 3; // 5+ 段逗号，清单信号较强
     } else if (commaParts >= 3 && dunCount >= 1) {
@@ -502,9 +426,11 @@ class ListExtractor {
     }
 
     // 包含物品位置关键词且无其他清单信号
-    final hasLocationKeyword =
-        text.contains('放在') || text.contains('在');
-    if (hasLocationKeyword && !hasShoppingVerb && !hasTaskVerb && dunCount == 0) {
+    final hasLocationKeyword = text.contains('放在') || text.contains('在');
+    if (hasLocationKeyword &&
+        !hasShoppingVerb &&
+        !hasTaskVerb &&
+        dunCount == 0) {
       score -= 3;
     }
 
@@ -565,8 +491,9 @@ class ListExtractor {
     // 真清单片段是名词短语（短），叙述文含"会/能/可以/了"等句式（长句子）
     if (commaSegments.length >= 3) {
       final sentencePattern = RegExp(r'[会能否可以了着过]');
-      final sentenceCount =
-          commaSegments.where((s) => sentencePattern.hasMatch(s)).length;
+      final sentenceCount = commaSegments
+          .where((s) => sentencePattern.hasMatch(s))
+          .length;
       if (sentenceCount > commaSegments.length / 2) {
         score -= 3;
       }
@@ -579,11 +506,7 @@ class ListExtractor {
 
     // 阈值判定
     final isList = score >= 2;
-    return _IntentResult(
-      isList: isList,
-      type: intentType,
-      score: score,
-    );
+    return _IntentResult(isList: isList, type: intentType, score: score);
   }
 
   // ============ Stage 3: 条目拆分 ============
@@ -604,9 +527,7 @@ class ListExtractor {
     }
 
     // 优先级 3：按枚举连接词拆分
-    final enumPattern = RegExp(
-      r'(?:然后|接着|再|还有|还|并且|而且|同时|另外|之后|随后)',
-    );
+    final enumPattern = RegExp(r'(?:然后|接着|再|还有|还|并且|而且|同时|另外|之后|随后)');
     parts = text.split(enumPattern);
     if (parts.where((s) => s.trim().isNotEmpty).length >= 2) {
       return _cleanParts(parts);
@@ -618,10 +539,7 @@ class ListExtractor {
 
   /// 清理拆分后的片段：trim + 过滤空串
   List<String> _cleanParts(List<String> parts) {
-    return parts
-        .map((s) => s.trim())
-        .where((s) => s.isNotEmpty)
-        .toList();
+    return parts.map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
   }
 
   // ============ Stage 4: 结构提取 ============
@@ -664,8 +582,9 @@ class ListExtractor {
     // 5. 去量级修饰词
     for (final mod in _quantityModifiers) {
       if (remaining.endsWith(mod)) {
-        remaining =
-            remaining.substring(0, remaining.length - mod.length).trim();
+        remaining = remaining
+            .substring(0, remaining.length - mod.length)
+            .trim();
         break;
       }
       if (remaining.startsWith(mod)) {

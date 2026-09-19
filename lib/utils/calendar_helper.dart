@@ -93,7 +93,13 @@ class CalendarHelper {
   ///（对齐 iOS 提醒事项"今天 +1 小时"惯例；14:20 → 16:00，14:00 → 15:00）
   static DateTime defaultPrefillTime([DateTime? now]) {
     final plus = (now ?? DateTime.now()).add(const Duration(hours: 1));
-    final onTheHour = plus.minute == 0 && plus.second == 0 && plus.millisecond == 0;
-    return DateTime(plus.year, plus.month, plus.day, plus.hour + (onTheHour ? 0 : 1));
+    final onTheHour =
+        plus.minute == 0 && plus.second == 0 && plus.millisecond == 0;
+    return DateTime(
+      plus.year,
+      plus.month,
+      plus.day,
+      plus.hour + (onTheHour ? 0 : 1),
+    );
   }
 }

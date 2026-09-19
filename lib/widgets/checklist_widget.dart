@@ -76,18 +76,23 @@ class ChecklistWidget extends StatelessWidget {
                 Expanded(
                   child: Text(
                     text,
-                    style: textStyle?.merge(
-                      TextStyle(
-                        color: checked ? ext.textHint : ext.textPrimary,
-                        decoration: checked ? TextDecoration.lineThrough : null,
-                      ),
-                    ) ??
-                    TextStyle(
-                      fontSize: 15,
-                      height: 1.4,
-                      color: checked ? ext.textHint : ext.textPrimary,
-                      decoration: checked ? TextDecoration.lineThrough : null,
-                    ),
+                    style:
+                        textStyle?.merge(
+                          TextStyle(
+                            color: checked ? ext.textHint : ext.textPrimary,
+                            decoration: checked
+                                ? TextDecoration.lineThrough
+                                : null,
+                          ),
+                        ) ??
+                        TextStyle(
+                          fontSize: 15,
+                          height: 1.4,
+                          color: checked ? ext.textHint : ext.textPrimary,
+                          decoration: checked
+                              ? TextDecoration.lineThrough
+                              : null,
+                        ),
                   ),
                 ),
               ],

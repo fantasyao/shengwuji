@@ -49,10 +49,12 @@ class _TimeAwareTextState extends State<TimeAwareText> {
 
       // 添加普通文本（上个时间实体结束到当前时间实体开始）
       if (entity.start > lastEnd) {
-        spans.add(TextSpan(
-          text: widget.text.substring(lastEnd, entity.start),
-          style: widget.baseStyle,
-        ));
+        spans.add(
+          TextSpan(
+            text: widget.text.substring(lastEnd, entity.start),
+            style: widget.baseStyle,
+          ),
+        );
       }
 
       // 添加时间高亮文本
@@ -70,35 +72,34 @@ class _TimeAwareTextState extends State<TimeAwareText> {
         setState(() => _hoveredIndex = null);
       };
 
-      spans.add(TextSpan(
-        text: entity.text,
-        style: (widget.baseStyle ?? const TextStyle()).copyWith(
-          color: ext.timeHighlight,
-          fontWeight: FontWeight.bold,
-          // hover 时背景往高亮色方向加深 40%，保留原 Colors.blue.shade100 vs shade50 的视觉反馈
-          backgroundColor: isHovered
-              ? Color.lerp(ext.timeHighlightBg, ext.timeHighlight, 0.4)
-              : ext.timeHighlightBg,
-          decoration: TextDecoration.underline,
-          decorationColor: ext.timeHighlight,
+      spans.add(
+        TextSpan(
+          text: entity.text,
+          style: (widget.baseStyle ?? const TextStyle()).copyWith(
+            color: ext.timeHighlight,
+            fontWeight: FontWeight.bold,
+            // hover 时背景往高亮色方向加深 40%，保留原 Colors.blue.shade100 vs shade50 的视觉反馈
+            backgroundColor: isHovered
+                ? Color.lerp(ext.timeHighlightBg, ext.timeHighlight, 0.4)
+                : ext.timeHighlightBg,
+            decoration: TextDecoration.underline,
+            decorationColor: ext.timeHighlight,
+          ),
+          recognizer: gestureRecognizer,
         ),
-        recognizer: gestureRecognizer,
-      ));
+      );
 
       lastEnd = entity.end;
     }
 
     // 添加剩余文本
     if (lastEnd < widget.text.length) {
-      spans.add(TextSpan(
-        text: widget.text.substring(lastEnd),
-        style: widget.baseStyle,
-      ));
+      spans.add(
+        TextSpan(text: widget.text.substring(lastEnd), style: widget.baseStyle),
+      );
     }
 
-    return Text.rich(
-      TextSpan(children: spans),
-    );
+    return Text.rich(TextSpan(children: spans));
   }
 
   void _handleTimeTap(TimeEntity entity) {

@@ -8,10 +8,12 @@ import 'package:record/record.dart';
 // 识别走 RecognizerSingleton.transcribe()（worker isolate，9edb24f），本文件不 import sherpa_onnx
 import 'package:vibration/vibration.dart';
 import '../db_helper.dart';
+import '../correction/context_corrector.dart';
 import '../recognizer_singleton.dart';
 import '../text_processor.dart';
 import '../theme/app_theme_extension.dart';
 import '../utils/query_detector.dart';
+import 'widgets/neu_widgets.dart';
 
 class ListTab extends StatefulWidget {
   final DbHelper dbHelper;
@@ -335,7 +337,10 @@ class ListTabState extends State<ListTab> {
 
       // 纠错（参考 DiaryTab 的 processor.process 调用）
       // ListTab 查询场景默认 removeSpaces=true（查询词不需要空格）
-      final corrected = _processor.process(rawText, removeSpaces: true);
+      // 热词替换之后再过同音词上下文纠错（如把"质朴"按语境改回"智谱"再查询）
+      final hotwordFixed = _processor.process(rawText, removeSpaces: true);
+      final ctxResult = await ContextCorrector.instance.correct(hotwordFixed);
+      final corrected = ctxResult.text;
       log("🔍 [ListTab] 纠错后: $corrected");
 
       // 查询检测
@@ -414,47 +419,26 @@ class ListTabState extends State<ListTab> {
           // 3. 仿照录音页 ModernField 样式的搜索框
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
-            child: Container(
-              decoration: BoxDecoration(
-                color: ext.cardBackground,
-                borderRadius: BorderRadius.circular(16),
-                boxShadow: [
-                  BoxShadow(
-                    color: ext.textPrimary.withValues(
-                      alpha: 0.03,
+            // 新拟物主题：三层硬边凹陷（NeuInset，圆角档 24）；其余主题保持白卡+软阴影
+            child: ext.isNeumorphic
+                ? NeuInset(
+                    radius: 24,
+                    child: _buildSearchField(),
+                  )
+                : Container(
+                    decoration: BoxDecoration(
+                      color: ext.cardBackground,
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: [
+                        BoxShadow(
+                          color: ext.textPrimary.withValues(alpha: 0.03),
+                          blurRadius: 10,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
                     ),
-                    blurRadius: 10,
-                    offset: const Offset(0, 4),
+                    child: _buildSearchField(),
                   ),
-                ],
-              ),
-              child: TextField(
-                controller: _searchController,
-                onChanged: (value) {
-                  _filterItems(value);
-                  setState(() {}); // 触发 suffixIcon 重新计算显隐
-                },
-                decoration: InputDecoration(
-                  hintText: "搜索物品或位置...",
-                  hintStyle: TextStyle(color: ext.textHint, fontSize: 14),
-                  prefixIcon: Icon(Icons.search, color: ext.primary),
-                  suffixIcon: _searchController.text.isNotEmpty
-                      ? IconButton(
-                          icon: const Icon(Icons.close, size: 20),
-                          color: ext.textHint,
-                          onPressed: () {
-                            _searchController.clear();
-                            _filterItems('');
-                            setState(() {}); // 触发重建以隐藏 suffixIcon
-                          },
-                          tooltip: '清空',
-                        )
-                      : null,
-                  border: InputBorder.none,
-                  contentPadding: const EdgeInsets.symmetric(vertical: 15),
-                ),
-              ),
-            ),
           ),
           Expanded(
             child: _displayItems.isEmpty
@@ -465,41 +449,86 @@ class ListTabState extends State<ListTab> {
                     itemCount: _displayItems.length,
                     itemBuilder: (context, index) {
                       final item = _displayItems[index];
-                      return Card(
-                        color: ext.cardBackground,
-                        margin: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 6,
+                      final listTile = ListTile(
+                        title: Text(
+                          item['name'],
+                          style: const TextStyle(fontWeight: FontWeight.bold),
                         ),
-                        child: ListTile(
-                          title: Text(
-                            item['name'],
-                            style: const TextStyle(fontWeight: FontWeight.bold),
+                        subtitle: Text("📍 ${item['location']}"),
+                        trailing: IconButton(
+                          icon: Icon(
+                            Icons.delete_outline,
+                            color: ext.dangerAccent,
                           ),
-                          subtitle: Text("📍 ${item['location']}"),
-                          trailing: IconButton(
-                            icon: Icon(
-                              Icons.delete_outline,
-                              color: ext.dangerAccent,
-                            ),
-                            onPressed: () async {
-                              // 删除震动反馈（与日记删除触感一致：20ms / amplitude 50）
-                              await _haptic(duration: 20, amplitude: 50);
-                              final dbClient = await widget.dbHelper.db;
-                              await dbClient.delete(
-                                'items',
-                                where: 'id = ?',
-                                whereArgs: [item['id']],
-                              );
-                              refreshItems();
-                            },
-                          ),
+                          onPressed: () async {
+                            // 删除震动反馈（与日记删除触感一致：20ms / amplitude 50）
+                            await _haptic(duration: 20, amplitude: 50);
+                            final dbClient = await widget.dbHelper.db;
+                            await dbClient.delete(
+                              'items',
+                              where: 'id = ?',
+                              whereArgs: [item['id']],
+                            );
+                            refreshItems();
+                          },
                         ),
                       );
+                      // 新拟物主题：凸起卡片替代 Card 阴影；其余主题保持原样
+                      return ext.isNeumorphic
+                          ? Container(
+                              margin: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 6,
+                              ),
+                              decoration: neuRaisedDecoration(
+                                context,
+                                radius: 18,
+                              ),
+                              child: listTile,
+                            )
+                          : Card(
+                              color: ext.cardBackground,
+                              margin: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 6,
+                              ),
+                              child: listTile,
+                            );
                     },
                   ),
           ),
         ],
+      ),
+    );
+  }
+
+  /// 搜索框输入域（拟物凹陷与白卡两种外框共用）
+  Widget _buildSearchField() {
+    final ext = AppThemeExtension.of(context);
+    return TextField(
+      controller: _searchController,
+      onChanged: (value) {
+        _filterItems(value);
+        setState(() {}); // 触发 suffixIcon 重新计算显隐
+      },
+      decoration: InputDecoration(
+        hintText: "搜索物品或位置...",
+        hintStyle: TextStyle(color: ext.textHint, fontSize: 14),
+        prefixIcon: Icon(Icons.search, color: ext.primary),
+        suffixIcon: _searchController.text.isNotEmpty
+            ? IconButton(
+                icon: const Icon(Icons.close, size: 20),
+                color: ext.textHint,
+                onPressed: () {
+                  _searchController.clear();
+                  _filterItems('');
+                  setState(() {}); // 触发重建以隐藏 suffixIcon
+                },
+                tooltip: '清空',
+              )
+            : null,
+        border: InputBorder.none,
+        contentPadding: const EdgeInsets.symmetric(vertical: 15),
       ),
     );
   }

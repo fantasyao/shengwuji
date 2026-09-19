@@ -104,6 +104,23 @@ class AppThemeExtension extends ThemeExtension<AppThemeExtension> {
   /// false → SystemUiOverlayStyle.dark（状态栏图标深色，浅底可见）
   final bool isDarkOverlay;
 
+  // ============ 新拟物（Neumorphism）专用 ============
+  /// 拟物外阴影暗色（右下投影），配合 [neuShadowLight] 构成双向阴影
+  ///
+  /// 仅拟物主题（isNeumorphic=true）使用；其余主题给中性灰占位防误用。
+  final Color neuShadowDark;
+
+  /// 拟物外阴影亮色（左上高光）
+  ///
+  /// 仅拟物主题使用；其余主题给白色占位防误用。
+  final Color neuShadowLight;
+
+  /// 是否为新拟物主题
+  ///
+  /// 拟物组件（widgets/neu_widgets.dart）与页面拟物分支（随手记实底化等）
+  /// 都按此标志走，保证旧 4 套主题渲染路径零变化。
+  final bool isNeumorphic;
+
   const AppThemeExtension({
     required this.primary,
     required this.primaryLight,
@@ -132,6 +149,10 @@ class AppThemeExtension extends ThemeExtension<AppThemeExtension> {
     required this.fabDisabled,
     required this.divider,
     required this.isDarkOverlay,
+    // 拟物色槽带默认值：旧 4 套主题无需传参（占位值），仅新拟物主题显式覆盖
+    this.neuShadowDark = const Color(0x1A000000),
+    this.neuShadowLight = Colors.white,
+    this.isNeumorphic = false,
   });
 
   @override
@@ -163,6 +184,9 @@ class AppThemeExtension extends ThemeExtension<AppThemeExtension> {
     Color? fabDisabled,
     Color? divider,
     bool? isDarkOverlay,
+    Color? neuShadowDark,
+    Color? neuShadowLight,
+    bool? isNeumorphic,
   }) {
     return AppThemeExtension(
       primary: primary ?? this.primary,
@@ -192,6 +216,9 @@ class AppThemeExtension extends ThemeExtension<AppThemeExtension> {
       fabDisabled: fabDisabled ?? this.fabDisabled,
       divider: divider ?? this.divider,
       isDarkOverlay: isDarkOverlay ?? this.isDarkOverlay,
+      neuShadowDark: neuShadowDark ?? this.neuShadowDark,
+      neuShadowLight: neuShadowLight ?? this.neuShadowLight,
+      isNeumorphic: isNeumorphic ?? this.isNeumorphic,
     );
   }
 
@@ -234,6 +261,9 @@ class AppThemeExtension extends ThemeExtension<AppThemeExtension> {
       divider: Color.lerp(divider, other.divider, t)!,
       // bool 不能渐变，t<0.5 用自己，否则用对方（SystemUiOverlayStyle 也不支持渐变）
       isDarkOverlay: t < 0.5 ? isDarkOverlay : other.isDarkOverlay,
+      neuShadowDark: Color.lerp(neuShadowDark, other.neuShadowDark, t)!,
+      neuShadowLight: Color.lerp(neuShadowLight, other.neuShadowLight, t)!,
+      isNeumorphic: t < 0.5 ? isNeumorphic : other.isNeumorphic,
     );
   }
 

@@ -14,4 +14,12 @@
         <item name="android:fontFamily">@null</item>
         <item name="android:textColor">@android:color/black</item>
     </style>
+    <!-- 外部快捷动作透明分发层（ShortcutDispatchActivity）：无 UI、无启动
+         动画，覆盖在桌面之上瞬时完成向无障碍服务的分发即 finish -->
+    <style name="DispatchTheme" parent="@android:style/Theme.Light.NoTitleBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:backgroundDimEnabled">false</item>
+    </style>
 </resources>

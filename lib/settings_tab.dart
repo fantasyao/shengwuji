@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
@@ -23,9 +22,23 @@ import '../theme/app_theme_extension.dart';
 import '../theme/app_theme.dart'; // AppThemes / AppThemeDefinition（Phase 3 主题选择）
 import '../main.dart'; // AppRoot.themeNotifier（Phase 3 主题切换）
 import '../utils/icon_pack_switcher.dart'; // Phase 4 图标包切换
-import '../utils/volume_gesture_config.dart'; // 音量键手势槽位配置（4 槽位动作选择器）
-import '../overlay/overlay_constants.dart'; // OverlayConstants.autoHide*（自动隐藏档位唯一真值，与 overlay engine 共用）
+import '../utils/pro_gate.dart'; // Pro 门禁（永久解锁 + 7 天试用）
+import '../utils/tab_visibility.dart'; // 功能页面隐藏开关 key（main.dart main() 预读同一组 key，重启生效）
+import '../overlay/overlay_constants.dart'; // OverlayConstants.autoHide*（自动隐藏档位唯一真值，与 overlay engine 共用；主页悬浮窗入口行摘要读）
 import '../utils/diary_tag.dart'; // 日记标注 tag 常量（CSV 导入校验）
+import '../utils/correction_learner.dart'; // 错误-修正学习表（编解码 + 备份内容）
+import '../web_server/diary_server_controller.dart'; // 电脑访问服务开关编排
+import '../web_server/web_server_settings_card.dart'; // 电脑访问服务设置卡片
+// zcode: 2026-09 设置页下沉——热词+修正学习/AI 应用/悬浮窗/音量键/关于五组
+// 配置移入 lib/settings/ 二级页，主页只留入口行 + 状态摘要（返回后刷新）
+import 'settings/about_page.dart';
+import 'settings/accessibility_check.dart';
+import 'settings/ai_app_page.dart';
+import 'settings/overlay_settings_page.dart';
+import 'settings/recognition_correction_page.dart';
+import 'settings/settings_widgets.dart';
+import 'widgets/neu_widgets.dart';
+import 'settings/volume_key_settings_page.dart';
 
 class SettingsTab extends StatefulWidget {
   final TextProcessor processor;
@@ -41,27 +54,31 @@ class SettingsTab extends StatefulWidget {
 }
 
 class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
-  final TextEditingController _hotwordController = TextEditingController();
+  // zcode: 2026-09 下沉后主页保留的 state 缩减为「入口行摘要」所需最小集；
+  // 各配置项的完整状态在 lib/settings/ 对应二级页内自管（prefs key 不变）
   String _modelPathInfo = "内置模型就绪";
-  String? _selectedAIAppId; // 新增：选中的 AI 应用 ID
-  bool _isAccessibilityEnabled = false; // 无障碍服务是否已开启
-  bool _keepMutedOnVolumeDownEnabled = true; // 按音量减保持静音开关，默认开启
-  String _appVersion = ''; // 版本号，来自 package_info_plus
-  bool _isExportingLog = false; // 运行日志导出中（拉起系统分享面板前禁用按钮+转圈）
+  String? _selectedAIAppId; // 「AI 应用分享」入口行摘要：当前选中的 AI 应用 ID
+  // 无障碍服务是否已开启（null=检测失败：与「未开启」区分，UI 显式提示而非误导用户去开无障碍——服务可能明明开着）
+  bool? _isAccessibilityEnabled = false;
+  int _hotwordCount = 0; // 「识别与修正」入口行摘要：热词条数
+  // 「识别与修正」入口行摘要：错误-修正学习表条数（从二级页返回后刷新）
+  int _correctionPairCount = 0;
+  String _appVersion = ''; // 版本号，来自 package_info_plus（关于入口行）
   bool _isExportingStartupLog = false; // 启动日志导出中（同上）
-  bool _isProUnlocked =
-      false; // Pro 功能是否已解锁，持久化在 SharedPreferences 的 is_pro_unlocked
+  bool _isProActive =
+      false; // Pro 是否可用（永久解锁或试用中），统一走 ProGate 判定
   String _currentIconPackId = 'default'; // 当前图标包 ID（从原生层读取，不依赖 prefs），Phase 4
   bool _itemTransferEnabled = true; // 日记智能识别物品+位置开关（默认开启）
   bool _queryAnswerEnabled = true; // 日记智能查询物品位置开关（默认开启）
   bool _swapTapLongPress = false; // 日记卡片单击/长按交换开关
-  int _autoHideSeconds =
-      OverlayConstants.autoHideDefaultSeconds; // 悬浮窗收起后自动隐藏秒数（5/10/30 或 autoHideNeverSeconds=永久，overlay engine 侧读同一 key）
-  // 字号缩放档位（外观分区选择器；默认 1.0 标准）
+  bool _recordTabHidden = false; // 功能页面：隐藏存物品页开关（prefKeyRecordTabHidden，main.dart main() 预读，重启生效）
+  bool _listTabHidden = false; // 功能页面：隐藏查物品页开关（prefKeyListTabHidden，同上）
+  int _overlayAutoHideSeconds = OverlayConstants
+      .autoHideDefaultSeconds; // 悬浮窗入口行摘要：收起后自动隐藏秒数（二级页写，overlay engine 读同一 key）
+  bool _overlaySideLeft =
+      false; // 悬浮窗入口行摘要：停靠侧（OverlayConstants.overlaySideLeftPrefKey：false=右缘/true=左缘）
+  // 字号缩放档位（外观分区选择器；默认 1.0 中档）
   double _fontScale = 1.0;
-  // 音量键手势槽位 → 动作映射（key 为 VolumeGestureSlot.* 常量；
-  // 写入方 _loadVolumeGestureActions/_saveGestureAction，读取方本页 4 行槽位选择器）
-  Map<String, String> _gestureActions = {};
 
   /// 启动耗时诊断 UI 开关（暂时隐藏，需要时改为 true）
   static const bool _kShowStartupDiagnostics = false;
@@ -69,19 +86,35 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
-    _loadHotwords();
+    _loadHotwordCount();
     _loadModelStatus();
-    _loadAIAppPreference(); // 新增：加载 AI 应用偏好
-    _loadVolumeGestureActions(); // 加载音量键手势槽位动作配置
-    _loadKeepMutedOnVolumeDown(); // 加载按音量减保持静音开关
-    _loadAppVersion(); // 加载应用版本号
+    _loadAIAppPreference(); // 加载 AI 应用偏好（入口行摘要）
+    _loadAppVersion(); // 加载应用版本号（关于入口行）
     _loadProUnlockStatus(); // 加载 Pro 解锁状态
     _loadCurrentIconPack(); // Phase 4：从原生层加载当前图标包状态
     _loadSmartSwitches(); // 加载日记智能识别开关状态
-    _loadOverlaySettings(); // 加载悬浮窗开关状态
+    _loadTabVisibility(); // 加载功能页面隐藏开关
+    _loadOverlaySummary(); // 加载悬浮窗入口行摘要（停靠侧 + 自动隐藏）
     _loadFontScale(); // 加载全局字号缩放档位
+    _loadCorrectionPairCount(); // 加载错误-修正学习表条数（入口行摘要）
     WidgetsBinding.instance.addObserver(this);
     _checkAccessibilityStatus();
+  }
+
+  /// 加载「错误-修正」学习表条数（入口行副标题显示）
+  Future<void> _loadCorrectionPairCount() async {
+    final pairs = await widget.dbHelper.getAllCorrectionPairs();
+    if (mounted) {
+      setState(() => _correctionPairCount = pairs.length);
+    }
+  }
+
+  /// 加载热词条数（「识别与修正」入口行副标题显示；编辑在二级页，返回后重读）
+  Future<void> _loadHotwordCount() async {
+    final text = await widget.processor.getLocalContent();
+    if (mounted) {
+      setState(() => _hotwordCount = countHotwordLines(text));
+    }
   }
 
   @override
@@ -93,7 +126,8 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      // 从系统设置返回时刷新无障碍服务状态
+      // 从系统设置返回时刷新无障碍服务状态（音量键入口行状态点；
+      // 手势/静音等配置详情在二级页，该页自身也有 resume 重查）
       _checkAccessibilityStatus();
     }
   }
@@ -110,13 +144,12 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
     }
   }
 
-  /// 加载 Pro 解锁状态（从 SharedPreferences 的 is_pro_unlocked 字段）
-  /// 后续功能门禁也读这同一个字段
+  /// 加载 Pro 可用状态（永久解锁或试用中，统一走 ProGate 判定）
+  /// 后续功能门禁也读同一判定
   void _loadProUnlockStatus() async {
-    final prefs = await SharedPreferences.getInstance();
-    final unlocked = prefs.getBool('is_pro_unlocked') ?? false;
+    final active = await ProGate.isProActive();
     if (mounted) {
-      setState(() => _isProUnlocked = unlocked);
+      setState(() => _isProActive = active);
     }
   }
 
@@ -143,24 +176,48 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
     }
   }
 
-  /// 加载悬浮窗相关配置（收起后自动隐藏秒数）
-  void _loadOverlaySettings() async {
+  /// 加载功能页面隐藏开关（读取方：main.dart main() 预读同一组 key，
+  /// MainScaffold 按 visibleTabStack 装配底部导航；重启生效）
+  void _loadTabVisibility() async {
     final prefs = await SharedPreferences.getInstance();
     if (mounted) {
       setState(() {
-        // 收起后自动隐藏秒数（读取方：overlay engine 的 _scheduleAutoHide，跨 engine 靠 reload 读新值）
-        _autoHideSeconds =
-            prefs.getInt('overlay_auto_hide_seconds') ?? OverlayConstants.autoHideDefaultSeconds;
+        _recordTabHidden = prefs.getBool(prefKeyRecordTabHidden) ?? false;
+        _listTabHidden = prefs.getBool(prefKeyListTabHidden) ?? false;
       });
     }
   }
 
-  /// 保存“收起后自动隐藏”秒数（读取方：overlay engine 的 _scheduleAutoHide）
-  Future<void> _saveOverlayAutoHide(int seconds) async {
+  /// 保存功能页面隐藏开关（读取方：main.dart main() 预读；下次冷启动装配生效）
+  Future<void> _saveTabVisibility({
+    required bool recordHidden,
+    required bool listHidden,
+  }) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt('overlay_auto_hide_seconds', seconds);
-    setState(() => _autoHideSeconds = seconds);
-    print('🔧 [Settings] overlay_auto_hide_seconds=$seconds');
+    await prefs.setBool(prefKeyRecordTabHidden, recordHidden);
+    await prefs.setBool(prefKeyListTabHidden, listHidden);
+    print(
+      '🔧 [Settings] tab_visibility recordHidden=$recordHidden listHidden=$listHidden',
+    );
+  }
+
+  /// 加载悬浮窗入口行摘要所需的最小配置（停靠侧 + 收起后自动隐藏秒数）。
+  /// 完整配置的读写已移入 lib/settings/overlay_settings_page.dart，
+  /// key 与 overlay engine 读取方不变
+  void _loadOverlaySummary() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) {
+      setState(() {
+        // 收起后自动隐藏秒数（读取方：overlay engine 的 _scheduleAutoHide）
+        _overlayAutoHideSeconds =
+            prefs.getInt('overlay_auto_hide_seconds') ??
+            OverlayConstants.autoHideDefaultSeconds;
+        // 停靠侧（读取方：overlay engine 的 _refreshSide/_scheduleAutoHide +
+        // 原生窗口 Gravity，默认右缘）
+        _overlaySideLeft =
+            prefs.getBool(OverlayConstants.overlaySideLeftPrefKey) ?? false;
+      });
+    }
   }
 
   /// 加载全局字号缩放档位（读取方：AppRoot 的 fontScaleNotifier，启动时 main() 已预读）
@@ -183,46 +240,13 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
 
   /// 显示 Pro 解锁弹窗，关闭后刷新按钮文案
   void _showProUnlockDialog() async {
-    await ProUnlockDialog.show(context, isAlreadyUnlocked: _isProUnlocked);
+    await ProUnlockDialog.show(context);
     // 弹窗里可能点击了解锁按钮，重新读 prefs 刷新本页按钮文案
     if (mounted) {
       _loadProUnlockStatus();
     }
   }
 
-  /// 悬浮窗系动作的 Pro 门禁：已解锁返回 true 放行；未解锁弹付费弹窗并返回 false（调用方不写 prefs）。
-  /// 覆盖 3 个悬浮窗动作（show_overlay/overlay_record/overlay_new_note）+ 自动隐藏时长选择器。
-  bool _ensureOverlayPro() {
-    if (_isProUnlocked) return true;
-    _showProUnlockDialog();
-    return false;
-  }
-
-  /// Pro 徽章（金色胶囊，复用主题卡片 _buildThemeCard 同款视觉）
-  Widget _buildProBadge() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: AppThemeExtension.of(context).goldAccent,
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: const Text(
-        'Pro',
-        style: TextStyle(
-          color: Colors.white,
-          fontSize: 10,
-          fontWeight: FontWeight.bold,
-        ),
-      ),
-    );
-  }
-
-  void _loadHotwords() async {
-    String text = await widget.processor.getLocalContent();
-    setState(() => _hotwordController.text = text);
-  }
-
-  // 新增：加载 AI 应用偏好
   void _loadAIAppPreference() async {
     final prefs = await SharedPreferences.getInstance();
     final appId = prefs.getString('selected_ai_app');
@@ -234,86 +258,54 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
     }
   }
 
-  // 新增：保存 AI 应用选择
-  Future<void> _saveAIAppPreference(String appId) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('selected_ai_app', appId);
-    setState(() => _selectedAIAppId = appId);
-
-    // 显示保存成功提示
-    if (mounted) {
-      final app = AIApp.findById(appId);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text("已设置为 ${app?.name ?? '未知应用'}"),
-          duration: const Duration(seconds: 1),
-        ),
-      );
-    }
-  }
-
-  // --- 无障碍服务（音量键录音）---
-  static const _platform = MethodChannel('com.shengwuji.app/app');
-
+  // --- 无障碍服务（音量键入口行状态点）---
+  // 检测/跳转逻辑抽到 lib/settings/accessibility_check.dart（主页与音量键二级页共用）；
+  // 检测失败≠未开启：置 null 让 UI 显示「检测失败」而非静默当未开启（resume 会重查自动恢复）
   void _checkAccessibilityStatus() async {
-    try {
-      final enabled =
-          await _platform.invokeMethod<bool>('isAccessibilityServiceEnabled') ??
-          false;
-      if (mounted) {
-        setState(() => _isAccessibilityEnabled = enabled);
-      }
-    } catch (e) {
-      log('检查无障碍服务状态失败: $e');
-    }
-  }
-
-  void _openAccessibilitySettings() async {
-    try {
-      await _platform.invokeMethod<bool>('openAccessibilitySettings');
-    } catch (e) {
-      log('打开无障碍设置失败: $e');
-    }
-  }
-
-  // --- 音量键手势槽位配置（4 槽位 × 5 动作）---
-  /// 加载：新 key 优先，否则按旧配置推导（读取方：本页 4 行选择器；Kotlin 无障碍服务侧另有同规则 fallback）
-  Future<void> _loadVolumeGestureActions() async {
-    final prefs = await SharedPreferences.getInstance();
-    final actions = await loadVolumeGestureActions(prefs);
-    if (mounted) setState(() => _gestureActions = actions);
-  }
-
-  /// 保存：新 key 的唯一写入方（原生侧每次按键直接读落盘 prefs，无需 MethodChannel 通知）
-  Future<void> _saveGestureAction(String slot, String action) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(slot, action);
-    setState(() => _gestureActions[slot] = action);
-    print('🔧 [Settings] 手势动作 $slot=$action');
-  }
-
-  // --- 按音量减保持静音开关 ---
-  Future<void> _loadKeepMutedOnVolumeDown() async {
-    final prefs = await SharedPreferences.getInstance();
+    final enabled = await checkAccessibilityServiceEnabled();
     if (mounted) {
-      setState(() {
-        _keepMutedOnVolumeDownEnabled =
-            prefs.getBool('keep_muted_on_volume_down') ?? true;
-      });
+      setState(() => _isAccessibilityEnabled = enabled);
     }
   }
 
-  Future<void> _saveKeepMutedOnVolumeDown(bool enabled) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('keep_muted_on_volume_down', enabled);
-    if (!enabled) {
-      await prefs.setBool('mute_hint_enabled', false);
-    }
-    if (mounted) {
-      setState(() {
-        _keepMutedOnVolumeDownEnabled = enabled;
-      });
-    }
+  // --- 二级页跳转（zcode: 2026-09 下沉改造新增；await 返回后刷新对应入口行摘要）---
+
+  Future<void> _openRecognitionCorrection() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => RecognitionCorrectionPage(
+          processor: widget.processor,
+          dbHelper: widget.dbHelper,
+        ),
+      ),
+    );
+    _loadHotwordCount(); // 热词可能在二级页编辑保存
+    _loadCorrectionPairCount(); // 修正对可能在管理页有增删
+  }
+
+  Future<void> _openAIAppPage() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const AIAppPage()),
+    );
+    _loadAIAppPreference(); // 摘要跟随二级页的选择
+  }
+
+  Future<void> _openVolumeKeyPage() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const VolumeKeySettingsPage()),
+    );
+    _checkAccessibilityStatus(); // 可能刚引导用户去系统设置开启了服务，刷新状态点
+  }
+
+  Future<void> _openOverlayPage() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const OverlaySettingsPage()),
+    );
+    _loadOverlaySummary(); // 摘要跟随二级页的配置（停靠侧/自动隐藏）
   }
 
   // --- 应用版本号 ---
@@ -330,7 +322,7 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
       // 回退：使用 pubspec.yaml 中的硬编码版本号
       if (mounted) {
         setState(() {
-          _appVersion = '1.1.0'; // 来自 pubspec.yaml version: 1.1.0+21
+          _appVersion = '1.2.0'; // 来自 pubspec.yaml version: 1.2.0+23
         });
       }
     }
@@ -402,10 +394,7 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                   SnackBar(
                     content: Row(
                       children: [
-                        Icon(
-                          Icons.cleaning_services,
-                          color: ext.textOnPrimary,
-                        ),
+                        Icon(Icons.cleaning_services, color: ext.textOnPrimary),
                         SizedBox(width: 10),
                         Text("✅ 模型导入成功！已自动清理缓存"),
                       ],
@@ -495,6 +484,10 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
       final diaryCsv = _generateDiaryCsv(diaries);
       final readme = _generateReadme();
       final hotwordsContent = await widget.processor.getLocalContent();
+      // 错误-修正学习表：编码成「错误 = 修正」文本随备份走
+      final correctionsContent = CorrectionLearner.encodeCorrections(
+        await widget.dbHelper.getAllCorrectionPairs(),
+      );
 
       final appDocDir = await getApplicationDocumentsDirectory();
       final audioDirPath = p.join(appDocDir.path, 'diary_audio');
@@ -508,6 +501,7 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
         diaryCsv: diaryCsv,
         readme: readme,
         hotwordsContent: hotwordsContent,
+        correctionsContent: correctionsContent,
         audioDirPath: audioDirPath,
         validAudioNames: validAudioPaths,
       );
@@ -643,6 +637,7 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
 - diary.csv: 日记记录数据
 - audio/: 日记音频文件
 - user_hotwords.txt: 动态热词替换配置
+- correction_pairs.txt: 错误-修正学习表（识别纠错提示用）
 
 导入说明:
 请通过设置页的"导入全量备份"功能恢复此数据。
@@ -721,12 +716,16 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
 
       // 3. 解析diary.csv
       final diaries = _parseDiaryCsv(extracted.diaryCsv);
-      log('[备份导入][诊断] 步骤2-3完成 解析CSV: items=${items.length}, diaries=${diaries.length}');
+      log(
+        '[备份导入][诊断] 步骤2-3完成 解析CSV: items=${items.length}, diaries=${diaries.length}',
+      );
 
       // 5. 构建现有数据索引（用于去重）
       final existingItems = await widget.dbHelper.queryAll();
       final existingDiaries = await widget.dbHelper.queryAllDiaries();
-      log('[备份导入][诊断] 步骤5完成 查库: 现有items=${existingItems.length}, 现有diaries=${existingDiaries.length}');
+      log(
+        '[备份导入][诊断] 步骤5完成 查库: 现有items=${existingItems.length}, 现有diaries=${existingDiaries.length}',
+      );
 
       // 构建物品索引：格式 "name|location"
       final itemIndex = <String>{};
@@ -803,11 +802,30 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
         await widget.processor.saveContent(hotwordsContent);
         log('[备份导入] 热词已写入并生效');
         if (mounted) {
-          setState(() => _hotwordController.text = hotwordsContent);
+          // zcode: 2026-09 热词编辑框移入「识别与修正」二级页，导入备份后刷新入口行摘要条数
+          setState(() => _hotwordCount = countHotwordLines(hotwordsContent));
         }
         hotwordsRestored = true;
       } else {
         log('[备份导入] 备份中无 user_hotwords.txt，跳过热词恢复');
+      }
+
+      // 8.5 恢复错误-修正学习表（如备份中包含）——同样必须在 early return 之前。
+      // 语义是"合并"而非"覆盖"：与已有条目相同的自动 hit_count+1（学习计数延续），
+      // 老版本备份没有此文件时静默跳过
+      int correctionsRestored = 0;
+      final correctionsContent = extracted.corrections;
+      if (correctionsContent != null) {
+        final importedPairs = CorrectionLearner.parseCorrections(
+          correctionsContent,
+        );
+        if (importedPairs.isNotEmpty) {
+          await widget.dbHelper.learnCorrectionPairs(importedPairs);
+          correctionsRestored = importedPairs.length;
+        }
+        log('[备份导入] 恢复错误-修正对: $correctionsRestored 条');
+      } else {
+        log('[备份导入] 备份中无 correction_pairs.txt，跳过修正对恢复（老版本备份）');
       }
 
       // 9. 检查是否有新数据（热词已在上一步独立恢复，不受此 return 影响）
@@ -815,7 +833,13 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
         log('[备份导入] 无新数据 early return (hotwordsRestored=$hotwordsRestored)');
         if (mounted) {
           Navigator.pop(context); // 关闭加载对话框
-          final msg = hotwordsRestored ? "✅ 热词配置已恢复（无其他新数据）" : "⚠️ 备份文件中没有新数据";
+          final extras = <String>[
+            if (hotwordsRestored) '热词配置已恢复',
+            if (correctionsRestored > 0) '修正对已合并 $correctionsRestored 条',
+          ];
+          final msg = extras.isNotEmpty
+              ? "✅ ${extras.join('，')}（无其他新数据）"
+              : "⚠️ 备份文件中没有新数据";
           ScaffoldMessenger.of(
             context,
           ).showSnackBar(SnackBar(content: Text(msg)));
@@ -840,9 +864,13 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
         if (hotwordsRestored) {
           message += "，热词配置已恢复";
         }
+        if (correctionsRestored > 0) {
+          message += "，修正对合并 $correctionsRestored 条";
+        }
         log(
           '[备份导入] 完成: 新物品=${newItems.length}, 新日记=${newDiaries.length}, '
-          '新音频=$restoredAudioCount, 热词恢复=$hotwordsRestored',
+          '新音频=$restoredAudioCount, 热词恢复=$hotwordsRestored, '
+          '修正对合并=$correctionsRestored',
         );
         ScaffoldMessenger.of(
           context,
@@ -937,15 +965,14 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     final ext = AppThemeExtension.of(context);
+    // AI 应用入口行摘要用（选择列表在二级页，这里只显示当前选中项）
+    final aiApp = AIApp.findById(_selectedAIAppId ?? AIApp.defaultApp.id);
     return Scaffold(
       backgroundColor: ext.scaffoldBackground,
       appBar: AppBar(
         title: Text(
           "设置中心",
-          style: TextStyle(
-            color: ext.textPrimary,
-            fontWeight: FontWeight.bold,
-          ),
+          style: TextStyle(color: ext.textPrimary, fontWeight: FontWeight.bold),
         ),
         backgroundColor: Colors.transparent,
         elevation: 0,
@@ -985,7 +1012,6 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
           // const SizedBox(height: 24),
 
           // --- 数据库管理部分 ---
-          _buildSectionTitle("数据备份与还原"),
 
           // 数据备份（含物品、日记、音频）
           _buildCard(
@@ -1013,10 +1039,7 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                 const SizedBox(height: 4),
                 Text(
                   "包含物品、日记和所有音频文件",
-                  style: TextStyle(
-                    color: ext.textSecondary,
-                    fontSize: 12,
-                  ),
+                  style: TextStyle(color: ext.textSecondary, fontSize: 12),
                 ),
                 const SizedBox(height: 10),
                 Row(
@@ -1044,261 +1067,93 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
             ),
           ),
 
-          const SizedBox(height: 24),
+          const SizedBox(height: 12),
 
-          // --- 热词管理部分 ---
-          _buildSectionTitle("动态热词替换"),
-          _buildCard(
+          // zcode: 2026-09-17 重排（settings_reorder_preview.html 拍板）——悬浮窗挪到
+          // 音量键下面、电脑访问挪到顶部入口区末尾；外标题与卡内首行完全重复的五处
+          // （识别与修正/AI 应用分享/音量键/悬浮窗/电脑访问）去掉 SettingsSectionTitle，
+          // 连续卡片间距 24→12，组间距仍 24
+          // --- 识别与修正（原「动态热词替换」+「智能修正学习」合并下沉二级页，zcode: 2026-09）---
+          SettingsCard(
             padding: EdgeInsets.zero,
-            child: Column(
-              children: [
-                TextField(
-                  controller: _hotwordController,
-                  maxLines: 5,
-                  decoration: InputDecoration(
-                    filled: true,
-                    fillColor: ext.cardBackground,
-                    hintText: "错词 = 正词 (每行一个)",
-                    hintStyle: TextStyle(
-                      color: ext.textHint,
-                      fontSize: 13,
-                    ),
-                    contentPadding: const EdgeInsets.all(16),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(15),
-                      borderSide: BorderSide.none,
-                    ),
-                  ),
-                ),
-                const Divider(height: 1),
-                _buildMainBtn("保存并更新热词", Icons.save_rounded, () async {
-                  await widget.processor.saveContent(_hotwordController.text);
-                  if (mounted)
-                    ScaffoldMessenger.of(
-                      context,
-                    ).showSnackBar(const SnackBar(content: Text("✅ 热词已保存生效")));
-                }, roundedBottom: true),
-              ],
+            child: SettingsEntryRow(
+              icon: Icons.auto_fix_high_outlined,
+              title: '识别与修正',
+              subtitle: '热词 $_hotwordCount 条 · 修正对 $_correctionPairCount 条',
+              onTap: _openRecognitionCorrection,
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // --- AI 应用分享（单选列表下沉二级页，zcode: 2026-09）---
+          SettingsCard(
+            padding: EdgeInsets.zero,
+            child: SettingsEntryRow(
+              icon: Icons.smart_toy_outlined,
+              title: 'AI 应用分享',
+              subtitle: aiApp != null
+                  ? '分享跳转：${aiApp.icon} ${aiApp.name}'
+                  : '分享跳转：未设置',
+              onTap: _openAIAppPage,
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // --- 音量键快捷操作（下沉二级页，zcode: 2026-09；入口行保留无障碍状态点，
+          // resume 后本页自动重查——检测失败误报修复见 15826e9）---
+          SettingsCard(
+            padding: EdgeInsets.zero,
+            child: SettingsEntryRow(
+              icon: Icons.volume_up,
+              title: '音量键快捷操作',
+              titleSuffix: _buildA11yStatusDot(),
+              subtitle: _isAccessibilityEnabled == true
+                  ? '已开启 · 长按/双击音量键快速唤起录音、笔记或悬浮窗'
+                  : _isAccessibilityEnabled == null
+                  ? '检测失败 · 点击进入查看，回到本页自动重试'
+                  : '未开启 · 开启后长按或双击音量键即可快速唤起对应功能',
+              onTap: _openVolumeKeyPage,
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // --- 悬浮窗（配置全部下沉二级页，zcode: 2026-09；入口行显示停靠侧/自动隐藏摘要，
+          // 与 overlay engine 共读同一组 prefs key；2026-09-17 挪到音量键下面）---
+          SettingsCard(
+            padding: EdgeInsets.zero,
+            child: SettingsEntryRow(
+              icon: Icons.picture_in_picture_alt_outlined,
+              title: '悬浮窗',
+              titleSuffix: _isProActive ? null : const SettingsProBadge(),
+              subtitle:
+                  '${_overlaySideLeft ? "左缘" : "右缘"}停靠 · '
+                  '${_overlayAutoHideSeconds == OverlayConstants.autoHideNeverSeconds ? "常驻不隐藏" : "$_overlayAutoHideSeconds 秒后自动隐藏"}',
+              onTap: _openOverlayPage,
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // zcode: 2026-09-17 挪到顶部入口区末尾 + 去重复外标题（卡内已有「电脑访问服务」）
+          // --- 电脑访问区域（日记局域网 HTTP 服务）---
+          // 服务本体在 web_server/diary_web_server.dart（固定端口 9527），
+          // 生命周期由 DiaryServerController 编排：前台保活 + 冷启动自恢复；
+          // 状态单一数据源在 controller（main.dart 自恢复与本页开关共用）
+          _buildCard(
+            child: WebServerSettingsCard(
+              controller: DiaryServerController.instance,
             ),
           ),
           const SizedBox(height: 24),
 
-          // --- AI 应用选择部分 ---
-          _buildSectionTitle("AI 应用分享"),
-          _buildCard(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  "选择日记分享时跳转的 AI 应用",
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: ext.textHint,
-                  ),
-                ),
-                const SizedBox(height: 16),
-                // 单选列表
-                ...AIApp.allApps.map((app) {
-                  final isSelected = _selectedAIAppId == app.id;
-                  return InkWell(
-                    onTap: () => _saveAIAppPreference(app.id),
-                    borderRadius: BorderRadius.circular(12),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        vertical: 10,
-                        horizontal: 8,
-                      ),
-                      child: Row(
-                        children: [
-                          // 单选圆圈
-                          Container(
-                            width: 22,
-                            height: 22,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              border: Border.all(
-                                color: isSelected
-                                    ? ext
-                                          .primary
-                                    : ext.textHint,
-                                width: 2,
-                              ),
-                              color: isSelected
-                                  ? ext.primary
-                                  : ext.cardBackground,
-                            ),
-                            child: isSelected
-                                ? Icon(
-                                    Icons.check,
-                                    size: 16,
-                                    color: ext.textOnPrimary,
-                                  )
-                                : null,
-                          ),
-                          const SizedBox(width: 12),
-                          // 图标
-                          Text(app.icon, style: const TextStyle(fontSize: 24)),
-                          const SizedBox(width: 12),
-                          // 名称
-                          Expanded(
-                            child: Text(
-                              app.name,
-                              style: TextStyle(
-                                fontSize: 16,
-                                color: ext.textPrimary,
-                              ),
-                            ),
-                          ),
-                          // URL 提示
-                          Text(
-                            app.url
-                                .replaceAll('https://', '')
-                                .replaceAll('/', ''),
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: ext.textHint,
-                            ),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-                }).toList(),
-              ],
-            ),
-          ),
-          const SizedBox(height: 24),
-
-          // --- 音量键快捷操作部分 ---
-          _buildSectionTitle("音量键快捷操作"),
-          _buildCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(
-                      _isAccessibilityEnabled
-                          ? Icons.check_circle
-                          : Icons.cancel_outlined,
-                      color: _isAccessibilityEnabled
-                          ? ext
-                                .positiveText
-                          : ext.textHint,
-                      size: 20,
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      _isAccessibilityEnabled ? "已开启" : "未开启",
-                      style: TextStyle(
-                        color: _isAccessibilityEnabled
-                            ? ext
-                                  .positiveText
-                            : ext.textHint,
-                        fontWeight: FontWeight.w600,
-                        fontSize: 15,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  _isAccessibilityEnabled
-                      ? "在任意界面通过音量键手势快速唤起录音、笔记或悬浮窗"
-                      : "开启后，长按或双击音量键即可快速唤起对应功能",
-                  style: TextStyle(
-                    color: ext.textSecondary,
-                    fontSize: 13,
-                  ),
-                ),
-                // 4 手势槽位动作选择（仅在服务开启时显示）
-                if (_isAccessibilityEnabled) ...[
-                  const SizedBox(height: 12),
-                  _buildGestureSelectorRow(
-                    '长按音量加（约0.5秒）',
-                    VolumeGestureSlot.longPressUp,
-                  ),
-                  const SizedBox(height: 14),
-                  _buildGestureSelectorRow(
-                    '长按音量减（约0.5秒）',
-                    VolumeGestureSlot.longPressDown,
-                  ),
-                  const SizedBox(height: 14),
-                  _buildGestureSelectorRow(
-                    '双击音量加（0.3秒内）',
-                    VolumeGestureSlot.doubleClickUp,
-                  ),
-                  const SizedBox(height: 14),
-                  _buildGestureSelectorRow(
-                    '双击音量减（0.3秒内）',
-                    VolumeGestureSlot.doubleClickDown,
-                  ),
-                  SwitchListTile(
-                    title: const Text(
-                      '按音量减保持静音',
-                      style: TextStyle(fontSize: 13),
-                    ),
-                    subtitle: Text(
-                      '快捷录音/悬浮窗录音期间按音量减键，录音结束后继续保持静音',
-                      style: TextStyle(fontSize: 11, color: ext.textHint),
-                    ),
-                    value: _keepMutedOnVolumeDownEnabled,
-                    onChanged: (val) => _saveKeepMutedOnVolumeDown(val),
-                    dense: true,
-                    contentPadding: EdgeInsets.zero,
-                    controlAffinity: ListTileControlAffinity.leading,
-                  ),
-                  const SizedBox(height: 8),
-                  FutureBuilder<bool>(
-                    future: SharedPreferences.getInstance().then(
-                      (prefs) => prefs.getBool('mute_hint_enabled') ?? true,
-                    ),
-                    builder: (context, snapshot) {
-                      return SwitchListTile(
-                        title: const Text('静音提示'),
-                        subtitle: const Text('快速录音静音时显示提示文案'),
-                        value: snapshot.data ?? true,
-                        onChanged: _keepMutedOnVolumeDownEnabled
-                            ? (value) async {
-                                final prefs =
-                                    await SharedPreferences.getInstance();
-                                await prefs.setBool('mute_hint_enabled', value);
-                                // 触发重建以更新UI
-                                setState(() {});
-                              }
-                            : null,
-                      );
-                    },
-                  ),
-                ],
-                const SizedBox(height: 12),
-                _buildMainBtn(
-                  _isAccessibilityEnabled ? "已开启，前往系统设置" : "前往系统设置开启",
-                  _isAccessibilityEnabled ? Icons.settings : Icons.launch,
-                  _openAccessibilitySettings,
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  "提示：在无障碍设置中找到「声物记」并开启服务",
-                  style: TextStyle(
-                    color: ext.textSecondary,
-                    fontSize: 11,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 24),
-
-          // --- 日记智能识别区域 ---
-          // 控制日记页两个智能识别功能的开关，prefs key 与 DiaryTab._loadSmartSwitches 一致
-          _buildSectionTitle("日记智能识别"),
+          // --- 日记智能与交互区域 ---
+          // 日记页行为设置集中一卡：物品/位置智能识别开关 + 卡片单击长按交互交换，
+          // prefs key 与 DiaryTab._loadSmartSwitches 一致
+          _buildSectionTitle("日记智能与交互"),
           _buildCard(
             child: Column(
               children: [
-                SwitchListTile(
+                buildSettingsSwitchTile(
+                  context,
                   title: const Text('日记智能识别物品', style: TextStyle(fontSize: 13)),
                   subtitle: Text(
                     '识别"物品+位置"语句并显示转存按钮',
@@ -1310,11 +1165,9 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                     final prefs = await SharedPreferences.getInstance();
                     await prefs.setBool('diary_item_transfer_enabled', v);
                   },
-                  dense: true,
-                  contentPadding: EdgeInsets.zero,
-                  controlAffinity: ListTileControlAffinity.leading,
                 ),
-                SwitchListTile(
+                buildSettingsSwitchTile(
+                  context,
                   title: const Text(
                     '日记智能查询物品位置',
                     style: TextStyle(fontSize: 13),
@@ -1329,22 +1182,10 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                     final prefs = await SharedPreferences.getInstance();
                     await prefs.setBool('diary_query_answer_enabled', v);
                   },
-                  dense: true,
-                  contentPadding: EdgeInsets.zero,
-                  controlAffinity: ListTileControlAffinity.leading,
                 ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 24),
-
-          // --- 日记交互区域 ---
-          // 日记卡片单击/长按交互交换开关，prefs key 与 DiaryTab._loadSmartSwitches 一致
-          _buildSectionTitle("日记卡片交互习惯"),
-          _buildCard(
-            child: Column(
-              children: [
-                SwitchListTile(
+                const Divider(height: 1),
+                buildSettingsSwitchTile(
+                  context,
                   title: const Text('交换单击与长按', style: TextStyle(fontSize: 13)),
                   subtitle: Text(
                     '开启后：单击=编辑、长按=复制（默认：单击=复制、长按=编辑）。修改后需重启 App 生效',
@@ -1356,13 +1197,11 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                     final prefs = await SharedPreferences.getInstance();
                     await prefs.setBool('diary_card_swap_tap_longpress', v);
                   },
-                  dense: true,
-                  contentPadding: EdgeInsets.zero,
-                  controlAffinity: ListTileControlAffinity.leading,
                 ),
               ],
             ),
           ),
+          const SizedBox(height: 24),
 
           // 启动耗时诊断区域：暂时隐藏，恢复时把 _kShowStartupDiagnostics 改为 true
           if (_kShowStartupDiagnostics) ...[
@@ -1404,6 +1243,66 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
             const SizedBox(height: 24),
           ],
 
+          // --- 功能页面区域：主界面 Tab 显隐开关 ---
+          // 读取方：main.dart main() 预读同一组 key，MainScaffold 按
+          // visibleTabStack 装配 IndexedStack/底部导航；重启生效
+          _buildSectionTitle("功能页面"),
+          _buildCard(
+            child: Column(
+              children: [
+                buildSettingsSwitchTile(
+                  context,
+                  title: const Text('隐藏存物品页', style: TextStyle(fontSize: 13)),
+                  subtitle: Text(
+                    '隐藏语音录入物品页，搬家模式一并隐藏。重启 App 后生效',
+                    style: TextStyle(fontSize: 11, color: ext.textHint),
+                  ),
+                  value: _recordTabHidden,
+                  onChanged: (v) async {
+                    setState(() => _recordTabHidden = v);
+                    await _saveTabVisibility(
+                      recordHidden: v,
+                      listHidden: _listTabHidden,
+                    );
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('已保存，重启 App 后生效'),
+                          duration: Duration(seconds: 2),
+                        ),
+                      );
+                    }
+                  },
+                ),
+                buildSettingsSwitchTile(
+                  context,
+                  title: const Text('隐藏查物品页', style: TextStyle(fontSize: 13)),
+                  subtitle: Text(
+                    '隐藏物品位置列表页，重启 App 后生效',
+                    style: TextStyle(fontSize: 11, color: ext.textHint),
+                  ),
+                  value: _listTabHidden,
+                  onChanged: (v) async {
+                    setState(() => _listTabHidden = v);
+                    await _saveTabVisibility(
+                      recordHidden: _recordTabHidden,
+                      listHidden: v,
+                    );
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('已保存，重启 App 后生效'),
+                          duration: Duration(seconds: 2),
+                        ),
+                      );
+                    }
+                  },
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 24),
+
           // --- 外观区域（Phase 3 主题选择 + Phase 4 图标包入口）---
           _buildSectionTitle("外观"),
           _buildCard(
@@ -1414,52 +1313,6 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                 _buildIconPackEntry(), // Phase 4 新增
                 const Divider(height: 1),
                 _buildFontSizeEntry(), // 字号缩放
-              ],
-            ),
-          ),
-          const SizedBox(height: 24),
-
-          // --- 悬浮窗区域（闪念胶囊）---
-          _buildSectionTitle("悬浮窗"),
-          _buildCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(
-                      Icons.picture_in_picture_alt_outlined,
-                      color: ext.primary,
-                      size: 18,
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      "屏幕边缘随手记面板",
-                      style: TextStyle(color: ext.textSecondary, fontSize: 13),
-                    ),
-                    if (!_isProUnlocked) ...[
-                      const SizedBox(width: 6),
-                      _buildProBadge(),
-                    ],
-                  ],
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  '通过音量键手势召唤悬浮窗（见上方音量键快捷操作）',
-                  style: TextStyle(fontSize: 12, color: ext.textHint),
-                ),
-                const SizedBox(height: 10),
-                const Divider(height: 1),
-                // 收起后自动隐藏时长选择（读取方：overlay engine 的 _scheduleAutoHide）
-                Padding(
-                  padding: const EdgeInsets.only(left: 4, top: 10, bottom: 6),
-                  child: Text(
-                    '收起后自动隐藏',
-                    style: TextStyle(fontSize: 13, color: ext.textSecondary),
-                  ),
-                ),
-                _buildAutoHideSelector(),
-                const SizedBox(height: 10),
               ],
             ),
           ),
@@ -1489,8 +1342,8 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
                 SizedBox(
                   width: double.infinity,
                   child: _buildSecondaryBtn(
-                    _isProUnlocked ? "Pro 已解锁 ✓" : "付费解锁 Pro 功能",
-                    _isProUnlocked
+                    _isProActive ? "Pro 已解锁 ✓" : "付费解锁 Pro 功能",
+                    _isProActive
                         ? Icons.lock_open_outlined
                         : Icons.lock_outline,
                     _showProUnlockDialog,
@@ -1502,253 +1355,22 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
           ),
           const SizedBox(height: 24),
 
-          // --- 关于区域 ---
+          // --- 关于（更新日志 / 导出运行日志 / 开源许可下沉二级页，zcode: 2026-09）---
           const Divider(thickness: 1, height: 32),
           const SizedBox(height: 8),
-          _buildSectionTitle("关于"),
-          _buildCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // 应用名称和版本号
-                Row(
-                  children: [
-                    Icon(
-                      Icons.info_outline,
-                      color: ext.primary,
-                      size: 20,
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        "声物记",
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: ext.textPrimary,
-                        ),
-                      ),
-                    ),
-                    Text(
-                      _appVersion.isNotEmpty ? "v$_appVersion" : "",
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: ext.textSecondary,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  "完全离线 · 无需联网",
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: ext.textSecondary,
-                  ),
-                ),
-                const SizedBox(height: 16),
-
-                // 更新日志（可展开）
-                ExpansionTile(
-                  tilePadding: EdgeInsets.zero,
-                  childrenPadding: const EdgeInsets.only(top: 8),
-                  dense: true,
-                  title: Row(
-                    children: [
-                      Icon(
-                        Icons.history,
-                        color: ext.textSecondary,
-                        size: 18,
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        "更新日志",
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                          color: ext.textPrimary,
-                        ),
-                      ),
-                    ],
-                  ),
-                  children: [
-                    _buildChangelogItem(
-                      version: "v1.1.0",
-                      date: "2026-09-06",
-                      changes: [
-                        "全新悬浮窗（闪念胶囊）：把闪念胶囊 1:1 搬进系统级悬浮窗，任意界面长按音量键即呼出——不用跳转 app、不打断当前操作，说完即走，收起后自动隐藏（Pro 功能）",
-                        "悬浮窗语音定闹钟：点卡片闹钟按钮说「周六晚上八点提醒我去看电影」，自动识别时间，转轮确认后写入系统日历，到点响铃；「晚上八点」「两点半」等中文说法随口说也能识别",
-                        "音量键唤醒悬浮窗：长按音量键唤出并自动展开最近笔记，显示中再按立即隐藏；音量键手势升级为长按 / 双击四槽位自定义",
-                        "悬浮窗快速新建：面板顶部「+」一键新建笔记，自动弹起键盘进入编辑；点卡片展开全文直接编辑",
-                        "悬浮窗卡片标注：紧急 / 收藏 / 灵感三种标注整卡换色，主 App 日记页同步显示色点",
-                        "悬浮窗录音回放：语音速记卡片自带播放按钮，支持重放 / 暂停 / 继续",
-                        "悬浮窗录音也支持临时静音：与快捷录音共用「按音量减保持静音」开关，录音期间按音量减，结束后继续保持静音",
-                        "日历提醒确认更省心：时间可上下滑动微调、标题所见即所得，响铃开关可只建日历事件；缺权限时自动引导回主 App 授权，无通知权限自动改为仅日历提醒",
-                        "悬浮窗语音速记录音上限 60 秒 → 5 分钟；悬浮窗记录与主 App 日记实时同步",
-                        "语音转文字不再卡顿：转写挪到后台进行，转写期间刷列表、打字依旧流畅",
-                        "备份导出 / 导入更稳更快：打包在后台完成不卡顿，等待期间 app 可正常使用，也修复了备份导入导出会报错的问题",
-                        "Pro 解锁更贴心：扫码付款回来后点「已扫码，点击解锁」即可，不用再走付费入口",
-                        "搬家模式语音播报更顺滑：播报在后台生成，边收边说不卡顿",
-                        "闹钟到点即时提醒：响铃提示立即弹出，不再有可感知的等待",
-                        "一批顺滑度优化：日记搜索更跟手、悬浮窗收展更流畅、拖动录音按钮更跟手，整体更省电",
-                      ],
-                    ),
-                    _buildChangelogItem(
-                      version: "v1.0.17",
-                      date: "2026-08-18",
-                      changes: [
-                        "日记页录音按钮支持上滑-快速新建文本笔记",
-                        "设置页将『静音提示』开关与『按音量减保持静音』开关整合在一起",
-                        "临时静音保持功能-新增开关",
-                        "隐藏日记卡片底部未实现的爱心图标，等待后续功能完善",
-                      ],
-                    ),
-                    _buildChangelogItem(
-                      version: "v1.0.16",
-                      date: "2026-08-12",
-                      changes: [
-                        "随手记 / 日记归档后可一键恢复（新增恢复入口）",
-                        "日记卡片「单击 / 长按」交互支持自定义交换",
-                        "接收系统分享：从其他 App 选文字分享到声物记，存为笔记",
-                        "热词配置纳入全量备份 / 恢复",
-                      ],
-                    ),
-                    _buildChangelogItem(
-                      version: "v1.0.15",
-                      date: "2026-08-07",
-                      changes: [
-                        "日记卡片改版：日期/时长移至顶部，补全年份与时分格式",
-                        "播放按钮升级为带响度波纹的可拖动进度条（拖动跳转/暂停继续）",
-                        "转写中按钮区禁用态；修复进度条游标『先走再跳回』与暂停后续播虚高",
-                        "搬家模式智能分割失败提示改为可左滑消除的自绘提示条（含手动保存按钮）",
-                      ],
-                    ),
-                    _buildChangelogItem(
-                      version: "v1.0.14",
-                      date: "2026-08",
-                      changes: [
-                        "主题系统改版（4 套皮肤预设 + Android 桌面图标包切换，Pro 功能）",
-                        "搬家模式增强（语音播报 + 说『不对/撤销』语音撤销 + 屏幕常亮省电遮罩）",
-                        "录音防丢失（先落盘再转写，失败可重新转写）",
-                        "长录音自动分段，说太久也不丢内容",
-                        "待办清单需以『代办/待办』开头才识别，正常说话不会误判",
-                        "锁屏隐私保护与音量键键盘修复",
-                        "物品列表浮动语音查询按钮",
-                        "Pro 弹窗接入真实付款码",
-                        "录入/日记页按钮钉底便于单手操作",
-                        "修复窄屏卡片底部信息栏溢出",
-                        "补齐霞鹜文楷字体 OFL 开源协议",
-                      ],
-                    ),
-                    _buildChangelogItem(
-                      version: "v1.0.13",
-                      date: "2026-06",
-                      changes: [
-                        "日记一键转物品（浅橙横条转存按钮）",
-                        "设置页新增 Pro 付费解锁弹窗（支持作者）",
-                        "录音按钮样式统一",
-                        "修复双击音量键键盘抖动",
-                      ],
-                    ),
-                    _buildChangelogItem(
-                      version: "v1.0.12",
-                      date: "2026-06",
-                      changes: [
-                        "日记页语音查找物品：说\"游戏机在哪儿\"自动在卡片下方展示物品位置答案，多匹配显示+N 跳转列表",
-                      ],
-                    ),
-                    _buildChangelogItem(
-                      version: "v1.0.11",
-                      date: "2026-06",
-                      changes: ["日记页首次启动内置 7 条功能说明卡片"],
-                    ),
-                    _buildChangelogItem(
-                      version: "v1.0.10",
-                      date: "2026-06",
-                      changes: ["应用改名「东西放哪儿了→声物记」，包名更新为 com.shengwuji.app"],
-                    ),
-                    _buildChangelogItem(
-                      version: "v1.0.9",
-                      date: "2026-06",
-                      changes: ["清单合并到日记表(v8)、侧滑圆圈闭合动画、闹钟到点循环响铃、时间识别蓝色高亮设闹钟"],
-                    ),
-                    _buildChangelogItem(
-                      version: "v1.0.8",
-                      date: "2026-06",
-                      changes: ["清单功能迁移到日记页，新增子弹列表展示"],
-                    ),
-                    _buildChangelogItem(
-                      version: "v1.0.7",
-                      date: "2026-06",
-                      changes: ["设置页新增版本更新日志、启动页权限说明、录音按钮调优"],
-                    ),
-                    _buildChangelogItem(
-                      version: "v1.0.6",
-                      date: "2026-06",
-                      changes: ["震感改为原生 VibrationEffect API 驱动线性马达"],
-                    ),
-                    _buildChangelogItem(
-                      version: "v1.0.5",
-                      date: "2026-06",
-                      changes: ["日记页震感替换为系统 HapticFeedback"],
-                    ),
-                    _buildChangelogItem(
-                      version: "v1.0.4",
-                      date: "2026-06",
-                      changes: ["启动页去掉模型加载，恢复延迟加载模式"],
-                    ),
-                    _buildChangelogItem(
-                      version: "v1.0.3",
-                      date: "2026-06",
-                      changes: ["修复快捷方式进入时录音卡死不转写的问题"],
-                    ),
-                    _buildChangelogItem(
-                      version: "v1.0.2",
-                      date: "2026-05",
-                      changes: ["归档系统、侧滑归档/删除"],
-                    ),
-                    _buildChangelogItem(
-                      version: "v1.0.1",
-                      date: "2026-05",
-                      changes: ["日记导出为 Markdown"],
-                    ),
-                    _buildChangelogItem(
-                      version: "v1.0.0",
-                      date: "2026-05",
-                      changes: ["初始版本，支持离线语音识别"],
-                      isLast: true,
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                _buildTextBtn(
-                  '导出运行日志',
-                  Icons.bug_report,
-                  _exportLog,
-                  busy: _isExportingLog,
-                ),
-                const SizedBox(height: 8),
-                _buildTextBtn(
-                  '开放源代码许可',
-                  Icons.description,
-                  () => showLicensePage(
-                    context: context,
-                    applicationName: '声物记',
-                    applicationVersion: _appVersion.isNotEmpty
-                        ? 'v$_appVersion'
-                        : null,
-                    applicationLegalese: '© 2026 声物记',
-                    applicationIcon: Padding(
-                      padding: const EdgeInsets.all(10),
-                      child: Image.asset(
-                        'assets/icon/app_icon.png',
-                        width: 48,
-                        height: 48,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
+          const SettingsSectionTitle("关于"),
+          SettingsCard(
+            padding: EdgeInsets.zero,
+            child: SettingsEntryRow(
+              icon: Icons.info_outline,
+              title: '声物记',
+              subtitle: _appVersion.isNotEmpty
+                  ? 'v$_appVersion · 完全离线 · 无需联网'
+                  : '完全离线 · 无需联网',
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const AboutPage()),
+              ),
             ),
           ),
           const SizedBox(height: 40),
@@ -1757,150 +1379,31 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
     );
   }
 
-  // --- 音量键手势槽位动作选择器行（标题 Text + 6 间距 + Wrap ChoiceChip）---
-  Widget _buildGestureSelectorRow(String title, String slot) {
-    final ext = AppThemeExtension.of(context);
-    final options = [
-      (VolumeGestureAction.none, '无动作', Icons.block),
-      (VolumeGestureAction.showOverlay, '显示悬浮窗', Icons.picture_in_picture_alt),
-      (VolumeGestureAction.overlayRecord, '悬浮窗录音', Icons.mic),
-      (VolumeGestureAction.quickRecord, 'APP内录音', Icons.fiber_manual_record),
-      (VolumeGestureAction.quickTextNote, 'APP内笔记', Icons.edit_note),
-      (VolumeGestureAction.overlayNewNote, '悬浮窗笔记', Icons.note_add_outlined),
-    ];
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          title,
-          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
-        ),
-        const SizedBox(height: 6),
-        Wrap(
-          spacing: 8,
-          runSpacing: 6,
-          children: options.map((opt) {
-            final (action, label, icon) = opt;
-            final selected =
-                (_gestureActions[slot] ?? VolumeGestureAction.none) == action;
-            // 悬浮窗系动作未解锁时展示 Pro 徽章（门禁在 onSelected 拦截，不写 prefs）
-            final isOverlayAction =
-                action == VolumeGestureAction.showOverlay ||
-                action == VolumeGestureAction.overlayRecord ||
-                action == VolumeGestureAction.overlayNewNote;
-            return ChoiceChip(
-              // ⚠️ ChoiceChip 的 avatar 槽位固定 24×24（M3 Container 定宽高居中），
-              // 塞 Row 会溢出压到 label（防再犯：徽章必须放 label 侧）
-              avatar: Icon(
-                icon,
-                size: 16,
-                color: selected ? ext.textOnPrimary : ext.primary,
-              ),
-              label: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(label),
-                  if (isOverlayAction && !_isProUnlocked) ...[
-                    const SizedBox(width: 4),
-                    _buildProBadge(),
-                  ],
-                ],
-              ),
-              selected: selected,
-              selectedColor: ext.primary,
-              labelStyle: TextStyle(
-                color: selected
-                    ? ext.textOnPrimary
-                    : ext.textPrimary,
-                fontSize: 13,
-              ),
-              onSelected: (_) {
-                if (isOverlayAction && !_ensureOverlayPro()) return;
-                _saveGestureAction(slot, action);
-              },
-            );
-          }).toList(),
-        ),
-      ],
-    );
-  }
 
-  // --- 悬浮窗收起后自动隐藏时长选择器（仿 _buildVolumeKeySelector 配色）---
-  Widget _buildAutoHideSelector() {
+  // --- 音量键入口行无障碍状态点（绿=已开启 / 灰=未开启或检测失败；详情在二级页）---
+  Widget _buildA11yStatusDot() {
     final ext = AppThemeExtension.of(context);
-    // 「永久」写哨兵值 autoHideNeverSeconds（-1）进同一 prefs key，overlay
-    // engine 读到即不起隐藏计时（收起态把手常驻）
-    final options = [
-      (5, '5 秒', Icons.timer_outlined),
-      (10, '10 秒', Icons.timer_outlined),
-      (30, '30 秒', Icons.timer_outlined),
-      (OverlayConstants.autoHideNeverSeconds, '永久', Icons.all_inclusive),
-    ];
-    return Wrap(
-      spacing: 8,
-      runSpacing: 6,
-      children: options.map((opt) {
-        final (seconds, label, icon) = opt;
-        final selected = _autoHideSeconds == seconds;
-        return ChoiceChip(
-          avatar: Icon(
-            icon,
-            size: 16,
-            color: selected ? ext.textOnPrimary : ext.primary,
-          ),
-          label: Text(label),
-          selected: selected,
-          selectedColor: ext.primary,
-          labelStyle: TextStyle(
-            color: selected ? ext.textOnPrimary : ext.textPrimary,
-            fontSize: 13,
-          ),
-          onSelected: (_) {
-            // 自动隐藏时长属于悬浮窗配置，未解锁 Pro 时门禁（不写 prefs）
-            if (!_ensureOverlayPro()) return;
-            _saveOverlayAutoHide(seconds);
-          },
-        );
-      }).toList(),
-    );
-  }
-
-  // --- UI 构建辅助方法 ---
-
-  Widget _buildSectionTitle(String title) {
-    final ext = AppThemeExtension.of(context);
-    return Padding(
-      padding: const EdgeInsets.only(left: 4, bottom: 10),
-      child: Text(
-        title,
-        style: TextStyle(
-          fontSize: 15,
-          fontWeight: FontWeight.bold,
-          color: ext.textSecondary,
-        ),
+    return Container(
+      width: 10,
+      height: 10,
+      decoration: BoxDecoration(
+        color: _isAccessibilityEnabled == true
+            ? ext.positiveText
+            : ext.textHint,
+        shape: BoxShape.circle,
       ),
     );
+  }
+
+  // --- UI 构建辅助方法（zcode: 2026-09 起委托 lib/settings/settings_widgets.dart
+  // 共享组件——主页与二级页视觉单一来源，避免下沉后两处样式漂移）---
+
+  Widget _buildSectionTitle(String title) {
+    return SettingsSectionTitle(title);
   }
 
   Widget _buildCard({required Widget child, EdgeInsetsGeometry? padding}) {
-    final ext = AppThemeExtension.of(context);
-    return Container(
-      decoration: BoxDecoration(
-        color: ext.cardBackground,
-        borderRadius: BorderRadius.circular(15),
-        boxShadow: [
-          BoxShadow(
-            color: ext.textPrimary.withValues(
-              alpha: 0.03,
-            ),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      padding: padding ?? const EdgeInsets.all(16),
-      child: child,
-    );
+    return SettingsCard(child: child, padding: padding);
   }
 
   // ==================== Phase 3：主题选择 ====================
@@ -2017,16 +1520,35 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
       onTap: () => _onThemeTap(theme),
       child: Container(
         padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: previewExt.scaffoldBackground,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-            color: isCurrent
-                ? previewExt.primary
-                : currentExt.textHint.withValues(alpha: 0.2),
-            width: isCurrent ? 2 : 1,
-          ),
-        ),
+        // 拟物主题预览卡用自己的色槽画双向凸起阴影（不能走 neuRaisedDecoration——
+        // 那取的是"当前主题"的阴影槽，在旧主题下打开选择器会拿占位色）
+        decoration: previewExt.isNeumorphic
+            ? BoxDecoration(
+                color: previewExt.scaffoldBackground,
+                borderRadius: BorderRadius.circular(14),
+                boxShadow: [
+                  BoxShadow(
+                    color: previewExt.neuShadowDark,
+                    offset: const Offset(3, 3),
+                    blurRadius: 6,
+                  ),
+                  BoxShadow(
+                    color: previewExt.neuShadowLight,
+                    offset: const Offset(-3, -3),
+                    blurRadius: 6,
+                  ),
+                ],
+              )
+            : BoxDecoration(
+                color: previewExt.scaffoldBackground,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                  color: isCurrent
+                      ? previewExt.primary
+                      : currentExt.textHint.withValues(alpha: 0.2),
+                  width: isCurrent ? 2 : 1,
+                ),
+              ),
         child: Stack(
           children: [
             // 内容：主题名（顶）+ 4 色点（底）
@@ -2116,15 +1638,16 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
   /// 主题点击逻辑：Pro 门禁 + 写 prefs + 切 notifier
   ///
   /// 流程：
-  /// 1. Pro 门禁：未解锁点击 Pro 主题 → 关闭主题弹窗 → 调 [_showProUnlockDialog]
+  /// 1. Pro 门禁：Pro 主题不可用 → 弹 ProUnlockDialog（试用/输码成功返回 true
+  ///    继续应用主题；弹窗盖在主题选择 sheet 之上，不再强关 sheet，未解锁时
+  ///    用户可留在选择器改选免费主题）
   /// 2. 正常切换：写 SharedPreferences('selected_theme') → 更新 [AppRoot.themeNotifier]
   ///    → 关闭弹窗 → SnackBar 提示
   Future<void> _onThemeTap(AppThemeDefinition theme) async {
-    // Pro 门禁：未解锁点击 Pro 主题 → 关闭主题弹窗 + 调 ProUnlockDialog
-    if (theme.isPro && !_isProUnlocked) {
-      if (mounted) Navigator.of(context).pop();
-      _showProUnlockDialog(); // 原方法签名为 void async，不 await（内部自管 mounted）
-      return;
+    // Pro 门禁：不可用时弹解锁引导（内部含 7 天试用 / 授权码输入出口）
+    if (theme.isPro) {
+      final active = await ProGate.tryAccess(context);
+      if (!active) return;
     }
 
     // 写入 prefs + 更新 notifier（触发整树重建）
@@ -2205,65 +1728,80 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
     );
   }
 
-  /// 字号缩放入口（标题行仿 _buildThemeEntry 视觉 + 下方内嵌 ChoiceChip 选择器）
+  /// 字号缩放入口（两行：标题行 + 档位 chips 行）
   ///
-  /// 只有 4 个档位，不值得开弹窗，直接内嵌在卡片里（参照悬浮窗卡片的自动隐藏选择器）。
+  /// 曾试过标题与 chips 挤同行的单行方案：App 内「特大」档 1.3 倍整树缩放
+  /// （再叠加系统字体放大）会把行宽撑爆，「特大」chip 溢出卡片边——真机两轮
+  /// 截图确诊，2026-09 用户拍板换行展示。相对最初版本仍保留瘦身：chips 无
+  /// 重复 format_size 图标、无选中勾（showCheckmark）、档位名「标准→中」、
+  /// labelPadding 收窄 8；选中态由 chip 实心底色表达，不再需要「当前档位」副标题。
   Widget _buildFontSizeEntry() {
     final ext = AppThemeExtension.of(context);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-          child: Row(
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             children: [
               Icon(Icons.format_size, color: ext.primary, size: 22),
               const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '字号',
-                      style: TextStyle(fontSize: 15, color: ext.textPrimary),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      _fontScaleLabel(_fontScale),
-                      style: TextStyle(fontSize: 12, color: ext.textSecondary),
-                    ),
-                  ],
-                ),
-              ),
+              Text('字号', style: TextStyle(fontSize: 15, color: ext.textPrimary)),
             ],
           ),
-        ),
-        // 档位选择器（与标题行左图标文字对齐：16 边距 + 22 图标 + 14 间距）
-        Padding(
-          padding: const EdgeInsets.only(left: 52, right: 16, bottom: 14),
-          child: _buildFontSizeSelector(),
-        ),
-      ],
+          const SizedBox(height: 10),
+          _buildFontSizeSelector(),
+        ],
+      ),
     );
   }
 
-  /// 字号缩放档位选择器（仿 _buildAutoHideSelector 配色）
+  /// 字号缩放档位选择器（无图标 chips 行；仿 _buildAutoHideSelector 配色。
+  /// 瘦身三件套与单行失败的教训详见 _buildFontSizeEntry 注释）
   Widget _buildFontSizeSelector() {
     final ext = AppThemeExtension.of(context);
-    final options = [(0.85, '小'), (1.0, '标准'), (1.15, '大'), (1.3, '特大')];
+    final options = [(0.85, '小'), (1.0, '中'), (1.15, '大'), (1.3, '特大')];
     return Wrap(
       spacing: 8,
       runSpacing: 6,
       children: options.map((opt) {
         final (scale, label) = opt;
         final selected = _fontScale == scale;
+        // 拟物主题：选中=凹陷+品牌青字、未选=凸起（预览拍板样式，2026-09-18
+        // 真机反馈字号 chip 没有 M3 ChoiceChip 之外的拟物形态）；其余主题保持 ChoiceChip
+        if (ext.isNeumorphic) {
+          // 选中=NeuInset 凹陷（双轴渐变晕影，与开关/输入框同款）+品牌青字、
+          // 未选=凸起；凹凸跨结构无法隐式插值，即时切换（2026-09-19 统一）
+          final labelStyle = TextStyle(
+            fontSize: 13,
+            fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+            color: selected ? ext.primaryDark : ext.textPrimary,
+          );
+          return GestureDetector(
+            onTap: () => _saveFontScale(scale),
+            child: selected
+                ? NeuInset(
+                    radius: 999,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
+                    child: Text(label, style: labelStyle),
+                  )
+                : Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
+                    decoration: neuRaisedDecoration(context, radius: 999),
+                    child: Text(label, style: labelStyle),
+                  ),
+          );
+        }
         return ChoiceChip(
-          avatar: Icon(
-            Icons.format_size,
-            size: 16,
-            color: selected ? ext.textOnPrimary : ext.primary,
-          ),
           label: Text(label),
+          labelPadding: const EdgeInsets.symmetric(horizontal: 8),
+          showCheckmark: false,
           selected: selected,
           selectedColor: ext.primary,
           labelStyle: TextStyle(
@@ -2274,20 +1812,6 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
         );
       }).toList(),
     );
-  }
-
-  /// 档位数值 → 展示名（标题行副标题用）
-  String _fontScaleLabel(double scale) {
-    switch (scale) {
-      case 0.85:
-        return '小';
-      case 1.15:
-        return '大';
-      case 1.3:
-        return '特大';
-      default:
-        return '标准';
-    }
   }
 
   /// 图标包选择弹窗（BottomSheet，2×2 网格，仿 _showThemePicker）
@@ -2461,7 +1985,8 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
   ///
   /// 流程：
   /// 1. 当前已选中的，点一下不做事
-  /// 2. Pro 门禁：未解锁点击 Pro 图标包 → 关闭弹窗 → 调 _showProUnlockDialog
+  /// 2. Pro 门禁：Pro 图标包不可用 → 弹 ProUnlockDialog（试用/输码成功返回 true
+  ///    继续切换；弹窗盖在选择弹窗之上，不强关）
   /// 3. 正常切换：写 prefs('selected_icon_pack') → 调 IconPackSwitcher.switchTo
   ///    → 显示"正在切换..." → 延迟 3 秒关闭弹窗（进程可能已被系统杀死）
   Future<void> _onIconPackTap(IconPack pack) async {
@@ -2471,12 +1996,10 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
       return;
     }
 
-    // Pro 门禁：未解锁点击 Pro 图标包 → 关闭弹窗 + 调 ProUnlockDialog
-    // 注：_showProUnlockDialog 原方法签名为 void async，不 await（内部自管 mounted）
-    if (pack.isPro && !_isProUnlocked) {
-      if (mounted) Navigator.of(context).pop();
-      _showProUnlockDialog();
-      return;
+    // Pro 门禁：不可用时弹解锁引导（内部含 7 天试用 / 授权码输入出口）
+    if (pack.isPro) {
+      final active = await ProGate.tryAccess(context);
+      if (!active) return;
     }
 
     // 写 prefs（仅用于 UI 显示当前选中，真正的状态源是系统 ComponentEnabledSetting）
@@ -2528,34 +2051,6 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
     }
   }
 
-  Widget _buildMainBtn(
-    String label,
-    IconData icon,
-    VoidCallback onPressed, {
-    bool roundedBottom = false,
-  }) {
-    final ext = AppThemeExtension.of(context);
-    return SizedBox(
-      width: double.infinity,
-      height: 50,
-      child: ElevatedButton.icon(
-        onPressed: onPressed,
-        icon: Icon(icon, size: 20),
-        label: Text(label, style: const TextStyle(fontWeight: FontWeight.bold)),
-        style: ElevatedButton.styleFrom(
-          backgroundColor: ext.primary,
-          foregroundColor: ext.textOnPrimary,
-          elevation: 0,
-          shape: RoundedRectangleBorder(
-            borderRadius: roundedBottom
-                ? const BorderRadius.vertical(bottom: Radius.circular(15))
-                : BorderRadius.circular(10),
-          ),
-        ),
-      ),
-    );
-  }
-
   Widget _buildSecondaryBtn(
     String label,
     IconData icon,
@@ -2564,6 +2059,39 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
     bool busy = false,
   }) {
     final ext = AppThemeExtension.of(context);
+    // 拟物主题：同色凸起 + 彩色文字 + 按住凹陷（替代描边按钮，2026-09-18
+    // 真机反馈导入/导出备份按钮没有拟物突出效果）；其余主题保持描边样式
+    if (ext.isNeumorphic) {
+      final fg = color ?? ext.primary;
+      return NeuPressable(
+        onTap: busy ? null : onPressed,
+        radius: 12,
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 12),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (busy)
+              const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            else
+              Icon(icon, size: 18, color: fg),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: fg,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
     return OutlinedButton.icon(
       onPressed: busy ? null : onPressed,
       icon: busy
@@ -2579,33 +2107,11 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
       ),
       style: OutlinedButton.styleFrom(
         foregroundColor: color ?? ext.primary,
-        side: BorderSide(
-          color: color ?? ext.primary,
-          width: 1,
-        ),
+        side: BorderSide(color: color ?? ext.primary, width: 1),
         padding: const EdgeInsets.symmetric(vertical: 12),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       ),
     );
-  }
-
-  /// 导出应用运行日志（日志已由 AppLogger 实时落盘，这里主要耗时在
-  /// 拉起系统分享面板——用 loading 态兜底这段延迟）
-  Future<void> _exportLog() async {
-    if (_isExportingLog) return;
-    setState(() => _isExportingLog = true);
-    try {
-      await AppLogger.exportAndShare();
-    } catch (e) {
-      log('❌ 导出日志失败: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('导出日志失败: $e')));
-      }
-    } finally {
-      if (mounted) setState(() => _isExportingLog = false);
-    }
   }
 
   /// 导出启动耗时诊断日志（小体量，同样加 loading 态兜底分享面板延迟）
@@ -2624,134 +2130,6 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
     } finally {
       if (mounted) setState(() => _isExportingStartupLog = false);
     }
-  }
-
-  Widget _buildTextBtn(
-    String label,
-    IconData icon,
-    VoidCallback? onPressed, {
-    bool busy = false,
-  }) {
-    return TextButton.icon(
-      onPressed: busy ? null : onPressed,
-      icon: busy
-          ? const SizedBox(
-              width: 16,
-              height: 16,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
-          : Icon(icon, size: 16),
-      label: Text(label, style: const TextStyle(fontSize: 13)),
-    );
-  }
-
-  /// 更新日志单条目组件
-  Widget _buildChangelogItem({
-    required String version,
-    required String date,
-    required List<String> changes,
-    bool isLast = false,
-  }) {
-    final ext = AppThemeExtension.of(context);
-    return IntrinsicHeight(
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // 时间线竖线 + 圆点
-          SizedBox(
-            width: 24,
-            child: Column(
-              children: [
-                Container(
-                  width: 10,
-                  height: 10,
-                  decoration: BoxDecoration(
-                    color: ext.primary,
-                    shape: BoxShape.circle,
-                  ),
-                ),
-                if (!isLast)
-                  Expanded(
-                    child: Container(
-                      width: 2,
-                      color: ext.primary.withValues(
-                        alpha: 0.2,
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 10),
-          // 内容区域
-          Expanded(
-            child: Padding(
-              padding: EdgeInsets.only(bottom: isLast ? 0 : 12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Text(
-                        version,
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.bold,
-                          color: ext.primary,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        date,
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: ext.textHint,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 4),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      for (int i = 0; i < changes.length; i++) ...[
-                        if (i > 0) const SizedBox(height: 4),
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Padding(
-                              padding: const EdgeInsets.only(top: 7),
-                              child: Container(
-                                width: 4,
-                                height: 4,
-                                decoration: BoxDecoration(
-                                  color: ext.textSecondary,
-                                  shape: BoxShape.circle,
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 7),
-                            Expanded(
-                              child: Text(
-                                changes[i],
-                                style: TextStyle(
-                                  fontSize: 13,
-                                  color: ext.textSecondary,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
   }
 
   // ========== 缓存清理相关方法 ==========
@@ -2825,6 +2203,7 @@ Future<(Uint8List, int)> _runBuildBackupZip({
   required String diaryCsv,
   required String readme,
   required String hotwordsContent,
+  required String correctionsContent,
   required String audioDirPath,
   required Set<String> validAudioNames,
 }) {
@@ -2834,6 +2213,7 @@ Future<(Uint8List, int)> _runBuildBackupZip({
       diaryCsv: diaryCsv,
       readme: readme,
       hotwordsContent: hotwordsContent,
+      correctionsContent: correctionsContent,
       audioDirPath: audioDirPath,
       validAudioNames: validAudioNames,
     ),
@@ -2841,7 +2221,15 @@ Future<(Uint8List, int)> _runBuildBackupZip({
 }
 
 /// 主 isolate 调用的导入 trampoline：同上，闭包捕获域只剩两个 String。
-Future<({String itemsCsv, String diaryCsv, String? hotwords, int restoredAudioCount})>
+Future<
+  ({
+    String itemsCsv,
+    String diaryCsv,
+    String? hotwords,
+    String? corrections,
+    int restoredAudioCount,
+  })
+>
 _runExtractBackupZip(String zipPath, String audioDirPath) {
   return Isolate.run(
     () => _extractBackupZip(zipPath: zipPath, audioDirPath: audioDirPath),
@@ -2856,6 +2244,7 @@ _runExtractBackupZip(String zipPath, String audioDirPath) {
   required String diaryCsv,
   required String readme,
   required String hotwordsContent,
+  required String correctionsContent,
   required String audioDirPath,
   required Set<String> validAudioNames,
 }) {
@@ -2875,6 +2264,14 @@ _runExtractBackupZip(String zipPath, String audioDirPath) {
       'user_hotwords.txt',
       hotwordsContent.length,
       utf8.encode(hotwordsContent),
+    ),
+  );
+  // 错误-修正学习表（v1.2.0 起随备份走；老版本备份无此文件，导入侧可空兼容）
+  archive.addFile(
+    ArchiveFile(
+      'correction_pairs.txt',
+      correctionsContent.length,
+      utf8.encode(correctionsContent),
     ),
   );
 
@@ -2904,20 +2301,24 @@ _runExtractBackupZip(String zipPath, String audioDirPath) {
 }
 
 /// 在 worker isolate 内解压全量备份：
-/// 提取 items/diary CSV 与热词内容（字符串回传主 isolate 解析入库），
+/// 提取 items/diary CSV 与热词/修正对内容（字符串回传主 isolate 解析入库），
 /// 音频文件增量落盘（只写 audioDirPath 下不存在的文件，语义与原版一致）。
 /// 缺必要 CSV 抛异常，由主 isolate catch 后弹错误框。
-({String itemsCsv, String diaryCsv, String? hotwords, int restoredAudioCount})
-_extractBackupZip({
-  required String zipPath,
-  required String audioDirPath,
-}) {
+({
+  String itemsCsv,
+  String diaryCsv,
+  String? hotwords,
+  String? corrections,
+  int restoredAudioCount,
+})
+_extractBackupZip({required String zipPath, required String audioDirPath}) {
   final zipBytes = File(zipPath).readAsBytesSync();
   final archive = ZipDecoder().decodeBytes(zipBytes);
 
   String? itemsCsv;
   String? diaryCsv;
   String? hotwords;
+  String? corrections;
   int restoredAudioCount = 0;
 
   final audioDir = Directory(audioDirPath);
@@ -2929,6 +2330,8 @@ _extractBackupZip({
       diaryCsv = utf8.decode(file.content as List<int>);
     } else if (file.name == 'user_hotwords.txt') {
       hotwords = utf8.decode(file.content as List<int>);
+    } else if (file.name == 'correction_pairs.txt') {
+      corrections = utf8.decode(file.content as List<int>);
     } else if (file.name.startsWith('audio/')) {
       // 不清空现有音频文件，增量合并：只恢复不存在的
       final fileName = p.basename(file.name);
@@ -2951,6 +2354,7 @@ _extractBackupZip({
     itemsCsv: itemsCsv,
     diaryCsv: diaryCsv,
     hotwords: hotwords,
+    corrections: corrections,
     restoredAudioCount: restoredAudioCount,
   );
 }

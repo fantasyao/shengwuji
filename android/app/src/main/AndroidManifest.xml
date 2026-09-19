@@ -36,6 +36,19 @@
             android:foregroundServiceType="specialUse"
             android:exported="false" />
 
+        <!-- 电脑访问服务前台保活（日记局域网 HTTP 服务的进程优先级拉起，
+             HTTP 本体在 Dart 侧 web_server/diary_web_server.dart）。
+             specialUse 与悬浮窗同款：dataSync 类型在 Android 15+ 有 6h/24h 运行时限，
+             长挂会被系统掐；specialUse 无时限，需配 PROPERTY_SPECIAL_USE_FGS_SUBTYPE 说明 -->
+        <service
+            android:name=".DiaryServerService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keep the local HTTP server for diary access from PC on the same LAN alive" />
+        </service>
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -74,6 +87,23 @@
             <meta-data
                 android:name="android.app.shortcuts"
                 android:resource="@xml/shortcuts" />
+        </activity>
+
+        <!-- 外部快捷动作透明分发层：静态快捷方式「悬浮窗语音速记」(ACTION_OVERLAY_RECORD)
+             的落地组件。不落在 MainActivity 上是为了不把主 App 拉到前台——悬浮窗动作
+             在无障碍服务内即可完成（同音量键手势链路）。空 taskAffinity + 独立 task，
+             不带动主任务；translucent 无 UI，分发完即 finish。 -->
+        <activity
+            android:name=".ShortcutDispatchActivity"
+            android:exported="true"
+            android:theme="@style/DispatchTheme"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:noHistory="true">
+            <intent-filter>
+                <action android:name="com.shengwuji.app.ACTION_OVERLAY_RECORD"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+            </intent-filter>
         </activity>
 
         <!-- ==================== Phase 4：图标包切换（activity-alias） ==================== -->

@@ -123,7 +123,11 @@ void main() {
       await gesture.moveBy(const Offset(12, -8)); // 斜着滑：dx 合计 36、dy 合计 24
     }
     await tester.pump();
-    expect(badgeOpacity(tester), greaterThan(0.0), reason: 'dy=24 在渐显区间，徽章照常出现');
+    expect(
+      badgeOpacity(tester),
+      greaterThan(0.0),
+      reason: 'dy=24 在渐显区间，徽章照常出现',
+    );
 
     await gesture.up();
     await tester.pumpAndSettle();

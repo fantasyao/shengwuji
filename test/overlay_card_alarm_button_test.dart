@@ -42,8 +42,7 @@ void main() {
     expect(tapped, true);
   });
 
-  testWidgets('onAlarm 为 null：按钮仍渲染（禁用占位语义保留），点击无回调',
-      (tester) async {
+  testWidgets('onAlarm 为 null：按钮仍渲染（禁用占位语义保留），点击无回调', (tester) async {
     await pumpCard(tester);
     // 无回调路径：点击不抛异常、卡片保持稳定即通过
     await tester.tap(find.byIcon(Icons.alarm));

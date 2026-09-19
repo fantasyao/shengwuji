@@ -10,8 +10,7 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   group('AlarmRingingNotifier', () {
-    test('restoreOnce：冷启动标志为 true → 恢复响铃态（进程被杀期间闹钟触发过）',
-        () async {
+    test('restoreOnce：冷启动标志为 true → 恢复响铃态（进程被杀期间闹钟触发过）', () async {
       SharedPreferences.setMockInitialValues({'is_alarm_ringing': true});
       final n = AlarmRingingNotifier();
       await n.restoreOnce();

@@ -32,7 +32,15 @@ class ItemSplitter {
 
   /// 物品名整体停用（单字代词、虚词）
   static const Set<String> _itemStopWords = {
-    '现', '我', '你', '他', '她', '它', '这', '那', '咱',
+    '现',
+    '我',
+    '你',
+    '他',
+    '她',
+    '它',
+    '这',
+    '那',
+    '咱',
   };
 
   /// 物品名停用前缀（startsWith 匹配）
@@ -58,7 +66,18 @@ class ItemSplitter {
 
   /// 方位词（弱分隔符的位置校验）
   static const List<String> _locationDirectionWords = [
-    '里', '上', '下', '前', '后', '旁', '中', '内', '外', '边', '头', '面',
+    '里',
+    '上',
+    '下',
+    '前',
+    '后',
+    '旁',
+    '中',
+    '内',
+    '外',
+    '边',
+    '头',
+    '面',
   ];
 
   /// 短位置长度上限（≤ 此值视为"像位置"）
@@ -118,8 +137,11 @@ class ItemSplitter {
   /// 用 indexOf 遍历每个 key 出现位置做切分，避免 split 破坏"他现在"等词：
   ///   "他现在应该在家里" 第1个"在"→(他,现在应该在家里)
   ///                 第2个"在"→(他现在应该,家里) ← 命中停用前缀"他现在"，跳过
-  static ItemSplitResult? _trySplit(String cleanText, String key,
-      {required bool checkLocation}) {
+  static ItemSplitResult? _trySplit(
+    String cleanText,
+    String key, {
+    required bool checkLocation,
+  }) {
     var fromIndex = 0;
     while (true) {
       final idx = cleanText.indexOf(key, fromIndex);

@@ -1,0 +1,911 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale: 1.0">
+<title>设置中心二级页改造 · 高保真预览</title>
+<style>
+  /* ═══════════ 预览工具壳（暗色，非 App UI） ═══════════ */
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    background: #17181c; color: #d8dade;
+    display: flex; gap: 24px; padding: 20px; max-width: 1200px; margin: 0 auto;
+    align-items: flex-start;
+  }
+  .panel { flex: 0 0 300px; position: sticky; top: 20px; }
+  .panel h1 { font-size: 17px; margin-bottom: 6px; }
+  .panel .sub { font-size: 12px; color: #8b8f98; line-height: 1.7; margin-bottom: 14px; }
+  .ctl-label { font-size: 12px; color: #9aa0aa; margin: 14px 0 6px; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip {
+    display: flex; align-items: center; gap: 6px;
+    padding: 5px 10px; border-radius: 8px; border: 1px solid #3a3d45;
+    background: #22242a; color: #c9ccd4; font-size: 12px; cursor: pointer;
+    user-select: none;
+  }
+  .chip:hover { border-color: #5a5f6a; }
+  .chip.on { border-color: #4d8ef7; background: #24304a; color: #fff; }
+  .dot { width: 12px; height: 12px; border-radius: 4px; }
+  .note {
+    font-size: 12px; line-height: 1.7; color: #aeb3bd;
+    background: #22242a; border: 1px solid #33363e; border-radius: 10px;
+    padding: 10px 12px; margin-top: 14px;
+  }
+  .note b { color: #e8eaee; }
+  .note .new { color: #6fd08c; }
+  .note .keep { color: #e5c56f; }
+
+  /* ═══════════ 手机框 ═══════════ */
+  .phone-wrap { flex: 1; display: flex; justify-content: center; }
+  .phone {
+    width: 393px; height: min(830px, calc(100vh - 40px)); min-height: 560px;
+    border-radius: 24px; border: 10px solid #0a0a0c;
+    position: relative; overflow: hidden; box-shadow: 0 8px 30px rgba(0,0,0,.5);
+    background: var(--scaffold);
+    transition: width .25s;
+  }
+
+  /* ═══════════ App 主题变量（与 lib/theme/app_theme.dart 一致） ═══════════ */
+  .phone {
+    --primary:#009688; --primary-dark:#00796B; --primary-light:#B2DFDB;
+    --card:#ffffff; --scaffold:#F5F5F5;
+    --text-primary:rgba(0,0,0,.87); --text-secondary:rgba(0,0,0,.54); --text-hint:#9e9e9e;
+    --on-primary:#ffffff;
+    --positive:#E0F2F1; --positive-text:#00796B;
+    --warning:#FFF3E0; --warning-text:#E65100;
+    --gold:#D4A437; --gold-light:#FFF8E7; --gold-border:#E6C158;
+    --divider:rgba(0,0,0,.08);
+    font-family: 'LXGWWenKaiMonoGBScreen', "Microsoft YaHei", "PingFang SC", sans-serif;
+  }
+  .phone[data-theme="orange"] {
+    --primary:#E65100; --primary-dark:#BF360C; --primary-light:#FFCC80;
+    --card:#FFFBF5; --scaffold:#FFF8E1;
+    --positive:#FFF3E0; --positive-text:#E65100; --warning-text:#BF360C;
+  }
+  .phone[data-theme="green"] {
+    --primary:#2E7D32; --primary-dark:#1B5E20; --primary-light:#A5D6A7;
+    --card:#F1F8E9; --scaffold:#F5F5F0;
+    --positive:#E8F5E9; --positive-text:#2E7D32;
+  }
+  .phone[data-theme="blue"] {
+    --primary:#7CCAF4; --primary-dark:#4FA6E0; --primary-light:#BFE2F9;
+    --card:#F8FBFE; --scaffold:#F0F6FB;
+    --on-primary:#0D2A40;
+    --positive:#E0F2FB; --positive-text:#1976D2;
+  }
+
+  /* ═══════════ App 通用组件（对照 settings_tab.dart） ═══════════ */
+  .page { display: none; height: 100%; overflow-y: auto; background: var(--scaffold); }
+  .page.active { display: block; }
+  .statusbar {
+    height: 26px; display: flex; justify-content: space-between; align-items: center;
+    padding: 0 18px; font-size: 11px; color: var(--text-secondary);
+  }
+  .appbar {
+    height: 52px; display: flex; align-items: center; justify-content: center;
+    position: relative; color: var(--text-primary); font-weight: bold; font-size: 16px;
+  }
+  .appbar .back {
+    position: absolute; left: 6px; width: 40px; height: 40px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center; cursor: pointer;
+  }
+  .appbar .back:active { background: var(--divider); }
+  .body { padding: 4px 20px 48px; }
+
+  .sec-title {
+    font-size: 15px; font-weight: bold; color: var(--text-secondary);
+    margin: 26px 4px 10px;
+  }
+  .card {
+    background: var(--card); border-radius: 15px; padding: 16px;
+    box-shadow: 0 4px 10px rgba(0,0,0,.03);
+  }
+  .card.zero { padding: 0; overflow: hidden; }
+  .divider { height: 1px; background: var(--divider); margin: 0; }
+  .divider.inset { margin: 0 16px; }
+
+  /* 入口行（仿 _buildThemeEntry / _buildCorrectionEntry） */
+  .entry { display: flex; align-items: center; gap: 14px; padding: 14px 16px; cursor: pointer; }
+  .entry:active { background: var(--divider); }
+  .entry .ic { width: 22px; height: 22px; fill: var(--primary); flex: none; }
+  .entry .txt { flex: 1; min-width: 0; }
+  .entry .t { font-size: 15px; color: var(--text-primary); }
+  .entry .s { font-size: 12px; color: var(--text-secondary); margin-top: 2px; line-height: 1.4; }
+  .entry .chev { width: 22px; height: 22px; fill: var(--text-hint); flex: none; }
+
+  /* 状态点（音量键入口行的无障碍状态徽标示意） */
+  .st-dot { width: 10px; height: 10px; border-radius: 50%; background: #4CAF50; flex: none; }
+
+  /* Pro 徽章 */
+  .pro-badge {
+    font-size: 10px; color: var(--gold); background: var(--gold-light);
+    border: 1px solid var(--gold-border); border-radius: 6px;
+    padding: 1px 5px; font-weight: bold; flex: none;
+  }
+
+  /* 开关行（SwitchListTile leading：开关在左） */
+  .sw-row { display: flex; align-items: flex-start; gap: 16px; padding: 10px 16px; cursor: pointer; }
+  .card > .sw-row:first-child { padding-top: 14px; }
+  .card > .sw-row:last-child { padding-bottom: 14px; }
+  .sw-row .txt { flex: 1; }
+  .sw-row .t { font-size: 13px; color: var(--text-primary); line-height: 1.5; }
+  .sw-row .s { font-size: 11px; color: var(--text-hint); margin-top: 2px; line-height: 1.5; }
+
+  /* M3 Switch */
+  .sw { flex: none; margin-top: 2px; }
+  .sw .track {
+    width: 50px; height: 32px; border-radius: 16px; position: relative;
+    background: #e0e0e0; border: 2px solid rgba(0,0,0,.15); transition: all .2s;
+  }
+  .sw.on .track { background: var(--primary); border-color: var(--primary); }
+  .sw .thumb {
+    position: absolute; top: 50%; left: 5px; transform: translateY(-50%);
+    width: 16px; height: 16px; border-radius: 50%; background: rgba(0,0,0,.38);
+    transition: all .2s;
+  }
+  .sw.on .thumb { left: 23px; width: 24px; height: 24px; background: var(--on-primary); }
+
+  /* ChoiceChip（_buildGestureSelectorRow / _buildAutoHideSelector） */
+  .chips-wrap { display: flex; flex-wrap: wrap; gap: 8px 8px; padding: 6px 0 2px; }
+  .mchip {
+    display: inline-flex; align-items: center; gap: 6px; height: 32px;
+    padding: 0 12px; border-radius: 8px; border: 1px solid rgba(0,0,0,.12);
+    font-size: 13px; color: var(--text-primary); cursor: pointer; user-select: none;
+    background: transparent;
+  }
+  .mchip .ic { width: 16px; height: 16px; fill: var(--primary); }
+  .mchip.on { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
+  .mchip.on .ic { fill: var(--on-primary); }
+  .mchip .pro-badge { font-size: 9px; padding: 0 4px; }
+  .chip-row-label { font-size: 13px; font-weight: 500; color: var(--text-primary); margin-top: 12px; }
+  .chip-row-label:first-child { margin-top: 0; }
+
+  /* 按钮 */
+  .main-btn {
+    width: 100%; height: 46px; border-radius: 15px; border: none;
+    background: var(--primary); color: var(--on-primary);
+    font-size: 14px; font-weight: 600; font-family: inherit;
+    display: flex; align-items: center; justify-content: center; gap: 8px; cursor: pointer;
+  }
+  .main-btn:active { filter: brightness(.94); }
+  .main-btn .ic { width: 18px; height: 18px; fill: var(--on-primary); }
+  .sub-btn {
+    flex: 1; height: 42px; border-radius: 12px; border: none;
+    background: var(--warning); color: var(--warning-text);
+    font-size: 13px; font-weight: 600; font-family: inherit;
+    display: flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer;
+  }
+  .sub-btn .ic { width: 16px; height: 16px; fill: var(--warning-text); }
+  .text-btn {
+    display: flex; align-items: center; gap: 8px; padding: 10px 4px;
+    font-size: 13px; color: var(--text-secondary); cursor: pointer; background: none; border: none;
+    font-family: inherit; width: 100%;
+  }
+  .text-btn .ic { width: 17px; height: 17px; fill: var(--text-secondary); }
+
+  /* 单选列表（AI 应用） */
+  .radio-row { display: flex; align-items: center; gap: 12px; padding: 10px 8px; cursor: pointer; }
+  .radio-row:active { background: var(--divider); border-radius: 12px; }
+  .radio {
+    width: 22px; height: 22px; border-radius: 50%; flex: none;
+    border: 2px solid var(--text-hint); display: flex; align-items: center; justify-content: center;
+  }
+  .radio-row.on .radio { border-color: var(--primary); background: var(--primary); }
+  .radio .ic { width: 15px; height: 15px; fill: var(--on-primary); display: none; }
+  .radio-row.on .radio .ic { display: block; }
+  .radio-row .emoji { font-size: 24px; flex: none; }
+  .radio-row .name { flex: 1; font-size: 16px; color: var(--text-primary); }
+  .radio-row .url { font-size: 12px; color: var(--text-hint); }
+
+  /* 热词输入框 */
+  .hotword-area {
+    width: 100%; min-height: 120px; resize: none; border: none; outline: none;
+    background: var(--card); font-family: inherit; font-size: 14px;
+    color: var(--text-primary); padding: 16px; line-height: 1.6;
+  }
+  .hotword-area::placeholder { color: var(--text-hint); font-size: 13px; }
+
+  /* 说明文字段 */
+  .expl { font-size: 12px; color: var(--text-hint); line-height: 1.6; padding: 10px 16px 12px; }
+
+  /* 无障碍状态行 */
+  .a11y-row { display: flex; align-items: center; gap: 8px; }
+  .a11y-row .ic { width: 20px; height: 20px; fill: #4CAF50; }
+  .a11y-row .t { font-size: 15px; font-weight: 600; color: #4CAF50; }
+
+  /* 更新日志 */
+  details.ver { border-bottom: 1px solid var(--divider); padding: 8px 0; }
+  details.ver:last-child { border-bottom: none; }
+  details.ver summary {
+    display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none;
+    font-size: 14px; font-weight: 600; color: var(--text-primary);
+  }
+  details.ver summary::-webkit-details-marker { display: none; }
+  details.ver summary .date { font-size: 12px; color: var(--text-hint); font-weight: normal; }
+  details.ver ul { margin: 8px 0 2px 18px; }
+  details.ver li { font-size: 12px; color: var(--text-secondary); line-height: 1.7; }
+
+  .ic { display: block; }
+</style>
+</head>
+<body>
+
+<!-- ═══════ SVG 图标库（Material 风格 path） ═══════ -->
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></symbol>
+  <symbol id="i-check-circle" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></symbol>
+  <symbol id="i-backup" viewBox="0 0 24 24"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/></symbol>
+  <symbol id="i-restore" viewBox="0 0 24 24"><path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8h-1.5z"/></symbol>
+  <symbol id="i-autofix" viewBox="0 0 24 24"><path d="M7.5 5.6L10 7 8.6 4.5 10 2 7.5 3.4 5 2l1.4 2.5L5 7l2.5-1.4zM19.5 15.4L17 14l1.4 2.5L17 19l2.5-1.4L22 19l-1.4-2.5L22 14l-2.5 1.4zM22 2l-2.5 1.4L17 2l1.4 2.5L17 7l2.5-1.4L22 7l-1.4-2.5L22 2zm-7.63 5.29a1 1 0 00-1.41 0L1.29 18.96c-.39.39-.39 1.02 0 1.41l2.34 2.34c.39.39 1.02.39 1.41 0L16.7 11.05c.39-.39.39-1.02 0-1.41l-2.33-2.35zm-1.03 5.49l-2.12-2.12 2.44-2.44 2.12 2.12-2.44 2.44z"/></symbol>
+  <symbol id="i-smarttoy" viewBox="0 0 24 24"><path d="M20 9V7c0-1.1-.9-2-2-2h-3c0-1.66-1.34-3-3-3S9 3.34 9 5H6c-1.1 0-2 .9-2 2v2c-1.66 0-3 1.34-3 3s1.34 3 3 3v4c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2v-4c1.66 0 3-1.34 3-3s-1.34-3-3-3zm-4 10H6V7h10v12zM10 15.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm4 0c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/></symbol>
+  <symbol id="i-volume" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></symbol>
+  <symbol id="i-palette" viewBox="0 0 24 24"><path d="M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9c.83 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1.01-.23-.26-.38-.61-.38-.99 0-.83.67-1.5 1.5-1.5H16c2.76 0 5-2.24 5-5 0-4.42-4.03-8-9-8zm-5.5 9c-.83 0-1.5-.67-1.5-1.5S5.67 9 6.5 9 8 9.67 8 10.5 7.33 12 6.5 12zm3-4C8.67 8 8 7.33 8 6.5S8.67 5 9.5 5s1.5.67 1.5 1.5S10.33 8 9.5 8zm5 0c-.83 0-1.5-.67-1.5-1.5S13.67 5 14.5 5s1.5.67 1.5 1.5S15.33 8 14.5 8zm3 4c-.83 0-1.5-.67-1.5-1.5S16.67 9 17.5 9s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/></symbol>
+  <symbol id="i-apps" viewBox="0 0 24 24"><path d="M4 8h4V4H4v4zm6 12h4v-4h-4v4zm-6 0h4v-4H4v4zm0-6h4v-4H4v4zm6 0h4v-4h-4v4zm6-10v4h4V4h-4zm-6 4h4V4h-4v4zm6 6h4v-4h-4v4zm0 6h4v-4h-4v4z"/></symbol>
+  <symbol id="i-format" viewBox="0 0 24 24"><path d="M9 4v3h5v12h3V7h5V4H9zm-6 8h3v7h3v-7h3V9H3v3z"/></symbol>
+  <symbol id="i-pip" viewBox="0 0 24 24"><path d="M19 11h-8v6h8v-6zm4 8V4.98C23 3.88 22.1 3 21 3H3c-1.1 0-2 .88-2 1.98V19c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2zm-2 .02H3V4.97h18v14.05z"/></symbol>
+  <symbol id="i-computer" viewBox="0 0 24 24"><path d="M20 18c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2H0v2h24v-2h-4zM4 6h16v10H4V6z"/></symbol>
+  <symbol id="i-premium" viewBox="0 0 24 24"><path d="M9.68 13.69l2.32 5.61 2.32-5.61L18.94 14l-3.43-3.32.86-4.87L12 8.22l-4.37-2.41.86 4.87L5.06 14l4.62-.31zM12 2l2.4 4.75 5.28.79-3.84 3.74.91 5.27L12 14.06l-4.75 2.49.91-5.27L4.32 7.54l5.28-.79L12 2z"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><path d="M11 7h2v2h-2zm0 4h2v6h-2zm1-9C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z"/></symbol>
+  <symbol id="i-timer" viewBox="0 0 24 24"><path d="M15 1H9v2h6V1zm-2 13h-2V8h2v6zm6.03-6.61l1.42-1.42c-.43-.51-.9-.99-1.41-1.41l-1.42 1.42C16.07 4.74 14.12 4 12 4c-4.97 0-9 4.03-9 9s4.02 9 9 9 9-4.03 9-9c0-2.12-.74-4.07-1.97-5.61zM12 20c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/></symbol>
+  <symbol id="i-infinity" viewBox="0 0 24 24"><path d="M18.6 6.62c-1.44 0-2.8.56-3.77 1.53L12 10.66 10.48 12h.01L7.8 14.39c-.64.64-1.49.99-2.4.99-1.87 0-3.39-1.51-3.39-3.38s1.52-3.38 3.39-3.38c.91 0 1.76.35 2.44 1.03l1.13 1 1.51-1.34L9.22 8.2C8.2 7.18 6.84 6.62 5.4 6.62 2.42 6.62 0 9.04 0 12s2.42 5.38 5.4 5.38c1.44 0 2.8-.56 3.77-1.53l2.83-2.5.01.01L13.52 12h-.01l2.69-2.39c.64-.64 1.49-.99 2.4-.99 1.87 0 3.39 1.51 3.39 3.38s-1.52 3.38-3.39 3.38c-.9 0-1.76-.35-2.44-1.03l-1.14-1.01-1.51 1.34 1.27 1.12c1.02 1.01 2.37 1.57 3.82 1.57 2.98 0 5.4-2.41 5.4-5.38s-2.42-5.38-5.4-5.38z"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 14c1.66 0 2.99-1.34 2.99-3L15 5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z"/></symbol>
+  <symbol id="i-dot" viewBox="0 0 24 24"><path d="M12 6c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6-2.69-6-6-6z"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M3 10h11v2H3v-2zm0-4h11v2H3V6zm0 8h7v2H3v-2zm13.59.92L15.17 16l-1.42-1.42-.7.71L14.46 16.7l-.71.71 1.42 1.42 1.42-1.42 2.83-2.83-.71-.7-2.83 2.83.71-.09zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></symbol>
+  <symbol id="i-note" viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 14h-3v3h-2v-3H8v-2h3v-3h2v3h3v2zm-3-7V3.5L18.5 9H13z"/></symbol>
+  <symbol id="i-block" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zM4 12c0-4.42 3.58-8 8-8 1.85 0 3.55.63 4.9 1.69L5.69 16.9C4.63 15.55 4 13.85 4 12zm8 8c-1.85 0-3.55-.63-4.9-1.69L18.31 7.1C19.37 8.45 20 10.15 20 12c0 4.42-3.58 8-8 8z"/></symbol>
+  <symbol id="i-save" viewBox="0 0 24 24"><path d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></symbol>
+  <symbol id="i-history" viewBox="0 0 24 24"><path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8h-1.5z"/></symbol>
+  <symbol id="i-bug" viewBox="0 0 24 24"><path d="M20 8h-2.81c-.45-.78-1.07-1.45-1.82-1.96L17 4.41 15.59 3l-2.17 2.17C12.96 5.06 12.49 5 12 5c-.49 0-.96.06-1.41.17L8.41 3 7 4.41l1.62 1.63C7.88 6.55 7.26 7.22 6.81 8H4v2h2.09c-.05.33-.09.66-.09 1v1H4v2h2v1c0 .34.04.67.09 1H4v2h2.81c1.04 1.79 2.97 3 5.19 3s4.15-1.21 5.19-3H20v-2h-2.09c.05-.33.09-.66.09-1v-1h2v-2h-2v-1c0-.34-.04-.67-.09-1H20V8zm-6 8h-4v-2h4v2zm0-4h-4v-2h4v2z"/></symbol>
+  <symbol id="i-desc" viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></symbol>
+  <symbol id="i-launch" viewBox="0 0 24 24"><path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></symbol>
+</svg>
+
+<!-- ═══════════ 左侧说明与控制面板 ═══════════ -->
+<div class="panel">
+  <h1>设置中心 · 二级页改造预览</h1>
+  <div class="sub">主页瘦身：13 组长列表 → 4 个下沉二级页 + 保留组。左右布局：本面板控制，右侧为 App 实机比例。可点击、可切开关、可切主题。</div>
+
+  <div class="ctl-label">页面</div>
+  <div class="chips" id="nav-chips">
+    <span class="chip on" data-page="home">主页</span>
+    <span class="chip" data-page="corr">识别与修正</span>
+    <span class="chip" data-page="ai">AI 应用</span>
+    <span class="chip" data-page="overlay">悬浮窗</span>
+    <span class="chip" data-page="vol">音量键</span>
+    <span class="chip" data-page="about">关于</span>
+  </div>
+
+  <div class="ctl-label">主题（真实色值）</div>
+  <div class="chips" id="theme-chips">
+    <span class="chip on" data-theme="teal"><span class="dot" style="background:#009688"></span>默认青</span>
+    <span class="chip" data-theme="orange"><span class="dot" style="background:#E65100"></span>暖橙</span>
+    <span class="chip" data-theme="green"><span class="dot" style="background:#2E7D32"></span>墨绿</span>
+    <span class="chip" data-theme="blue"><span class="dot" style="background:#7CCAF4"></span>晴空蓝 Pro</span>
+  </div>
+
+  <div class="ctl-label">宽度档</div>
+  <div class="chips" id="width-chips">
+    <span class="chip" data-w="360">360</span>
+    <span class="chip on" data-w="393">393</span>
+    <span class="chip" data-w="430">430</span>
+  </div>
+
+  <div class="note">
+    <b>下沉二级页（新增）</b><br>
+    <span class="new">① 识别与修正</span>：热词替换 + 智能修正学习合并<br>
+    <span class="new">② AI 应用分享</span>：4 应用单选列表<br>
+    <span class="new">③ 悬浮窗</span>：自动隐藏 / 停靠侧 / 竖线两开关（含 Pro 门禁）<br>
+    <span class="new">④ 音量键快捷操作</span>：无障碍状态 + 4 槽位 + 静音/自动停开关<br>
+    <span class="new">⑤ 关于</span>：更新日志 + 导出日志 + 开源许可<br>
+    <br><b>主页保留</b><br>
+    <span class="keep">数据备份 / 日记智能识别 / 卡片交互 / 功能页面 / 外观 / 电脑访问 / 支持作者</span><br>
+    <br><b>要点</b><br>
+    · 下沉项在主页变「入口行 + 状态摘要」，摘要随二级页改动实时联动<br>
+    · prefs key 全部不变，engine / DiaryTab 等读取方零影响<br>
+    · 交互提示：改悬浮窗停靠侧或 AI 应用后回主页看摘要；音量键页开「说完自动停止」会出现秒数档
+  </div>
+</div>
+
+<!-- ═══════════ 手机 ═══════════ -->
+<div class="phone-wrap">
+<div class="phone" id="phone" data-theme="teal">
+
+  <!-- ─────── 主页 ─────── -->
+  <div class="page active" id="page-home">
+    <div class="statusbar"><span>12:30</span><span>◍ 87%</span></div>
+    <div class="appbar">设置中心</div>
+    <div class="body">
+
+      <div class="sec-title">数据备份与还原</div>
+      <div class="card">
+        <div style="display:flex;align-items:center;gap:6px">
+          <svg class="ic" style="width:18px;height:18px;fill:var(--warning-text)"><use href="#i-backup"/></svg>
+          <span style="font-size:14px;font-weight:bold;color:var(--text-primary)">数据备份</span>
+        </div>
+        <div style="font-size:12px;color:var(--text-secondary);margin:4px 0 10px">包含物品、日记和所有音频文件</div>
+        <div style="display:flex;gap:12px">
+          <button class="sub-btn"><svg class="ic"><use href="#i-restore"/></svg>导入备份</button>
+          <button class="sub-btn"><svg class="ic"><use href="#i-backup"/></svg>导出备份</button>
+        </div>
+      </div>
+
+      <div class="sec-title">识别与修正</div>
+      <div class="card zero">
+        <div class="entry" data-goto="corr">
+          <svg class="ic"><use href="#i-autofix"/></svg>
+          <div class="txt">
+            <div class="t">识别与修正</div>
+            <div class="s" id="sum-corr">热词 <b id="sum-hotwords">4</b> 条 · 修正对 <b id="sum-pairs">38</b> 条</div>
+          </div>
+          <svg class="chev"><use href="#i-chev"/></svg>
+        </div>
+      </div>
+
+      <div class="sec-title">AI 应用分享</div>
+      <div class="card zero">
+        <div class="entry" data-goto="ai">
+          <svg class="ic"><use href="#i-smarttoy"/></svg>
+          <div class="txt">
+            <div class="t">AI 应用分享</div>
+            <div class="s" id="sum-ai">分享跳转：🤖 ChatGPT</div>
+          </div>
+          <svg class="chev"><use href="#i-chev"/></svg>
+        </div>
+      </div>
+
+      <div class="sec-title">音量键快捷操作</div>
+      <div class="card zero">
+        <div class="entry" data-goto="vol">
+          <svg class="ic"><use href="#i-volume"/></svg>
+          <div class="txt">
+            <div class="t" style="display:flex;align-items:center;gap:8px">
+              音量键快捷操作 <span class="st-dot" id="sum-a11y-dot"></span>
+            </div>
+            <div class="s" id="sum-vol">已开启 · 长按=悬浮窗录音 · 双击=APP内录音</div>
+          </div>
+          <svg class="chev"><use href="#i-chev"/></svg>
+        </div>
+      </div>
+
+      <div class="sec-title">日记智能识别</div>
+      <div class="card">
+        <div class="sw-row" data-sw>
+          <div class="sw on"><div class="track"><div class="thumb"></div></div></div>
+          <div class="txt">
+            <div class="t">日记智能识别物品</div>
+            <div class="s">识别"物品+位置"语句并显示转存按钮</div>
+          </div>
+        </div>
+        <div class="sw-row" data-sw>
+          <div class="sw on"><div class="track"><div class="thumb"></div></div></div>
+          <div class="txt">
+            <div class="t">日记智能查询物品位置</div>
+            <div class="s">识别"XX在哪儿"语句并显示答案区</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sec-title">日记卡片交互习惯</div>
+      <div class="card">
+        <div class="sw-row" data-sw>
+          <div class="sw"><div class="track"><div class="thumb"></div></div></div>
+          <div class="txt">
+            <div class="t">交换单击与长按</div>
+            <div class="s">开启后：单击=编辑、长按=复制（默认：单击=复制、长按=编辑）。修改后需重启 App 生效</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sec-title">功能页面</div>
+      <div class="card">
+        <div class="sw-row" data-sw>
+          <div class="sw"><div class="track"><div class="thumb"></div></div></div>
+          <div class="txt">
+            <div class="t">隐藏存物品页</div>
+            <div class="s">隐藏语音录入物品页，搬家模式一并隐藏。重启 App 后生效</div>
+          </div>
+        </div>
+        <div class="sw-row" data-sw>
+          <div class="sw"><div class="track"><div class="thumb"></div></div></div>
+          <div class="txt">
+            <div class="t">隐藏查物品页</div>
+            <div class="s">隐藏物品位置列表页，重启 App 后生效</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sec-title">外观</div>
+      <div class="card zero">
+        <div class="entry" onclick="toast('主题选择 BottomSheet（本次不改）')">
+          <svg class="ic"><use href="#i-palette"/></svg>
+          <div class="txt">
+            <div class="t">主题</div>
+            <div class="s" id="sum-theme">默认青</div>
+          </div>
+          <svg class="chev"><use href="#i-chev"/></svg>
+        </div>
+        <div class="divider inset"></div>
+        <div class="entry" onclick="toast('图标包选择 BottomSheet（本次不改）')">
+          <svg class="ic"><use href="#i-apps"/></svg>
+          <div class="txt">
+            <div class="t">桌面图标</div>
+            <div class="s">默认</div>
+          </div>
+          <svg class="chev"><use href="#i-chev"/></svg>
+        </div>
+        <div class="divider inset"></div>
+        <div class="entry" onclick="toast('字号缩放 BottomSheet（本次不改）')">
+          <svg class="ic"><use href="#i-format"/></svg>
+          <div class="txt">
+            <div class="t">字号缩放</div>
+            <div class="s">标准 100%</div>
+          </div>
+          <svg class="chev"><use href="#i-chev"/></svg>
+        </div>
+      </div>
+
+      <div class="sec-title">悬浮窗</div>
+      <div class="card zero">
+        <div class="entry" data-goto="overlay">
+          <svg class="ic"><use href="#i-pip"/></svg>
+          <div class="txt">
+            <div class="t" style="display:flex;align-items:center;gap:6px">悬浮窗 <span class="pro-badge">Pro</span></div>
+            <div class="s" id="sum-overlay">右缘停靠 · 10 秒后自动隐藏</div>
+          </div>
+          <svg class="chev"><use href="#i-chev"/></svg>
+        </div>
+      </div>
+
+      <div class="sec-title">电脑访问</div>
+      <div class="card">
+        <div style="display:flex;align-items:center;gap:6px">
+          <svg class="ic" style="width:18px;height:18px;fill:var(--primary)"><use href="#i-computer"/></svg>
+          <span style="flex:1;font-size:13px;color:var(--text-secondary)">电脑访问服务</span>
+          <div class="sw on" data-sw style="margin:0"><div class="track"><div class="thumb"></div></div></div>
+        </div>
+        <div style="font-size:12px;color:var(--text-hint);margin-top:4px;line-height:1.6">
+          开启后，同一 Wi-Fi 下的电脑浏览器打开下方地址，即可查看、编辑、删除随手记（含录音播放）；手机这边新增的日记也会实时出现在电脑上。运行期间通知栏有一条常驻通知保持服务不中断
+        </div>
+        <div class="divider" style="margin:12px 0"></div>
+        <div style="display:flex;align-items:center">
+          <span style="flex:1;font-size:14px;color:var(--primary);font-weight:600">http://192.168.1.23:9527</span>
+          <svg class="ic" style="width:17px;height:17px;fill:var(--text-hint);cursor:pointer" onclick="toast('地址已复制，粘贴到电脑浏览器打开即可')"><use href="#i-copy"/></svg>
+        </div>
+        <div style="font-size:11px;color:var(--text-hint);margin-top:6px">手机与电脑需连同一 Wi-Fi；端口固定 9527，地址可收藏到浏览器书签</div>
+      </div>
+
+      <div class="sec-title">支持作者</div>
+      <div class="card">
+        <div style="display:flex;align-items:center;gap:6px">
+          <svg class="ic" style="width:18px;height:18px;fill:var(--gold)"><use href="#i-premium"/></svg>
+          <span style="font-size:13px;color:var(--text-secondary)">付费解锁 Pro 功能</span>
+        </div>
+        <button class="main-btn" style="margin-top:10px;background:var(--gold);height:42px" onclick="toast('Pro 解锁弹窗（本次不改）')">
+          <svg class="ic"><use href="#i-launch"/></svg>付费解锁 Pro 功能
+        </button>
+      </div>
+
+      <div class="divider" style="margin:32px 0 8px"></div>
+      <div class="sec-title">关于</div>
+      <div class="card zero">
+        <div class="entry" data-goto="about">
+          <svg class="ic"><use href="#i-info"/></svg>
+          <div class="txt">
+            <div class="t">声物记</div>
+            <div class="s">v1.1.0 · 完全离线 · 无需联网</div>
+          </div>
+          <svg class="chev"><use href="#i-chev"/></svg>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ─────── 识别与修正 ─────── -->
+  <div class="page" id="page-corr">
+    <div class="statusbar"><span>12:30</span><span>◍ 87%</span></div>
+    <div class="appbar"><span class="back" data-goto="home"><svg class="ic" style="width:22px;height:22px;fill:var(--text-primary)"><use href="#i-back"/></svg></span>识别与修正</div>
+    <div class="body">
+
+      <div class="sec-title">动态热词替换</div>
+      <div class="card zero">
+        <textarea class="hotword-area" id="hotword-input" spellcheck="false">体直 = 体脂
+质朴公司 = 智谱公司
+管管雎鸠 = 关关雎鸠</textarea>
+        <div class="divider"></div>
+        <div style="padding:10px 12px">
+          <button class="main-btn" onclick="saveHotwords()"><svg class="ic"><use href="#i-save"/></svg>保存并更新热词</button>
+        </div>
+      </div>
+
+      <div class="sec-title">智能修正学习</div>
+      <div class="card zero">
+        <div class="entry" onclick="toast('进入修正对管理页（既有功能，本次不改）')">
+          <svg class="ic"><use href="#i-autofix"/></svg>
+          <div class="txt">
+            <div class="t">修正对管理</div>
+            <div class="s">已学到 <b id="pair-count">38</b> 条，点击查看/删除/导入导出</div>
+          </div>
+          <svg class="chev"><use href="#i-chev"/></svg>
+        </div>
+        <div class="divider inset"></div>
+        <div class="sw-row" data-sw>
+          <div class="sw on"><div class="track"><div class="thumb"></div></div></div>
+          <div class="txt">
+            <div class="t">同音词上下文纠错</div>
+            <div class="s">识别到「智谱/质朴」「深度求索/深度搜索」这类同音词时，结合上下文自动选择正确的写法；拿不准时保持原文不改</div>
+          </div>
+        </div>
+        <div class="divider inset"></div>
+        <div class="expl">你在日记或存物品时手动修改识别文字，app 会记住「识别错误 → 你改成的文字」，下次识别再出现相同错误时提示一键修正。与上方热词的区别：热词自动替换，修正对每次先征求你同意。同音词纠错（如「质朴公司」自动改成「智谱公司」）不走这张表，它按上下文判断并只在很有把握时才自动改，你的手动修改会帮它越学越准。</div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ─────── AI 应用分享 ─────── -->
+  <div class="page" id="page-ai">
+    <div class="statusbar"><span>12:30</span><span>◍ 87%</span></div>
+    <div class="appbar"><span class="back" data-goto="home"><svg class="ic" style="width:22px;height:22px;fill:var(--text-primary)"><use href="#i-back"/></svg></span>AI 应用分享</div>
+    <div class="body">
+      <div class="sec-title">分享目标</div>
+      <div class="card">
+        <div style="font-size:14px;color:var(--text-hint)">选择日记分享时跳转的 AI 应用</div>
+        <div style="height:16px"></div>
+        <div class="radio-row" data-radio="ai" data-val="chatgpt">
+          <span class="radio"><svg class="ic"><use href="#i-check"/></svg></span>
+          <span class="emoji">🤖</span><span class="name">ChatGPT</span><span class="url">chat.openai.com</span>
+        </div>
+        <div class="radio-row" data-radio="ai" data-val="deepseek">
+          <span class="radio"><svg class="ic"><use href="#i-check"/></svg></span>
+          <span class="emoji">🧠</span><span class="name">DeepSeek</span><span class="url">chat.deepseek.com</span>
+        </div>
+        <div class="radio-row" data-radio="ai" data-val="kimi">
+          <span class="radio"><svg class="ic"><use href="#i-check"/></svg></span>
+          <span class="emoji">🌙</span><span class="name">Kimi</span><span class="url">kimi.moonshot.cn</span>
+        </div>
+        <div class="radio-row" data-radio="ai" data-val="wechat">
+          <span class="radio"><svg class="ic"><use href="#i-check"/></svg></span>
+          <span class="emoji">💬</span><span class="name">微信</span><span class="url">weixin.qq.com</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────── 悬浮窗设置 ─────── -->
+  <div class="page" id="page-overlay">
+    <div class="statusbar"><span>12:30</span><span>◍ 87%</span></div>
+    <div class="appbar"><span class="back" data-goto="home"><svg class="ic" style="width:22px;height:22px;fill:var(--text-primary)"><use href="#i-back"/></svg></span>悬浮窗设置</div>
+    <div class="body">
+
+      <div class="card">
+        <div style="display:flex;align-items:center;gap:6px">
+          <svg class="ic" style="width:18px;height:18px;fill:var(--primary)"><use href="#i-pip"/></svg>
+          <span style="font-size:13px;color:var(--text-secondary)">屏幕边缘随手记面板</span>
+          <span class="pro-badge">Pro</span>
+        </div>
+        <div style="font-size:12px;color:var(--text-hint);margin-top:8px;line-height:1.6">
+          通过音量键手势召唤悬浮窗（见音量键快捷操作）<br><br>
+          收起态把手长按后可上下拖动调整位置；停靠侧可在下方切换屏幕左缘或右缘（滑动方向随侧镜像）
+        </div>
+      </div>
+
+      <div class="sec-title">收起后自动隐藏</div>
+      <div class="card">
+        <div class="chips-wrap" data-group="autohide">
+          <span class="mchip" data-val="5"><svg class="ic"><use href="#i-timer"/></svg>5 秒</span>
+          <span class="mchip on" data-val="10"><svg class="ic"><use href="#i-timer"/></svg>10 秒</span>
+          <span class="mchip" data-val="30"><svg class="ic"><use href="#i-timer"/></svg>30 秒</span>
+          <span class="mchip" data-val="never"><svg class="ic"><use href="#i-infinity"/></svg>永久</span>
+        </div>
+      </div>
+
+      <div class="sec-title">停靠侧</div>
+      <div class="card">
+        <div class="chips-wrap" data-group="side">
+          <span class="mchip" data-val="left">左缘</span>
+          <span class="mchip on" data-val="right">右缘</span>
+        </div>
+      </div>
+
+      <div class="sec-title">贴边竖线</div>
+      <div class="card">
+        <div class="sw-row" data-sw>
+          <div class="sw on"><div class="track"><div class="thumb"></div></div></div>
+          <div class="txt">
+            <div class="t">隐藏后保留贴边竖线</div>
+            <div class="s">自动隐藏后在停靠侧边缘留一条半透明细线（触摸区已加宽易点中），点按回把手、朝屏幕内侧滑动直接展开面板；自动隐藏选「永久」时不生效</div>
+          </div>
+        </div>
+        <div class="divider inset"></div>
+        <div class="sw-row" data-sw>
+          <div class="sw on"><div class="track"><div class="thumb"></div></div></div>
+          <div class="txt">
+            <div class="t">点按竖线展开把手</div>
+            <div class="s">开启后点按贴边竖线回到把手，再点把手展开面板；关闭后点按无反应，仅朝屏幕内侧滑动或音量键可展开</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ─────── 音量键快捷操作 ─────── -->
+  <div class="page" id="page-vol">
+    <div class="statusbar"><span>12:30</span><span>◍ 87%</span></div>
+    <div class="appbar"><span class="back" data-goto="home"><svg class="ic" style="width:22px;height:22px;fill:var(--text-primary)"><use href="#i-back"/></svg></span>音量键快捷操作</div>
+    <div class="body">
+
+      <div class="card">
+        <div class="a11y-row">
+          <svg class="ic"><use href="#i-check-circle"/></svg>
+          <span class="t">已开启</span>
+        </div>
+        <div style="font-size:13px;color:var(--text-secondary);margin-top:8px">
+          在任意界面通过音量键手势快速唤起录音、笔记或悬浮窗
+        </div>
+
+        <div class="chip-row-label">长按音量加（约0.5秒）</div>
+        <div class="chips-wrap" data-group="lp-up">
+          <span class="mchip" data-val="none"><svg class="ic"><use href="#i-block"/></svg>无动作</span>
+          <span class="mchip" data-val="pip"><svg class="ic"><use href="#i-pip"/></svg>显示悬浮窗</span>
+          <span class="mchip on" data-val="orec"><svg class="ic"><use href="#i-mic"/></svg>悬浮窗录音</span>
+          <span class="mchip" data-val="rec"><svg class="ic"><use href="#i-dot"/></svg>APP内录音</span>
+          <span class="mchip" data-val="note"><svg class="ic"><use href="#i-edit"/></svg>APP内笔记</span>
+          <span class="mchip" data-val="onote"><svg class="ic"><use href="#i-note"/></svg>悬浮窗笔记</span>
+        </div>
+
+        <div class="chip-row-label">长按音量减（约0.5秒）</div>
+        <div class="chips-wrap" data-group="lp-dn">
+          <span class="mchip" data-val="none"><svg class="ic"><use href="#i-block"/></svg>无动作</span>
+          <span class="mchip on" data-val="pip"><svg class="ic"><use href="#i-pip"/></svg>显示悬浮窗</span>
+          <span class="mchip" data-val="orec"><svg class="ic"><use href="#i-mic"/></svg>悬浮窗录音</span>
+          <span class="mchip" data-val="rec"><svg class="ic"><use href="#i-dot"/></svg>APP内录音</span>
+          <span class="mchip" data-val="note"><svg class="ic"><use href="#i-edit"/></svg>APP内笔记</span>
+          <span class="mchip" data-val="onote"><svg class="ic"><use href="#i-note"/></svg>悬浮窗笔记</span>
+        </div>
+
+        <div class="chip-row-label">双击音量加（0.3秒内）</div>
+        <div class="chips-wrap" data-group="dc-up">
+          <span class="mchip" data-val="none"><svg class="ic"><use href="#i-block"/></svg>无动作</span>
+          <span class="mchip" data-val="pip"><svg class="ic"><use href="#i-pip"/></svg>显示悬浮窗</span>
+          <span class="mchip" data-val="orec"><svg class="ic"><use href="#i-mic"/></svg>悬浮窗录音</span>
+          <span class="mchip on" data-val="rec"><svg class="ic"><use href="#i-dot"/></svg>APP内录音</span>
+          <span class="mchip" data-val="note"><svg class="ic"><use href="#i-edit"/></svg>APP内笔记</span>
+          <span class="mchip" data-val="onote"><svg class="ic"><use href="#i-note"/></svg>悬浮窗笔记</span>
+        </div>
+
+        <div class="chip-row-label">双击音量减（0.3秒内）</div>
+        <div class="chips-wrap" data-group="dc-dn">
+          <span class="mchip" data-val="none"><svg class="ic"><use href="#i-block"/></svg>无动作</span>
+          <span class="mchip" data-val="pip"><svg class="ic"><use href="#i-pip"/></svg>显示悬浮窗</span>
+          <span class="mchip" data-val="orec"><svg class="ic"><use href="#i-mic"/></svg>悬浮窗录音</span>
+          <span class="mchip" data-val="note"><svg class="ic"><use href="#i-edit"/></svg>APP内笔记</span>
+          <span class="mchip on" data-val="onote"><svg class="ic"><use href="#i-note"/></svg>悬浮窗笔记</span>
+        </div>
+      </div>
+
+      <div class="sec-title">录音静音</div>
+      <div class="card">
+        <div class="sw-row" data-sw>
+          <div class="sw on"><div class="track"><div class="thumb"></div></div></div>
+          <div class="txt">
+            <div class="t">按音量减保持静音</div>
+            <div class="s">快捷录音/悬浮窗录音期间按音量减键，录音结束后继续保持静音</div>
+          </div>
+        </div>
+        <div class="divider inset"></div>
+        <div class="sw-row" data-sw>
+          <div class="sw on"><div class="track"><div class="thumb"></div></div></div>
+          <div class="txt">
+            <div class="t">静音提示</div>
+            <div class="s">快速录音静音时显示提示文案</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sec-title">说完自动停止</div>
+      <div class="card">
+        <div class="sw-row" data-sw id="autostop-row">
+          <div class="sw"><div class="track"><div class="thumb"></div></div></div>
+          <div class="txt">
+            <div class="t">说完自动停止</div>
+            <div class="s">快速录音（音量键/悬浮窗速记）检测到说完话后静音，自动停止并转写；一次都没说话不自动停</div>
+          </div>
+        </div>
+        <div id="autostop-sec" style="display:none;padding:4px 16px 12px">
+          <div class="chip-row-label">静音等待秒数</div>
+          <div class="chips-wrap" data-group="autostop-sec">
+            <span class="mchip on" data-val="3">3 秒</span>
+            <span class="mchip" data-val="5">5 秒</span>
+            <span class="mchip" data-val="8">8 秒</span>
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top:12px">
+        <button class="main-btn" onclick="toast('跳转系统无障碍设置')"><svg class="ic"><use href="#i-settings"/></svg>已开启，前往系统设置</button>
+        <div style="font-size:11px;color:var(--text-secondary);text-align:center;margin-top:8px">提示：在无障碍设置中找到「声物记」并开启服务</div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ─────── 关于 ─────── -->
+  <div class="page" id="page-about">
+    <div class="statusbar"><span>12:30</span><span>◍ 87%</span></div>
+    <div class="appbar"><span class="back" data-goto="home"><svg class="ic" style="width:22px;height:22px;fill:var(--text-primary)"><use href="#i-back"/></svg></span>关于</div>
+    <div class="body">
+
+      <div class="card">
+        <div style="display:flex;align-items:center;gap:8px">
+          <svg class="ic" style="width:20px;height:20px;fill:var(--primary)"><use href="#i-info"/></svg>
+          <span style="flex:1;font-size:16px;font-weight:bold;color:var(--text-primary)">声物记</span>
+          <span style="font-size:14px;color:var(--text-secondary)">v1.1.0</span>
+        </div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">完全离线 · 无需联网</div>
+      </div>
+
+      <div class="sec-title">更新日志</div>
+      <div class="card">
+        <details class="ver" open>
+          <summary>v1.1.0 <span class="date">2026-09-06</span></summary>
+          <ul>
+            <li>全新悬浮窗（闪念胶囊）：任意界面长按音量键即呼出，说完即走，收起后自动隐藏（Pro 功能）</li>
+            <li>悬浮窗语音定闹钟：说「周六晚上八点提醒我去看电影」自动识别时间写入系统日历</li>
+            <li>音量键手势升级为长按 / 双击四槽位自定义</li>
+            <li>悬浮窗快速新建、卡片标注、录音回放、左滑归档</li>
+            <li>悬浮窗语音速记录音上限 60 秒 → 5 分钟；与主 App 日记实时同步</li>
+            <li>语音转文字挪到后台进行，转写期间刷列表、打字依旧流畅</li>
+            <li>备份导出 / 导入更稳更快；搬家模式语音播报更顺滑；一批顺滑度优化</li>
+          </ul>
+        </details>
+        <details class="ver">
+          <summary>v1.0.17 <span class="date">2026-08-18</span></summary>
+          <ul>
+            <li>日记页录音按钮支持上滑-快速新建文本笔记</li>
+            <li>设置页将『静音提示』开关与『按音量减保持静音』开关整合在一起</li>
+            <li>隐藏日记卡片底部未实现的爱心图标，等待后续功能完善</li>
+          </ul>
+        </details>
+        <details class="ver">
+          <summary>更早版本 v1.0.1 ~ v1.0.16</summary>
+          <ul>
+            <li>（预览省略，实机展示全部 17 个版本）</li>
+          </ul>
+        </details>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <button class="text-btn" onclick="toast('拉起系统分享面板导出运行日志')"><svg class="ic"><use href="#i-bug"/></svg>导出运行日志</button>
+        <button class="text-btn" onclick="toast('showLicensePage 开源许可页')"><svg class="ic"><use href="#i-desc"/></svg>开放源代码许可</button>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+</div>
+
+<script>
+  /* ═══ 页面切换（入口行 data-goto → 二级页；返回同理） ═══ */
+  function navigate(id) {
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.getElementById('page-' + id).classList.add('active');
+    document.querySelectorAll('#nav-chips .chip').forEach(c =>
+      c.classList.toggle('on', c.dataset.page === id));
+    document.querySelector('.page.active').scrollTop = 0;
+  }
+  document.querySelectorAll('[data-goto]').forEach(el =>
+    el.addEventListener('click', () => navigate(el.dataset.goto)));
+  document.querySelectorAll('#nav-chips .chip').forEach(c =>
+    c.addEventListener('click', () => navigate(c.dataset.page)));
+
+  /* ═══ 主题切换（真实色值，全 App 联动） ═══ */
+  const themeNames = { teal: '默认青', orange: '暖橙', green: '墨绿', blue: '晴空蓝' };
+  document.querySelectorAll('#theme-chips .chip').forEach(c =>
+    c.addEventListener('click', () => {
+      document.querySelectorAll('#theme-chips .chip').forEach(x => x.classList.remove('on'));
+      c.classList.add('on');
+      document.getElementById('phone').dataset.theme = c.dataset.theme;
+      document.getElementById('sum-theme').textContent = themeNames[c.dataset.theme];
+    }));
+
+  /* ═══ 宽度档 ═══ */
+  document.querySelectorAll('#width-chips .chip').forEach(c =>
+    c.addEventListener('click', () => {
+      document.querySelectorAll('#width-chips .chip').forEach(x => x.classList.remove('on'));
+      c.classList.add('on');
+      document.getElementById('phone').style.width = c.dataset.w + 'px';
+    }));
+
+  /* ═══ 开关（点击整行切换） ═══ */
+  document.addEventListener('click', e => {
+    const row = e.target.closest('[data-sw]');
+    if (!row) return;
+    const sw = row.querySelector('.sw');
+    sw.classList.toggle('on');
+    if (row.id === 'autostop-row') syncAutoStopSec();
+  });
+  function syncAutoStopSec() {
+    const on = document.querySelector('#autostop-row .sw').classList.contains('on');
+    document.getElementById('autostop-sec').style.display = on ? 'block' : 'none';
+  }
+
+  /* ═══ ChoiceChip 组（组内互斥；data-group 绑定联动摘要） ═══ */
+  document.querySelectorAll('[data-group]').forEach(group => {
+    group.addEventListener('click', e => {
+      const chip = e.target.closest('.mchip');
+      if (!chip) return;
+      group.querySelectorAll('.mchip').forEach(x => x.classList.remove('on'));
+      chip.classList.add('on');
+      renderSummaries();
+    });
+  });
+
+  /* ═══ AI 应用单选（含主页摘要联动） ═══ */
+  const aiNames = { chatgpt: '🤖 ChatGPT', deepseek: '🧠 DeepSeek', kimi: '🌙 Kimi', wechat: '💬 微信' };
+  document.querySelectorAll('[data-radio="ai"]').forEach(row =>
+    row.addEventListener('click', () => {
+      document.querySelectorAll('[data-radio="ai"]').forEach(x => x.classList.remove('on'));
+      row.classList.add('on');
+      renderSummaries();
+    }));
+
+  /* ═══ 热词输入行数 → 主页摘要（textarea input 实时联动） ═══ */
+  function hotwordCount() {
+    return document.getElementById('hotword-input').value
+      .split('\n').filter(l => l.trim() && l.includes('=')).length;
+  }
+  function saveHotwords() {
+    document.getElementById('sum-hotwords').textContent = hotwordCount();
+    toast('✅ 热词已保存生效（主页摘要已同步）');
+  }
+  document.getElementById('hotword-input').addEventListener('input', renderSummaries);
+
+  /* ═══ 主页状态摘要联动 ═══ */
+  function selOf(group) {
+    const on = document.querySelector('[data-group="' + group + '"] .mchip.on');
+    return on ? on.dataset.val : null;
+  }
+  function renderSummaries() {
+    // 悬浮窗摘要：停靠侧 + 自动隐藏
+    const side = selOf('side') === 'left' ? '左缘' : '右缘';
+    const hideMap = { '5': '5 秒后自动隐藏', '10': '10 秒后自动隐藏', '30': '30 秒后自动隐藏', 'never': '常驻不隐藏' };
+    document.getElementById('sum-overlay').textContent =
+      side + '停靠 · ' + (hideMap[selOf('autohide')] || '');
+    // AI 摘要
+    const ai = document.querySelector('[data-radio="ai"].on');
+    document.getElementById('sum-ai').textContent =
+      '分享跳转：' + (aiNames[ai ? ai.dataset.val : 'chatgpt'] || '');
+    // 热词条数（未保存也实时预览，括注示意）
+    document.getElementById('sum-hotwords').textContent = hotwordCount();
+  }
+
+  /* ═══ 轻提示 ═══ */
+  let toastTimer = null;
+  function toast(msg) {
+    let el = document.getElementById('pv-toast');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'pv-toast';
+      el.style.cssText = 'position:fixed;left:50%;bottom:36px;transform:translateX(-50%);' +
+        'background:#2b2e36;color:#e8eaee;padding:9px 16px;border-radius:10px;' +
+        'font-size:13px;z-index:99;box-shadow:0 6px 20px rgba(0,0,0,.4);transition:opacity .25s';
+      document.body.appendChild(el);
+    }
+    el.textContent = msg; el.style.opacity = '1';
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.style.opacity = '0', 2200);
+  }
+
+  renderSummaries();
+</script>
+</body>
+</html>

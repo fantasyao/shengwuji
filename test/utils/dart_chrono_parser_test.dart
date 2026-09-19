@@ -55,8 +55,7 @@ void main() {
     });
 
     test('解析多个时间：相邻日期+时间合并，间隔的各自独立', () async {
-      final results =
-          await parser.parseDateTimeEntities('今天下午3点和明天开会');
+      final results = await parser.parseDateTimeEntities('今天下午3点和明天开会');
       // 「今天+下午3点」紧挨着被合并为一个实体（_mergeAdjacentEntities，
       // 悬浮窗闹钟「周六晚上8点」整体识别的前提），「和」隔开的明天独立
       expect(results.length, 2);
@@ -119,14 +118,12 @@ void main() {
       expect(r2.single.dateTime!.hour, 14); // 两=2 → +12
     });
 
-    test('"十二点"与阿拉伯数字行为一致（晚上12点 → 12 时刻，语义不动）',
-        () async {
+    test('"十二点"与阿拉伯数字行为一致（晚上12点 → 12 时刻，语义不动）', () async {
       final results = await parser.parseDateTimeEntities('晚上十二点收工');
       expect(results.single.dateTime!.hour, 12);
     });
 
-    test('口语"晚一点"不误伤（纯"一"不当钟点；"晚上1点"数字写法不受影响）',
-        () async {
+    test('口语"晚一点"不误伤（纯"一"不当钟点；"晚上1点"数字写法不受影响）', () async {
       expect(await parser.parseDateTimeEntities('时间再晚一点通知我'), isEmpty);
       expect(await parser.parseDateTimeEntities('晚上1点见'), isNotEmpty);
     });

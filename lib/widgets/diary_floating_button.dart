@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../theme/app_theme_extension.dart';
+import 'neu_widgets.dart';
 
 /// 日记页浮动麦克风按钮（长在 MainScaffold 外层 Stack——Scaffold 之外，
 /// 键盘弹起时被覆盖不上浮、相对物理屏幕定位不飞起）。
@@ -28,6 +29,11 @@ class DiaryFloatingButton extends StatefulWidget {
   /// 锁定录音模式：点击停止录音、上滑手势禁用、状态文字固定「点击停止」
   final bool isLockedRecording;
 
+  /// 🔇 快速录音静音倒计时进行中（说完自动停止）：true 时状态文字优先显示
+  /// [statusText]（「N 秒后自动停止」），覆盖锁定态的「点击停止」固定文案——
+  /// 锁定态硬编码文案曾把倒计时提示完全短路（2026-09-16 真机反馈修复）
+  final bool isSilenceCountdown;
+
   /// DiaryTab 状态文案（录音中/识别中…），非锁定模式且未触发上滑时显示
   final String statusText;
 
@@ -44,6 +50,7 @@ class DiaryFloatingButton extends StatefulWidget {
     required this.isListening,
     required this.isProcessing,
     required this.isLockedRecording,
+    this.isSilenceCountdown = false,
     required this.statusText,
     required this.onStartListening,
     required this.onStopListening,
@@ -84,21 +91,21 @@ class _DiaryFloatingButtonState extends State<DiaryFloatingButton> {
     final ext = AppThemeExtension.of(context);
 
     // 颜色和图标逻辑
+    // 拟物主题：底色恒为同色凸起，状态色（青/红/橙/灰）落在中心图标；
+    // 旧主题：按钮底色随状态变化，图标恒白
+    final bool isNeu = ext.isNeumorphic;
     Color btnColor = ext.fabReady;
-    Widget btnChild = const Icon(
-      Icons.mic,
-      color: Colors.white,
-      size: 46,
-    );
+    Widget btnChild = Icon(Icons.mic, color: isNeu ? ext.primary : Colors.white, size: 46);
 
     if (!widget.isReady && !widget.modelAvailable) {
       // 模型文件不存在 → 禁用按钮
       btnColor = ext.fabDisabled;
+      btnChild = Icon(Icons.mic, color: isNeu ? ext.textHint : Colors.white, size: 46);
     } else if (widget.isListening) {
       btnColor = ext.fabRecording;
       btnChild = Icon(
         Icons.fiber_manual_record,
-        color: Colors.white,
+        color: isNeu ? ext.fabRecording : Colors.white,
         size: 46,
       );
     } else if (widget.isProcessing) {
@@ -107,7 +114,7 @@ class _DiaryFloatingButtonState extends State<DiaryFloatingButton> {
         width: 40,
         height: 40,
         child: CircularProgressIndicator(
-          color: Colors.white,
+          color: isNeu ? ext.fabProcessing : Colors.white,
           strokeWidth: 3,
         ),
       );
@@ -116,7 +123,7 @@ class _DiaryFloatingButtonState extends State<DiaryFloatingButton> {
       // 滑动提示由上滑拉出的「↑ Aa」徽章承担（见 _buildAaBadge）；下滑暂无功能，不做对称提示以免误导。
       // ⚠️ 本按钮位于 Scaffold 外层 Stack（无 Material 祖先），Text 若不给完整样式会
       // fallback 到黄色双下划线警示样式（_buildAaBadge 已按此防护）
-      btnChild = const Icon(Icons.mic, color: Colors.white, size: 46);
+      btnChild = Icon(Icons.mic, color: isNeu ? ext.primary : Colors.white, size: 46);
     }
 
     return Positioned(
@@ -202,7 +209,34 @@ class _DiaryFloatingButtonState extends State<DiaryFloatingButton> {
                   AnimatedScale(
                     scale: _isTriggered ? _kMicTriggerScale : 1.0,
                     duration: const Duration(milliseconds: 120),
-                    child: AnimatedContainer(
+                    // 拟物主题：同色凸起底+凹陷圆环（NeuVoiceFab，2026-09-18
+                    // 真机反馈三处语音圆钮拟物化）；旧主题保持彩色圆底+黏土阴影
+                    child: isNeu
+                        ? GestureDetector(
+                            onTap: () {
+                              // 锁定录音模式下，点击停止录音
+                              if (widget.isLockedRecording) {
+                                widget.onStopListening();
+                              }
+                            },
+                            onLongPressStart: (_) {
+                              // 普通模式下，长按开始录音
+                              if (!widget.isLockedRecording) {
+                                widget.onStartListening();
+                              }
+                            },
+                            onLongPressEnd: (_) {
+                              // 普通模式下，松开停止录音
+                              if (!widget.isLockedRecording) {
+                                widget.onStopListening();
+                              }
+                            },
+                            child: NeuVoiceFab(
+                              size: 94,
+                              child: btnChild,
+                            ),
+                          )
+                        : AnimatedContainer(
                       duration: const Duration(milliseconds: 200),
                       width: 94,
                       height: 94,
@@ -213,9 +247,7 @@ class _DiaryFloatingButtonState extends State<DiaryFloatingButton> {
                         boxShadow: [
                           // 顶部高光阴影（模拟光源从上方）
                           BoxShadow(
-                            color: ext.textOnPrimary.withValues(
-                              alpha: 0.4,
-                            ),
+                            color: ext.textOnPrimary.withValues(alpha: 0.4),
                             offset: const Offset(-4, -4),
                             blurRadius: 8,
                           ),
@@ -264,9 +296,11 @@ class _DiaryFloatingButtonState extends State<DiaryFloatingButton> {
               child: Text(
                 _isTriggered
                     ? '松手新建文本笔记'
-                    : (widget.isLockedRecording
-                          ? '点击停止'
-                          : widget.statusText),
+                    : (widget.isSilenceCountdown && widget.statusText.isNotEmpty
+                        ? widget.statusText // 🔇 静音倒计时提示优先于锁定态固定文案
+                        : (widget.isLockedRecording
+                              ? '点击停止'
+                              : widget.statusText)),
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   // 显式指定霞鹜文楷字体，避免在部分 widget 链路中 Roboto 回退
@@ -322,11 +356,7 @@ class _DiaryFloatingButtonState extends State<DiaryFloatingButton> {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(
-                    Icons.keyboard_arrow_up,
-                    size: 18,
-                    color: ext.fabReady,
-                  ),
+                  Icon(Icons.keyboard_arrow_up, size: 18, color: ext.fabReady),
                   const SizedBox(width: 2),
                   Text(
                     'Aa',

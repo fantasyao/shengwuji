@@ -16,6 +16,7 @@ import 'settings_tab.dart';
 import 'diary_tab.dart';
 import 'widgets/blur_loading_overlay.dart';
 import 'widgets/diary_floating_button.dart';
+import 'widgets/neu_widgets.dart';
 import 'shortcut_manager.dart' as sm;
 import 'recognizer_singleton.dart';
 import 'splash_screen.dart';
@@ -23,6 +24,10 @@ import 'theme/app_theme.dart';
 import 'theme/app_theme_extension.dart';
 import 'overlay/overlay_constants.dart';
 import 'utils/alarm_ringing_notifier.dart';
+import 'utils/pro_gate.dart';
+import 'utils/tab_visibility.dart';
+import 'web_server/diary_server_controller.dart';
+import 'web_server/diary_web_server.dart';
 // 保活悬浮窗入口 overlayMain：Dart 编译器只编译从 main() 可达的代码，
 // 不 import 此文件 overlayMain 就不进 kernel，引擎报 "Could not resolve main entrypoint function"
 import 'overlay/overlay_main.dart' as overlay_entry;
@@ -57,12 +62,26 @@ void main() async {
   // 预读用户选择的主题（默认青兜底，找不到 ID 也回退到默认青）
   final prefs = await SharedPreferences.getInstance();
   final themeId = prefs.getString('selected_theme');
-  final initialTheme = AppThemes.findById(themeId) ?? AppThemes.defaultTheme;
+  var initialTheme = AppThemes.findById(themeId) ?? AppThemes.defaultTheme;
+  // Pro 主题门禁（试用过期/未解锁）：启动回退默认青并写回 prefs（用户拍板
+  // "下次启动回退"——当次会话不强行中断，悬浮窗等按键门禁则即时判断），
+  // 回退后 MainScaffold 首帧 SnackBar 提示一次
+  if (initialTheme.isPro && !ProGate.isProActiveWithPrefs(prefs)) {
+    log('Pro 主题「${initialTheme.name}」已失效（试用过期/未解锁），启动回退默认青');
+    await prefs.setString('selected_theme', AppThemes.defaultTheme.id);
+    initialTheme = AppThemes.defaultTheme;
+    MainScaffold.showProExpireNotice = true;
+  }
   // 初始化全局主题 notifier，AppRoot 内的 ValueListenableBuilder 会订阅它
   AppRoot.themeNotifier.value = initialTheme;
 
-  // 预读用户选择的字号缩放（默认 1.0 标准；旧版本无此 key 回退 1.0）
+  // 预读用户选择的字号缩放（默认 1.0 中档；旧版本无此 key 回退 1.0）
   AppRoot.fontScaleNotifier.value = prefs.getDouble('font_size_scale') ?? 1.0;
+
+  // 预读主界面 Tab 可见性（设置页「功能页面」两个隐藏开关，重启生效——
+  // MainScaffold 按 visibleTabStack 装配 IndexedStack/底部导航，进程内不变）
+  AppRoot.recordTabHidden = prefs.getBool(prefKeyRecordTabHidden) ?? false;
+  AppRoot.listTabHidden = prefs.getBool(prefKeyListTabHidden) ?? false;
 
   // 全局拦截 print，自动收集日志到 AppLogger
   runZonedGuarded(
@@ -105,8 +124,14 @@ class AppRoot extends StatelessWidget {
 
   /// 全局字号缩放——任何位置都能读写
   /// main() 启动时初始化为持久化的用户选择，默认 1.0（标准）
-  static final ValueNotifier<double> fontScaleNotifier =
-      ValueNotifier<double>(1.0);
+  static final ValueNotifier<double> fontScaleNotifier = ValueNotifier<double>(
+    1.0,
+  );
+
+  /// 主界面 Tab 可见性（设置页「功能页面」两个隐藏开关；main() 启动时预读，
+  /// 默认 false=显示。同 themeNotifier 的「启动一次预读」模式，重启生效）
+  static bool recordTabHidden = false;
+  static bool listTabHidden = false;
 
   const AppRoot({super.key});
 
@@ -135,13 +160,18 @@ class AppRoot extends StatelessWidget {
               // 悬浮窗是独立 engine 独立 widget 树，不经过此 builder，不受影响。
               builder: (context, child) {
                 return MediaQuery(
-                  data: MediaQuery.of(context).copyWith(
-                    textScaler: TextScaler.linear(fontScale),
-                  ),
+                  data: MediaQuery.of(
+                    context,
+                  ).copyWith(textScaler: TextScaler.linear(fontScale)),
                   child: child!,
                 );
               },
-              home: const SplashScreen(child: MainScaffold()),
+              home: SplashScreen(
+                child: MainScaffold(
+                  recordTabHidden: recordTabHidden,
+                  listTabHidden: listTabHidden,
+                ),
+              ),
               debugShowCheckedModeBanner: false,
             );
           },
@@ -152,14 +182,43 @@ class AppRoot extends StatelessWidget {
 }
 
 class MainScaffold extends StatefulWidget {
-  const MainScaffold({super.key});
+  /// Pro 试用过期启动回退提示（main() 检测到 Pro 主题失效回退默认青时置位，
+  /// 本 Scaffold initState 首帧 SnackBar 提示一次后清零）
+  static bool showProExpireNotice = false;
+
+  /// 存物品页隐藏开关（设置页「功能页面」，main() 预读后传入；默认 false=显示。
+  /// 重启生效：进程内恒定，Tab 装配在构造时一次定型）
+  final bool recordTabHidden;
+
+  /// 查物品页隐藏开关（同上）
+  final bool listTabHidden;
+
+  /// 可见 Tab 语义索引栈（IndexedStack children 与底部导航 items 按此装配；
+  /// 语义索引定义见 utils/tab_visibility.dart）
+  final List<int> _tabStack;
+
+  // 非 const 构造：初始化列表要调用 visibleTabStack() 推导可见栈（普通函数
+  // 不满足 const 构造的常量表达式要求）
+  MainScaffold({
+    super.key,
+    this.recordTabHidden = false,
+    this.listTabHidden = false,
+  }) : _tabStack = visibleTabStack(
+         recordTabHidden: recordTabHidden,
+         listTabHidden: listTabHidden,
+       );
+
   @override
   State<MainScaffold> createState() => _MainScaffoldState();
 }
 
 class _MainScaffoldState extends State<MainScaffold>
     with WidgetsBindingObserver {
-  int _currentIndex = 0;
+  // 当前 Tab 用【语义索引】（tab_visibility.dart 的 tabIndex* 常量），不是
+  // IndexedStack 显示下标——隐藏页不挂载后两者不等，显示下标一律经
+  // _tabStack.indexOf 换算；快捷方式/分享/悬浮窗等入口写的 2（随手记）
+  // 不受隐藏影响，该页不可隐藏
+  int _currentIndex = tabIndexRecord;
   final TextProcessor _processor = TextProcessor();
   final DbHelper _dbHelper = DbHelper();
 
@@ -205,7 +264,23 @@ class _MainScaffoldState extends State<MainScaffold>
   @override
   void initState() {
     super.initState();
+    // 初始落点=第一个可见 Tab（两页物品页都隐藏时落在随手记）
+    _currentIndex = widget._tabStack.first;
     _processor.loadConfigs();
+
+    // Pro 试用过期启动回退提示：main() 置位，首帧后提示一次（只提示不阻断）
+    if (MainScaffold.showProExpireNotice) {
+      MainScaffold.showProExpireNotice = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Pro 试用已结束，已切回默认主题'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+      });
+    }
 
     // 添加生命周期观察者
     WidgetsBinding.instance.addObserver(this);
@@ -216,6 +291,16 @@ class _MainScaffoldState extends State<MainScaffold>
     // 闹钟响铃：冷启动一次性恢复（进程被杀期间闹钟触发过、用户未点通知
     // 直接打开 APP 的场景，无引擎可推事件，只能读原生写入的 prefs 标志）
     unawaited(_alarmRinging.restoreOnce());
+
+    // 电脑访问服务：上次开启过则自动恢复（内部延迟 1.5s 避开启动热路径，
+    // 前台保活服务 + HTTP 固定端口 9527 都由 controller 编排）
+    unawaited(DiaryServerController.instance.autoStartIfEnabled());
+    // 电脑端（浏览器）增删改日记 → 主 App 日记页列表重查：
+    // 服务层写库发生在本 isolate（main.dart 可直达 GlobalKey），手机侧 UI
+    // 即时反映电脑的改动；悬浮窗 engine 侧感知走 DiarySyncBridge 计数桥
+    DiaryWebServer.instance.remoteMutationTick.addListener(
+      _onRemoteDiaryMutation,
+    );
 
     // 监听原生层的快捷方式启动事件（用于静态快捷方式和冷启动）
     _platform.setMethodCallHandler((call) async {
@@ -228,6 +313,8 @@ class _MainScaffoldState extends State<MainScaffold>
           _handleQuickTextNote();
         } else if (shortcutType == 'grant_calendar') {
           _handleGrantCalendarPermission();
+        } else if (shortcutType == 'open_diary') {
+          _handleOpenDiaryPage();
         }
       } else if (call.method == 'onReceiveSharedText') {
         final args = call.arguments as Map<dynamic, dynamic>;
@@ -248,6 +335,9 @@ class _MainScaffoldState extends State<MainScaffold>
 
   @override
   void dispose() {
+    DiaryWebServer.instance.remoteMutationTick.removeListener(
+      _onRemoteDiaryMutation,
+    );
     _alarmRinging.dispose();
     _recordBarTick.dispose();
     _listButtonTick.dispose();
@@ -270,16 +360,30 @@ class _MainScaffoldState extends State<MainScaffold>
     }
   }
 
+  /// 弹掉盖在 MainScaffold 上的推入路由（设置二级页、对话框）。
+  ///
+  /// 外部入口（音量键快捷方式/系统分享/悬浮窗按钮）强切 IndexedStack 的 tab
+  /// 对 Navigator 路由栈不可见：二级页是 Navigator.push 的 MaterialPageRoute，
+  /// 盖在整棵 MainScaffold 之上，底下切 tab 用户看不到。真机确诊 2026-09-16：
+  /// 设置二级页上触发快速录音，录音正常启动但 UI 停在二级页，左滑返回才露出
+  /// 已切好的日记页。无推入路由时 popUntil(isFirst) 为 no-op，无副作用
+  void _popOverlaysToRoot() {
+    Navigator.of(context).popUntil((route) => route.isFirst);
+  }
+
   /// 处理快速录音快捷方式
   Future<void> _handleQuickRecord() async {
     // 🔥 防止重复触发：立即设置标志（在方法开始时）
     if (_hasHandledShortcutLaunch) {
-      log('快捷方式已处理，忽略重复调用');
+      log('🔑 [QuickRecord] 防重复标志未重置，忽略重复调用');
       return;
     }
     _hasHandledShortcutLaunch = true;
 
     final diaryState = _diaryTabKey.currentState;
+    log(
+      '🔑 [QuickRecord] 触发: 当前tab=$_currentIndex, diaryState=${diaryState != null}, isListening=${diaryState?.isListening}',
+    );
 
     // 如果正在录音，停止录音（长按音量键切换逻辑）
     if (diaryState != null && diaryState.isListening) {
@@ -288,16 +392,30 @@ class _MainScaffoldState extends State<MainScaffold>
       return;
     }
 
-    // 切换到日记页（索引2）
-    _currentIndex = 2;
+    // 切换到日记页（索引2），弹掉盖在上的二级页/对话框（IndexedStack 切 tab
+    // 对路由栈不可见，不弹的话用户看到的还是二级页）
+    _currentIndex = tabIndexDiary;
+    _popOverlaysToRoot();
 
     // 刷新UI以切换页面
     setState(() {});
+
+    // 🔍 真机诊断（用户反馈快速录音后未跳日记页）：链路日志证明 setState
+    // 必然执行但用户看不到切换。首帧回包验证显示下标——-1 = 语义索引不在
+    // 可见栈（切页失效）；正常值 = Dart 侧已切，问题在显示层（锁屏遮挡/
+    // MIUI 后台弹出权限等），下次复测日志可直接区分两种情况
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      log(
+        '🔑 [QuickRecord] 切页后首帧: 显示下标=${widget._tabStack.indexOf(_currentIndex)}, 可见栈=${widget._tabStack}',
+      );
+    });
 
     // 确保引擎状态已同步（快捷方式进入时 DiaryTab 的 isReady 可能未同步）
     if (diaryState != null) {
       await diaryState.refreshEngine();
       await diaryState.startListening(lockedMode: true);
+    } else {
+      log('🔑 [QuickRecord] ⚠️ diaryState 为 null：只切页未开录音');
     }
   }
 
@@ -309,14 +427,41 @@ class _MainScaffoldState extends State<MainScaffold>
     }
     _hasHandledShortcutLaunch = true;
 
-    // 切换到日记页（索引2）
-    _currentIndex = 2;
+    // 切换到日记页（索引2），弹掉盖在上的二级页/对话框
+    _currentIndex = tabIndexDiary;
+    _popOverlaysToRoot();
     setState(() {});
 
     final diaryState = _diaryTabKey.currentState;
     if (diaryState != null) {
       await diaryState.startNewTextNote();
     }
+  }
+
+  /// 处理悬浮窗「打开随手记」按钮（悬浮窗 header → 原生 launcher intent
+  /// 带 type=open_diary extra → MainActivity extractShortcutType 路由到此）：
+  /// 切到日记页（索引 2，与底部导航「随手记」同页）。不加防重复标志：
+  /// 切 tab 幂等，重复 intent 无副作用（与 quick_record 的"只准触发一次"
+  /// 语义不同）
+  void _handleOpenDiaryPage() {
+    log('📖 [Shortcut] 悬浮窗跳转随手记（日记页）');
+    // 先弹二级页再切 tab：与快速录音同因（真机确诊 2026-09-16）
+    _popOverlaysToRoot();
+    // 先切 tab 再延迟刷新：底部导航 onTap 切到索引 2 的同款节奏——
+    // 悬浮窗侧的增删改经 DiarySyncBridge 计数桥写库，列表须重查才可见
+    setState(() => _currentIndex = tabIndexDiary);
+    Future.microtask(() {
+      _diaryTabKey.currentState?.refreshEngine();
+      _diaryTabKey.currentState?.refreshList();
+    });
+  }
+
+  /// 电脑端（浏览器）增删改了日记：日记页列表重查（IndexedStack 常驻，
+  /// 不在当前 tab 也能安全刷新）。与 _handleOpenDiaryPage 的微任务节奏不同：
+  /// 这里已是响应异步写库完成后的回调，直接刷即可
+  void _onRemoteDiaryMutation() {
+    log('💻 [WebServer] 电脑端修改了日记，刷新日记页列表');
+    _diaryTabKey.currentState?.refreshList();
   }
 
   /// 处理悬浮窗闹钟的日历权限请求（悬浮窗无 Activity 不能自己弹授权框，
@@ -333,9 +478,7 @@ class _MainScaffoldState extends State<MainScaffold>
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          granted
-              ? '日历权限已授予，可在悬浮窗中添加日历提醒了'
-              : '日历权限被拒绝，悬浮窗闹钟将无法添加日程',
+          granted ? '日历权限已授予，可在悬浮窗中添加日历提醒了' : '日历权限被拒绝，悬浮窗闹钟将无法添加日程',
         ),
         duration: const Duration(seconds: 3),
       ),
@@ -349,8 +492,9 @@ class _MainScaffoldState extends State<MainScaffold>
     log(
       '📝 [Share] MainScaffold 收到分享, source="$source", source类型=${source.runtimeType}, text长度=${text.length}',
     );
-    // 切换到日记页（索引2）
-    _currentIndex = 2;
+    // 切换到日记页（索引2），弹掉盖在上的二级页/对话框
+    _currentIndex = tabIndexDiary;
+    _popOverlaysToRoot();
     setState(() {});
 
     final diaryState = _diaryTabKey.currentState;
@@ -463,111 +607,35 @@ class _MainScaffoldState extends State<MainScaffold>
             // 【核心修复】：恢复为 true。让系统正常缩放页面，从而解决录入页键盘上方的白色区域问题
             resizeToAvoidBottomInset: true,
             body: IndexedStack(
-              index: _currentIndex,
+              // 显示下标=语义索引在可见栈中的位置（隐藏页不挂载后两者不等）
+              index: widget._tabStack.indexOf(_currentIndex),
               children: [
-                RecordTab(
-                  key: _recordTabKey,
-                  processor: _processor,
-                  dbHelper: _dbHelper,
-                  onLoadingChanged: (show, {message}) {
-                    if (show) {
-                      showGlobalLoading(message: message);
-                    } else {
-                      hideGlobalLoading();
-                    }
-                  },
-                  // 按钮栏在 main.dart 外层 Stack，RecordTab 状态变化（录音/处理/搬家）→
-                  // tick 递增只重建外层按钮栏，不再整页重建（性能审查 Top6）
-                  onStateChanged: () => _recordBarTick.value++,
+                for (final semantic in widget._tabStack) _buildTabPage(
+                  semantic,
                 ),
-                // [修改] 传入回调，让列表页状态变化时，外层也跟着刷新按钮 UI
-                ListTab(
-                  key: _listTabKey,
-                  dbHelper: _dbHelper,
-                  onStateChanged: () => _listButtonTick.value++,
-                ),
-                // [修改] 传入回调，让日记页状态变化时，外层浮动按钮跟着刷新
-                DiaryTab(
-                  key: _diaryTabKey,
-                  dbHelper: _dbHelper,
-                  processor: _processor,
-                  onStateChanged: () => _diaryButtonTick.value++,
-                  onLoadingChanged: (show, {message}) {
-                    if (show) {
-                      showGlobalLoading(message: message);
-                    } else {
-                      hideGlobalLoading();
-                    }
-                  },
-                  // 日记页答案区"+N"点击 → 跳转 ListTab 并预填搜索词
-                  onJumpToSearch: (keyword) {
-                    setState(() => _currentIndex = 1); // 切换到 ListTab
-                    WidgetsBinding.instance.addPostFrameCallback((_) {
-                      _listTabKey.currentState?.setSearchQuery(keyword);
-                    });
-                  },
-                ),
-                SettingsTab(processor: _processor, dbHelper: _dbHelper),
               ],
             ),
-            bottomNavigationBar: Theme(
+            bottomNavigationBar: AppThemeExtension.of(context).isNeumorphic
+                ? _buildNeuBottomNav()
+                : Theme(
               data: Theme.of(context).copyWith(
                 // 关闭点击水波纹效果，提升性能
                 splashColor: Colors.transparent,
                 highlightColor: Colors.transparent,
               ),
               child: BottomNavigationBar(
-                currentIndex: _currentIndex,
+                currentIndex: widget._tabStack.indexOf(_currentIndex),
                 // 显式指定背景色：黑金主题下默认白色会与深色 scaffold 断裂
                 // 4 套主题中 3 套浅色 cardBackground≈白，视觉无变化；黑金修复白底问题
                 backgroundColor: ext.cardBackground,
                 type: BottomNavigationBarType
                     .fixed, // [注意] 超过3个tab建议加上这个属性，防止图标乱动
-                onTap: (index) {
-                  // 先立即更新 UI，让底部导航栏响应更快
-                  setState(() {
-                    _currentIndex = index;
-                  });
-
-                  // 延迟执行各个 tab 的刷新方法，避免阻塞 UI
-                  Future.microtask(() {
-                    // 当切回录音页 (索引 0) 时，触发延迟初始化
-                    if (index == 0) {
-                      // 🆕 RecordTab: 不触发自动初始化
-                      // 模型将在用户停止录音后加载
-                      _recordTabKey.currentState
-                          ?.initializeIfNeeded(); // 改为新的方法名
-                    }
-                    // 如果用户点击了"查询列表" (索引为 1)
-                    if (index == 1) {
-                      // 通过遥控器命令列表页：立刻刷新！
-                      _listTabKey.currentState?.refreshItems();
-                    }
-                    if (index == 2) {
-                      // 🆕 DiaryTab: 不触发自动初始化
-                      // 模型将在用户停止录音后加载
-                      _diaryTabKey.currentState?.refreshEngine(); // 已修改为支持按需加载
-                      _diaryTabKey.currentState?.refreshList();
-                    }
-                  });
-                },
+                onTap: _onNavTap,
                 selectedItemColor: ext.primary,
                 unselectedItemColor: ext.textHint,
-                items: const [
-                  BottomNavigationBarItem(icon: Icon(Icons.mic), label: "存物品"),
-                  BottomNavigationBarItem(
-                    icon: Icon(Icons.search),
-                    label: "查物品",
-                  ),
-                  BottomNavigationBarItem(
-                    icon: Icon(Icons.book),
-                    label: "随手记",
-                  ), // [新增]
-
-                  BottomNavigationBarItem(
-                    icon: Icon(Icons.settings),
-                    label: "设置",
-                  ),
+                // 按可见栈装配（隐藏页不出现在导航上，与 IndexedStack 顺序一致）
+                items: [
+                  for (final semantic in widget._tabStack) _navItem(semantic),
                 ],
               ),
             ),
@@ -594,6 +662,7 @@ class _MainScaffoldState extends State<MainScaffold>
                   isListening: state.isListening,
                   isProcessing: state.isProcessing,
                   isLockedRecording: state.isLockedRecording,
+                  isSilenceCountdown: state.isSilenceCountdown,
                   statusText: state.statusText,
                   onStartListening: () => state.startListening(),
                   onStopListening: state.stopListening,
@@ -628,6 +697,209 @@ class _MainScaffoldState extends State<MainScaffold>
         ],
       ),
     );
+  }
+
+  /// 底部导航点击（显示下标 → 语义索引；隐藏页不挂载后两者不等）
+  ///
+  /// 从 BottomNavigationBar onTap 内联逻辑抽出：拟物主题的自绘导航
+  /// （_buildNeuBottomNav）与旧主题的 BottomNavigationBar 共用同一套切换行为。
+  void _onNavTap(int displayIndex) {
+    final semantic = widget._tabStack[displayIndex];
+    // 先立即更新 UI，让底部导航栏响应更快
+    setState(() {
+      _currentIndex = semantic;
+    });
+
+    // 延迟执行各个 tab 的刷新方法，避免阻塞 UI
+    Future.microtask(() {
+      // 当切回录音页（语义 0）时，触发延迟初始化
+      if (semantic == tabIndexRecord) {
+        // 🆕 RecordTab: 不触发自动初始化
+        // 模型将在用户停止录音后加载
+        _recordTabKey.currentState?.initializeIfNeeded(); // 改为新的方法名
+      }
+      // 如果用户点击了"查询列表"（语义 1）
+      if (semantic == tabIndexList) {
+        // 通过遥控器命令列表页：立刻刷新！
+        _listTabKey.currentState?.refreshItems();
+      }
+      if (semantic == tabIndexDiary) {
+        // 🆕 DiaryTab: 不触发自动初始化
+        // 模型将在用户停止录音后加载
+        _diaryTabKey.currentState?.refreshEngine(); // 已修改为支持按需加载
+        _diaryTabKey.currentState?.refreshList();
+      }
+    });
+  }
+
+  /// 拟物底部导航：与页面同色，选中项为凹陷坑 + 品牌青（预览拍板样式）
+  ///
+  /// 仅新拟物主题走此分支；切换行为与 BottomNavigationBar 完全一致（_onNavTap），
+  /// 可见栈装配（隐藏页不出现在导航上）也共用 _tabStack，逻辑零分叉。
+  Widget _buildNeuBottomNav() {
+    final ext = AppThemeExtension.of(context);
+    final displayIndex = widget._tabStack.indexOf(_currentIndex);
+    return Container(
+      color: ext.cardBackground,
+      child: SafeArea(
+        top: false,
+        child: SizedBox(
+          height: 64,
+          child: Row(
+            children: [
+              for (var i = 0; i < widget._tabStack.length; i++)
+                Expanded(
+                  child: _buildNeuNavItem(
+                    widget._tabStack[i],
+                    selected: i == displayIndex,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 拟物导航单项：icon 装在 44×28 容器里（选中时凹陷），下方 label
+  Widget _buildNeuNavItem(int semantic, {required bool selected}) {
+    final ext = AppThemeExtension.of(context);
+    final item = _navItem(semantic);
+    final color = selected ? ext.primaryDark : ext.textHint;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => _onNavTap(widget._tabStack.indexOf(semantic)),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          SizedBox(
+            width: 44,
+            height: 28,
+          // 选中=NeuInset 凹陷（双轴渐变晕影，与开关/输入框同款，
+          // 2026-09-19 统一，替代对角渐变 neuInsetDecoration——顶/底边
+          // 整条没阴影的旧观感）
+          child: selected
+              ? NeuInset(
+                  radius: 14,
+                  child: Center(
+                    child: Icon(_navIconData(semantic), color: color, size: 20),
+                  ),
+                )
+              : Center(
+                  child: Icon(_navIconData(semantic), color: color, size: 20),
+                ),
+          ),
+          const SizedBox(height: 3),
+          Text(
+            item.label!,
+            style: TextStyle(
+              fontSize: 10.5,
+              color: color,
+              fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 拟物导航图标数据（_navItem 返回 Icon 对象不便取 IconData，此处平行映射；
+  /// 与 _navItem 的 switch 保持同序，新增 tab 时两处都要改）
+  IconData _navIconData(int semantic) => switch (semantic) {
+    tabIndexRecord => Icons.mic,
+    tabIndexList => Icons.search,
+    tabIndexDiary => Icons.book,
+    tabIndexSettings => Icons.settings,
+    _ => throw ArgumentError('未知的 Tab 语义索引: $semantic'),
+  };
+
+  /// 底部导航项文案/图标（语义索引 → 项；随可见栈装配顺序渲染）
+  BottomNavigationBarItem _navItem(int semantic) => switch (semantic) {
+    tabIndexRecord => const BottomNavigationBarItem(
+      icon: Icon(Icons.mic),
+      label: "存物品",
+    ),
+    tabIndexList => const BottomNavigationBarItem(
+      icon: Icon(Icons.search),
+      label: "查物品",
+    ),
+    tabIndexDiary => const BottomNavigationBarItem(
+      icon: Icon(Icons.book),
+      label: "随手记",
+    ),
+    tabIndexSettings => const BottomNavigationBarItem(
+      icon: Icon(Icons.settings),
+      label: "设置",
+    ),
+    _ => throw ArgumentError('未知的 Tab 语义索引: $semantic'),
+  };
+
+  /// 按语义索引构建 Tab 页（可见栈装配用；隐藏页不进栈，对应 GlobalKey
+  /// 无 state——所有 _recordTabKey/_listTabKey 读取点已 null 安全，
+  /// 或按可见栈分发后本就不可达）
+  Widget _buildTabPage(int semantic) {
+    switch (semantic) {
+      case tabIndexRecord:
+        return RecordTab(
+          key: _recordTabKey,
+          processor: _processor,
+          dbHelper: _dbHelper,
+          onLoadingChanged: (show, {message}) {
+            if (show) {
+              showGlobalLoading(message: message);
+            } else {
+              hideGlobalLoading();
+            }
+          },
+          // 按钮栏在 main.dart 外层 Stack，RecordTab 状态变化（录音/处理/搬家）→
+          // tick 递增只重建外层按钮栏，不再整页重建（性能审查 Top6）
+          onStateChanged: () => _recordBarTick.value++,
+        );
+      case tabIndexList:
+        // 传入回调，让列表页状态变化时，外层也跟着刷新按钮 UI
+        return ListTab(
+          key: _listTabKey,
+          dbHelper: _dbHelper,
+          onStateChanged: () => _listButtonTick.value++,
+        );
+      case tabIndexDiary:
+        // 传入回调，让日记页状态变化时，外层浮动按钮跟着刷新
+        return DiaryTab(
+          key: _diaryTabKey,
+          dbHelper: _dbHelper,
+          processor: _processor,
+          onStateChanged: () => _diaryButtonTick.value++,
+          onLoadingChanged: (show, {message}) {
+            if (show) {
+              showGlobalLoading(message: message);
+            } else {
+              hideGlobalLoading();
+            }
+          },
+          // 日记页答案区"+N"点击 → 跳转 ListTab 并预填搜索词；
+          // 查物品页隐藏时不跳转，SnackBar 引导去设置开启（页面本身保留：
+          // 动 diary_tab/location_answer_widget 的代价大于收益）
+          onJumpToSearch: (keyword) {
+            if (widget.listTabHidden) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('查物品页已隐藏，可在「设置 → 功能页面」中开启'),
+                  duration: Duration(seconds: 2),
+                ),
+              );
+              return;
+            }
+            setState(() => _currentIndex = tabIndexList); // 切换到 ListTab
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              _listTabKey.currentState?.setSearchQuery(keyword);
+            });
+          },
+        );
+      case tabIndexSettings:
+        return SettingsTab(processor: _processor, dbHelper: _dbHelper);
+      default:
+        throw ArgumentError('未知的 Tab 语义索引: $semantic');
+    }
   }
 
   /// 闹钟响铃时顶部显示的红色停止横幅
@@ -694,18 +966,22 @@ class _MainScaffoldState extends State<MainScaffold>
     final ext = AppThemeExtension.of(context);
 
     // 颜色和图标逻辑（仿日记页浮动按钮）
-    Color btnColor = ext.fabReady; // 默认青色
-    Widget btnChild = Icon(Icons.mic, color: ext.textOnPrimary, size: 46);
+    // 拟物主题：底色恒为同色凸起，状态色（青/红/橙/灰）落在中心图标；
+    // 旧主题：按钮底色随状态变化，图标恒白
+    final bool isNeu = ext.isNeumorphic;
+    Color btnColor = ext.fabReady; // 默认青色（旧主题=按钮底色；拟物=中心图标色）
+    Widget btnChild = Icon(Icons.mic, color: isNeu ? ext.primary : ext.textOnPrimary, size: 46);
 
     if (!state.isReady && !RecognizerSingleton.hasModel) {
       // 模型文件不存在 → 禁用按钮
       btnColor = ext.fabDisabled;
+      btnChild = Icon(Icons.mic, color: isNeu ? ext.textHint : ext.textOnPrimary, size: 46);
     } else if (state.isListening) {
       // 录音中 → 红色
       btnColor = ext.fabRecording;
       btnChild = Icon(
         Icons.fiber_manual_record,
-        color: ext.textOnPrimary,
+        color: isNeu ? ext.fabRecording : ext.textOnPrimary,
         size: 46,
       );
     } else if (state.isProcessing) {
@@ -715,7 +991,7 @@ class _MainScaffoldState extends State<MainScaffold>
         width: 40,
         height: 40,
         child: CircularProgressIndicator(
-          color: ext.textOnPrimary,
+          color: isNeu ? ext.fabProcessing : ext.textOnPrimary,
           strokeWidth: 3,
         ),
       );
@@ -746,7 +1022,11 @@ class _MainScaffoldState extends State<MainScaffold>
               if (state.isProcessing) return;
               state.stopVoiceSearch();
             },
-            child: AnimatedContainer(
+            // 拟物主题：同色凸起底 + 凹陷圆环（NeuVoiceFab，2026-09-18 真机
+            // 反馈三处语音圆钮拟物化）；旧主题保持彩色圆底+黏土阴影
+            child: isNeu
+                ? NeuVoiceFab(size: 94, child: btnChild)
+                : AnimatedContainer(
               duration: const Duration(milliseconds: 200),
               width: 94,
               height: 94,
@@ -785,6 +1065,9 @@ class _MainScaffoldState extends State<MainScaffold>
                   fontSize: 16,
                   color: ext.textHint,
                   fontWeight: FontWeight.w500,
+                  // ⚠️ 查物品浮钮也在外层 Stack（无 Material 祖先），decoration
+                  // 不置 none 会出黄色双下划线警示（同 diary_floating_button 防护）
+                  decoration: TextDecoration.none,
                 ),
               ),
             ),
@@ -807,21 +1090,21 @@ class _MainScaffoldState extends State<MainScaffold>
     final ext = AppThemeExtension.of(context);
 
     // 颜色/图标状态机（复现 record_tab.dart 原非搬家模式染色）
+    // 拟物主题：底色恒为同色凸起，状态色（青/红/橙/灰）落在中心图标；
+    // 旧主题：按钮底色随状态变化，图标恒白
+    final bool isNeu = ext.isNeumorphic;
     Color btnColor = ext.fabReady;
-    Widget btnChild = Icon(
-      Icons.mic,
-      color: ext.textOnPrimary,
-      size: 55,
-    );
+    Widget btnChild = Icon(Icons.mic, color: isNeu ? ext.primary : ext.textOnPrimary, size: 55);
 
     if (!state.isReady && !RecognizerSingleton.hasModel) {
       // 模型文件不存在 → 禁用按钮（灰色）
       btnColor = ext.fabDisabled;
+      btnChild = Icon(Icons.mic, color: isNeu ? ext.textHint : ext.textOnPrimary, size: 55);
     } else if (state.isListening) {
       btnColor = ext.fabRecording;
       btnChild = Icon(
         Icons.fiber_manual_record,
-        color: ext.textOnPrimary,
+        color: isNeu ? ext.fabRecording : ext.textOnPrimary,
         size: 55,
       );
     } else if (state.isProcessing) {
@@ -830,7 +1113,7 @@ class _MainScaffoldState extends State<MainScaffold>
         width: 45,
         height: 45,
         child: CircularProgressIndicator(
-          color: ext.textOnPrimary,
+          color: isNeu ? ext.fabProcessing : ext.textOnPrimary,
           strokeWidth: 3,
         ),
       );
@@ -860,6 +1143,10 @@ class _MainScaffoldState extends State<MainScaffold>
                       fontSize: 15,
                       fontWeight: FontWeight.w500,
                       color: ext.textSecondary,
+                      // ⚠️ 钉底栏在 main.dart 外层 Stack（无 Material 祖先），
+                      // Text 不给 decoration 会 fallback 到黄色双下划线警示
+                      // 样式（同 diary_floating_button 状态文字的防护）
+                      decoration: TextDecoration.none,
                     ),
                   ),
                 ),
@@ -872,7 +1159,11 @@ class _MainScaffoldState extends State<MainScaffold>
                   GestureDetector(
                     onLongPressStart: (_) => state.startListening(),
                     onLongPressEnd: (_) => state.stopListening(),
-                    child: AnimatedContainer(
+                    // 拟物主题：同色凸起底、图标直接落在凸面上（无凹环，
+                    // 2026-09-18 与随手记页统一为无环定稿）；旧主题保持彩色光晕圆钮
+                    child: ext.isNeumorphic
+                        ? NeuVoiceFab(size: 100, child: btnChild)
+                        : AnimatedContainer(
                       duration: const Duration(milliseconds: 200),
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
@@ -891,11 +1182,33 @@ class _MainScaffoldState extends State<MainScaffold>
                       ),
                     ),
                   ),
-                  // 确认保存按钮
+                  // 确认保存按钮（拟物主题：纯同色凸起 + 品牌青文字，按住凹陷；
+                  // 2026-09-17 预览拍板不用彩色渐变底）
                   SizedBox(
                     width: 140,
                     height: 100,
-                    child: ElevatedButton(
+                    child: AppThemeExtension.of(context).isNeumorphic
+                        ? NeuPressable(
+                            onTap: state.saveData,
+                            radius: 18,
+                            child: Center(
+                              child: Text(
+                                "确认保存",
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                  color:
+                                      AppThemeExtension.of(context).primary,
+                                  // ⚠️ NeuPressable 无 Material 祖先（钉底栏在
+                                  // 外层 Stack，ElevatedButton 自带的 Material
+                                  // 被换掉），decoration 不置 none 会出黄色
+                                  // 双下划线警示（同 diary_floating_button 防护）
+                                  decoration: TextDecoration.none,
+                                ),
+                              ),
+                            ),
+                          )
+                        : ElevatedButton(
                       onPressed: state.saveData,
                       style: ElevatedButton.styleFrom(
                         backgroundColor: ext.primary,
@@ -973,11 +1286,7 @@ class _MainScaffoldState extends State<MainScaffold>
       SnackBar(
         content: Row(
           children: [
-            Icon(
-              Icons.info_outline,
-              color: ext.textOnPrimary,
-              size: 16,
-            ),
+            Icon(Icons.info_outline, color: ext.textOnPrimary, size: 16),
             const SizedBox(width: 8),
             const Text('再按一次退出应用', style: TextStyle(fontSize: 12)),
           ],

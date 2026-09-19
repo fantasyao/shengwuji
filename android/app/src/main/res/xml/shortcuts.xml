@@ -7,7 +7,7 @@
     <shortcut
         android:shortcutId="quick_record"
         android:enabled="true"
-        android:icon="@drawable/ic_record_shortcut"
+        android:icon="@drawable/ic_shortcut_quick_record"
         android:shortcutShortLabel="@string/quick_record_short"
         android:shortcutLongLabel="@string/quick_record_long">
         <intent
@@ -18,11 +18,29 @@
     <shortcut
         android:shortcutId="quick_text_note"
         android:enabled="true"
-        android:icon="@drawable/ic_record_shortcut"
+        android:icon="@drawable/ic_shortcut_text_note"
         android:shortcutShortLabel="@string/quick_text_note_short"
         android:shortcutLongLabel="@string/quick_text_note_long">
         <intent
             android:action="com.shengwuji.app.ACTION_QUICK_TEXT_NOTE"
+            android:targetPackage="com.shengwuji.app" />
+        <categories android:name="android.shortcut.conversation" />
+    </shortcut>
+    <!-- 悬浮窗语音速记（toggle）：适合非滑动式自定义按键（如侧边 AI 键）映射——
+         按一下开始录音，再按一下停止。努比亚滑动键等滑动式按键（上滑启动 /
+         滑回退出）与 toggle 不匹配，应映射 quick_record（配合快捷录音退出即停）。
+         路由到 ShortcutDispatchActivity（透明无 UI 分发层），再转交无障碍服务
+         executeGestureAction(ACTION_OVERLAY_RECORD)——与音量键手势同一执行
+         链路（Pro 门禁/麦克风互斥/震动反馈/toggle 语义全部复用），主 App
+         不被拉到前台。前置条件：无障碍服务已启用。 -->
+    <shortcut
+        android:shortcutId="overlay_record"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_overlay_record"
+        android:shortcutShortLabel="@string/overlay_record_short"
+        android:shortcutLongLabel="@string/overlay_record_long">
+        <intent
+            android:action="com.shengwuji.app.ACTION_OVERLAY_RECORD"
             android:targetPackage="com.shengwuji.app" />
         <categories android:name="android.shortcut.conversation" />
     </shortcut>

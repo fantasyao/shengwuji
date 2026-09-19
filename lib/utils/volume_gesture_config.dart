@@ -78,6 +78,45 @@ class VolumeGestureSlot {
   ];
 }
 
+/// 长按触发阈值（毫秒）：配置 key + 档位 + 校验。
+///
+/// 与 4 槽位同模式：设置页 ChoiceChip 写入，Kotlin 无障碍服务每次按键 DOWN
+/// 时读落盘 prefs 启动长按计时（无需 MethodChannel，App 未打开也生效）。
+/// 档位集合与 Kotlin 侧 LONG_PRESS_MS_CHOICES 严格一致，改档位必须双侧同步。
+class VolumeLongPressMs {
+  VolumeLongPressMs._(); // 纯常量类，禁止实例化
+
+  /// prefs key（Kotlin 侧读取时加 "flutter." 前缀）
+  static const String prefKey = 'volume_long_press_ms';
+
+  /// 可选档位（毫秒）。下限 400：刻意单击音量键的按压时长约 100~300ms，
+  /// 低于它会把手感偏重的单击误判成长按（误触录音/悬浮窗且松手无法反悔）；
+  /// 上限 1200：再长手感明显发钝
+  static const List<int> choices = [400, 500, 800, 1200];
+
+  /// 默认档位（历史硬编码值，未设置/脏值时回落）
+  static const int defaultMs = 500;
+
+  /// 档位合法性校验（缺失/脏值回落默认，防 prefs 残留越界值）
+  static int normalize(int? value) =>
+      (value != null && choices.contains(value)) ? value : defaultMs;
+}
+
+/// 「录音中单击结束录音」开关 prefs key。
+///
+/// 开启后录音中（主 App 录音或悬浮窗语音速记）单击音量键立即停录，无需再
+/// 长按 toggle；耳机线控键/相机键同样生效（平时完全不拦截，仅录音中消费）。
+///
+/// ⚠️ 与 `keep_muted_on_volume_down`（按音量减保持静音）互斥二选一：单击停录
+/// 开启后录音中单击音量减不再走 adjustVolume，keep_muted 标记失去触发入口，
+/// 两个开关同开语义自相矛盾——互斥由设置页保证（开一个自动关另一个，
+/// volume_key_settings_page），Kotlin 侧不重复校验。
+///
+/// 读取方：Kotlin 无障碍服务每次按键实时读落盘（"flutter." 前缀，同 4 槽位
+/// key 模式：无 MethodChannel、App 未打开也生效）；overlay 语音速记 start()
+/// 读同一 key 选停止提示文案。写入方：设置页（唯一）。
+const kSingleClickStopRecordingKey = 'single_click_stop_recording';
+
 /// 旧版 SharedPreferences key（迁移推导的输入，仅本文件读取，落盘值不再写入）。
 const _legacyKeyVolumeKeyMode = 'volume_key_mode';
 const _legacyKeyOverlayVolumeUpLongPress = 'overlay_volume_up_long_press';

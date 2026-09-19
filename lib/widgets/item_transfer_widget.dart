@@ -17,7 +17,7 @@ class ItemTransferWidget extends StatelessWidget {
   final String itemName;
   final String location;
   final VoidCallback onTransfer;
-  final VoidCallback onDismiss;  // ✕ 关闭回调：用户表示"这条不是物品记录"
+  final VoidCallback onDismiss; // ✕ 关闭回调：用户表示"这条不是物品记录"
 
   const ItemTransferWidget({
     super.key,
@@ -66,7 +66,7 @@ class ItemTransferWidget extends StatelessWidget {
               child: Icon(
                 Icons.close,
                 size: 16,
-                color: ext.warningText,  // 与文字同色（深橙）
+                color: ext.warningText, // 与文字同色（深橙）
               ),
             ),
           ),

@@ -5,8 +5,8 @@ import 'package:flutter/services.dart';
 class IconPack {
   final String id;
   final String name;
-  final int backgroundColor;  // 0xFF...... 格式
-  final int foregroundColor;   // UI 预览用（资源里已染色）
+  final int backgroundColor; // 0xFF...... 格式
+  final int foregroundColor; // UI 预览用（资源里已染色）
   final bool isPro;
   const IconPack({
     required this.id,
@@ -20,20 +20,30 @@ class IconPack {
 /// 4 套图标包注册表
 class IconPacks {
   static const defaultPack = IconPack(
-    id: 'default', name: '默认',
-    backgroundColor: 0xFF2C3E50, foregroundColor: 0xFFFFFFFF,
+    id: 'default',
+    name: '默认',
+    backgroundColor: 0xFF2C3E50,
+    foregroundColor: 0xFFFFFFFF,
   );
   static const warm = IconPack(
-    id: 'warm', name: '暖橙',
-    backgroundColor: 0xFFE65100, foregroundColor: 0xFFFFFFFF,
+    id: 'warm',
+    name: '暖橙',
+    backgroundColor: 0xFFE65100,
+    foregroundColor: 0xFFFFFFFF,
   );
   static const festive = IconPack(
-    id: 'festive', name: '节日红',
-    backgroundColor: 0xFFC62828, foregroundColor: 0xFFFFFFFF, isPro: true,
+    id: 'festive',
+    name: '节日红',
+    backgroundColor: 0xFFC62828,
+    foregroundColor: 0xFFFFFFFF,
+    isPro: true,
   );
   static const minimal = IconPack(
-    id: 'minimal', name: '极简白',
-    backgroundColor: 0xFFFAFAFA, foregroundColor: 0xFF2C3E50, isPro: true,
+    id: 'minimal',
+    name: '极简白',
+    backgroundColor: 0xFFFAFAFA,
+    foregroundColor: 0xFF2C3E50,
+    isPro: true,
   );
 
   static const all = [defaultPack, warm, festive, minimal];
@@ -59,7 +69,9 @@ class IconPackSwitcher {
   /// 返回 true 如果原生层成功执行（不代表进程不会死）
   static Future<bool> switchTo(String packId) async {
     try {
-      final r = await _channel.invokeMethod<bool>('setIconPack', {'packId': packId});
+      final r = await _channel.invokeMethod<bool>('setIconPack', {
+        'packId': packId,
+      });
       return r ?? false;
     } on PlatformException catch (e) {
       log('❌ [IconPackSwitcher] 切换失败: ${e.message}');
@@ -73,7 +85,8 @@ class IconPackSwitcher {
   /// 不依赖 SharedPreferences（系统 ComponentEnabledSetting 才是真正状态源）。
   static Future<String> getCurrentPackId() async {
     try {
-      return await _channel.invokeMethod<String>('getCurrentIconPack') ?? 'default';
+      return await _channel.invokeMethod<String>('getCurrentIconPack') ??
+          'default';
     } on PlatformException catch (e) {
       log('❌ [IconPackSwitcher] 查询失败: ${e.message}');
       return 'default';

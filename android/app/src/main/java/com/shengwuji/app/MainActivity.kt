@@ -17,7 +17,9 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import android.provider.AlarmClock
 import android.provider.CalendarContract
+import android.provider.Settings
 import android.view.WindowManager
+import java.security.MessageDigest
 import java.util.Calendar
 import java.util.TimeZone
 
@@ -41,6 +43,26 @@ class MainActivity: FlutterActivity() {
                 if (ringing) "onAlarmRinging" else "onAlarmStopped",
                 mapOf("alarm_id" to alarmId)
             )
+        }
+
+        // ===== Pro 授权码校验（藏盐哈希短码）=====
+        // 由 tools/license/gen_license.py kotlinc 生成（勿手改）；secret 明文仅存本地 secret.txt（gitignore）。
+        // ⚠️ 防伪边界：secret 随 APK 分发（掩码存储、仓库开源），防伪强度为逆向门槛——挡普通用户
+        // 乱输码/改布尔，不挡认真逆向；用户拍板接受（¥5 应用）。生成/校验工具见 tools/license/gen_license.py。
+        private const val LICENSE_SECRET_MASK = 0x5A
+        private const val LICENSE_SECRET_PART_A = "ODg4Ozlqbj9oaTxrbW9iO2I5az9saW0+bT4+amJoPGpt"
+        private const val LICENSE_SECRET_PART_B = "OGJtbD9pbmg8Y2M5PD45aztjbm9sbjxiPGNjPmltPg=="
+
+        private fun decodeLicenseSecret(): String {
+            // XOR 自反：编码侧每字节 ^MASK，解码同 ^MASK 还原。
+            // 注意 String(bytes, Charset) 构造不收 lambda——逐字节还原用 ByteArray 构造器
+            val maskedBytes = android.util.Base64.decode(LICENSE_SECRET_PART_A, android.util.Base64.DEFAULT) +
+                android.util.Base64.decode(LICENSE_SECRET_PART_B, android.util.Base64.DEFAULT)
+            val bytes = ByteArray(maskedBytes.size) { i ->
+                // toByte 截取低 8 位即还原值（sign-extend 的高位被截掉，与 and 0xFF 等价）
+                (maskedBytes[i].toInt() xor LICENSE_SECRET_MASK).toByte()
+            }
+            return String(bytes, Charsets.UTF_8)
         }
     }
 
@@ -107,7 +129,11 @@ class MainActivity: FlutterActivity() {
      */
     private fun applyLockScreenFlagsIfNeeded(intent: Intent?) {
         val shortcutType = extractShortcutType(intent)
-        if (shortcutType == null) return  // 非快捷方式启动，不应用锁屏 flag
+        // open_diary（悬浮窗「打开随手记」按钮拉起，VolumeKeyAccessibilityService
+        // openDiaryPage）不是锁屏场景，排除在 sticky 锁屏 flag 之外——setShowWhenLocked
+        // 是 sticky 的，会保留到下次息屏被 ACTION_SCREEN_OFF 清除；grant_calendar
+        // 沿用既有放行行为不动
+        if (shortcutType == null || shortcutType == "open_diary") return
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
@@ -152,6 +178,7 @@ class MainActivity: FlutterActivity() {
 
     private fun handleShortcutIntentOnColdStart(intent: Intent?) {
         val shortcutType = extractShortcutType(intent)
+        println("🔑 [MainActivity] 冷启动快捷方式: type=$shortcutType")
         if (shortcutType == "show_overlay") {
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                 notifyFlutterShowOverlay()
@@ -204,6 +231,12 @@ class MainActivity: FlutterActivity() {
                     performHaptic(type)
                     result.success(true)
                 }
+                // 快捷录音"退出即停"判定用：区分"用户离开 App"（亮屏）与
+                // "锁屏快捷录音中按电源键息屏"（灭屏，录音须继续，见 DiaryTab 生命周期钩子）
+                "isScreenOn" -> {
+                    val pm = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+                    result.success(pm.isInteractive)
+                }
                 // 静音逻辑在 MediaMuteHelper（悬浮窗录音共用同一份，见该文件头注释）
                 "muteMedia" -> {
                     MediaMuteHelper.mute(this)
@@ -226,6 +259,25 @@ class MainActivity: FlutterActivity() {
                 }
                 "getCurrentIconPack" -> {
                     result.success(getCurrentIconPack())
+                }
+                // 电脑访问服务：前台保活服务的拉起/停止（HTTP 本体在 Dart 侧
+                // web_server/diary_web_server.dart，本服务只管进程优先级）
+                "startDiaryServerService" -> {
+                    DiaryServerService.start(this)
+                    result.success(true)
+                }
+                "stopDiaryServerService" -> {
+                    DiaryServerService.stop(this)
+                    result.success(true)
+                }
+                // Pro 授权：取安卓 ID（用户发邮件附上，开发者据此生成授权码）
+                "getAndroidId" -> {
+                    result.success(getAndroidId())
+                }
+                // Pro 授权：校验授权码（格式预校验在 Dart 侧，这里是最终哈希比对）
+                "verifyLicense" -> {
+                    val code = call.argument<String>("code") ?: ""
+                    result.success(verifyLicenseCode(code))
                 }
                 else -> result.notImplemented()
             }
@@ -255,6 +307,7 @@ class MainActivity: FlutterActivity() {
 
     private fun handleShortcutIntent(intent: Intent?) {
         val shortcutType = extractShortcutType(intent)
+        println("🔑 [MainActivity] 热启动快捷方式: type=$shortcutType")
         when (shortcutType) {
             "show_overlay" -> notifyFlutterShowOverlay()
             null -> Unit
@@ -295,6 +348,10 @@ class MainActivity: FlutterActivity() {
             // （VolumeKeyAccessibilityService requestCalendarPermission），
             // Dart 侧收到后自动弹系统授权框
             if (type == "grant_calendar") return "grant_calendar"
+            // 悬浮窗「打开随手记」按钮：无障碍 Service 拉起主 App 时携带
+            // （VolumeKeyAccessibilityService openDiaryPage），Dart 侧收到后
+            // 切到日记页（main.dart _handleOpenDiaryPage）
+            if (type == "open_diary") return "open_diary"
 
             val shortcutType = extras.getString("shortcutType")
             if (shortcutType == "action_quick_record") return "quick_record"
@@ -390,15 +447,22 @@ class MainActivity: FlutterActivity() {
     }
 
     private fun isAccessibilityServiceEnabled(): Boolean {
-        // 三星系统存储格式：包名/完整类名（不是 .简写格式）
-        val serviceName = "$packageName/${packageName}.VolumeKeyAccessibilityService"
+        // ⚠️ ENABLED_ACCESSIBILITY_SERVICES 存储格式无跨写入方保证：系统设置 UI 手动开关
+        // 写全名（三星如此：pkg/pkg.Class，旧实现据此 contains 硬匹配），但覆盖安装后框架
+        // 恢复配置/adb 授权等写入方可能写短格式（pkg/.Class）——框架 unflattenFromString
+        // 两种都解析所以服务照常运行，硬匹配只认一种写法就误报「未开启」（2026-09 用户
+        // 小米15 真机：安装后偶发设置页显示未开启但音量键功能正常，去无障碍关开一次即恢复）。
+        // 对齐框架同样的解析方式：逐条 unflattenFromString 后与目标 ComponentName 比较
+        val target = ComponentName(packageName, "$packageName.VolumeKeyAccessibilityService")
         val enabledServices = android.provider.Settings.Secure.getString(
             contentResolver,
             android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
         ) ?: return false
         println("🔍 [MainActivity] 已启用的无障碍服务: $enabledServices")
-        println("🔍 [MainActivity] 查找服务名: $serviceName")
-        return enabledServices.contains(serviceName)
+        println("🔍 [MainActivity] 查找服务名: $target")
+        return enabledServices.split(':').any {
+            ComponentName.unflattenFromString(it) == target
+        }
     }
 
     private fun performHaptic(type: String) {
@@ -550,5 +614,57 @@ class MainActivity: FlutterActivity() {
         } catch (e: Exception) {
             "default"
         }
+    }
+
+    // ===== Pro 授权码校验（算法与 tools/license/gen_license.py 严格一致，改动必须双侧同步）=====
+    // 授权码 = base32( salt(2B随机) + SHA256("{secret}:{androidId}:{salt_hex}")[0..8] )，16 字符分组显示。
+    // salt 每次随机 => 同一设备每次生成的码都不同；验证端取码内 salt 重算哈希恒时比较。
+
+    /** 安卓 ID（恢复出厂/部分换机场景会变，授权码仅在输入瞬间与本机 ID 校验） */
+    private fun getAndroidId(): String? =
+        Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
+
+    private fun verifyLicenseCode(rawCode: String): Boolean {
+        val androidId = getAndroidId()
+        if (androidId.isNullOrEmpty()) {
+            println("✗ [License] 取不到安卓 ID，无法校验授权码")
+            return false
+        }
+        // 与 Dart 侧 normalizeLicenseCode 同规则：大写、去横线/空格
+        val normalized = rawCode.uppercase().replace("-", "").replace(" ", "")
+        val payload = base32Decode16OrNull(normalized)
+        if (payload == null) {
+            println("✗ [License] 授权码格式非法（应 16 位 base32 A-Z2-7）")
+            return false
+        }
+        val secret = decodeLicenseSecret()
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest("$secret:$androidId:${payload[0].toUByte().toString(16).padStart(2, '0')}${payload[1].toUByte().toString(16).padStart(2, '0')}"
+                .toByteArray(Charsets.UTF_8))
+        // MessageDigest.isEqual 为恒时比较，防时序侧信道
+        val ok = MessageDigest.isEqual(payload.copyOfRange(2, 10), digest.copyOfRange(0, 8))
+        println(if (ok) "✓ [License] 授权码校验通过" else "✗ [License] 授权码与设备不匹配")
+        return ok
+    }
+
+    /** base32（RFC4648 A-Z2-7）解码恰好 16 字符 → 10 字节；含非法字符或长度不符返回 null */
+    private fun base32Decode16OrNull(input: String): ByteArray? {
+        if (input.length != 16) return null
+        val alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+        var buffer = 0
+        var bits = 0
+        val out = ByteArray(10)
+        var outIdx = 0
+        for (c in input) {
+            val v = alphabet.indexOf(c)
+            if (v < 0) return null
+            buffer = (buffer shl 5) or v
+            bits += 5
+            if (bits >= 8) {
+                out[outIdx++] = ((buffer shr (bits - 8)) and 0xFF).toByte()
+                bits -= 8
+            }
+        }
+        return out // 80 bits 整除 10 字节，无余位
     }
 }

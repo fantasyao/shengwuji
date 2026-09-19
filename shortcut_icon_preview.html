@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>桌面快捷方式图标方案预览</title>
+<style>
+  :root {
+    --primary: #009688;
+    --primary-dark: #00796B;
+    --primary-light: #B2DFDB;
+    --scaffold: #F5F5F5;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "MiSans", "HarmonyOS Sans SC", "Microsoft YaHei", sans-serif;
+    background: #263238;
+    color: #ECEFF1;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px 16px 48px;
+  }
+  h1 { font-size: 20px; margin-bottom: 4px; font-weight: 600; }
+  .subtitle { font-size: 13px; color: #90A4AE; margin-bottom: 20px; text-align: center; line-height: 1.6; }
+  .subtitle b { color: #EF9A9A; }
+
+  /* 控制栏 */
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 10px; justify-content: center;
+    margin-bottom: 24px; max-width: 720px;
+  }
+  .seg {
+    display: flex; background: #37474F; border-radius: 8px; padding: 3px; gap: 3px;
+  }
+  .seg button {
+    border: none; background: transparent; color: #B0BEC5; font-size: 13px;
+    padding: 7px 14px; border-radius: 6px; cursor: pointer; transition: all .15s;
+    font-family: inherit;
+  }
+  .seg button.on { background: var(--primary); color: #fff; font-weight: 600; }
+  .seg-label { align-self: center; font-size: 12px; color: #78909C; margin-right: -4px; }
+
+  /* 手机框 */
+  .phone {
+    width: 380px; max-width: 100%;
+    border-radius: 28px; overflow: hidden;
+    border: 6px solid #111;
+    box-shadow: 0 12px 48px rgba(0,0,0,.5);
+  }
+  .screen {
+    height: 560px; position: relative; overflow: hidden;
+    background: linear-gradient(160deg, #35586b 0%, #2a3d4f 45%, #1d2b38 100%);
+    display: flex; flex-direction: column; justify-content: flex-start;
+    padding: 28px 20px;
+    transition: background .2s;
+  }
+  .screen.light {
+    background: linear-gradient(160deg, #a7c5d2 0%, #cfd8dc 50%, #b0bec5 100%);
+  }
+
+  /* 桌面 app 图标示意（衬托长按对象） */
+  .desk-app { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 64px; }
+  .desk-app .name { font-size: 11px; color: #fff; text-shadow: 0 1px 3px rgba(0,0,0,.6); }
+
+  /* HyperOS 长按弹层 */
+  .sheet {
+    margin-top: auto;
+    border-radius: 22px; padding: 14px 12px 12px;
+    background: rgba(38, 50, 56, .88);
+    backdrop-filter: blur(20px);
+    box-shadow: 0 8px 32px rgba(0,0,0,.45);
+    animation: pop .25s ease;
+  }
+  .screen.light .sheet { background: rgba(255,255,255,.92); }
+  @keyframes pop { from { transform: translateY(14px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+  .sheet-row {
+    display: flex; align-items: center; gap: 14px;
+    padding: 11px 12px; border-radius: 14px; cursor: default;
+  }
+  .sheet-row:hover { background: rgba(255,255,255,.07); }
+  .screen.light .sheet-row:hover { background: rgba(0,0,0,.05); }
+  .sheet-row .label { font-size: 15px; color: #ECEFF1; }
+  .screen.light .sheet-row .label { color: #263238; }
+  .sheet-row .sub { font-size: 11px; color: #78909C; margin-top: 1px; }
+  .sheet-row .icon-slot { width: 44px; height: 44px; flex: none; display: flex; align-items: center; justify-content: center; }
+
+  .divider { height: 1px; background: rgba(255,255,255,.09); margin: 4px 12px; }
+  .screen.light .divider { background: rgba(0,0,0,.08); }
+
+  /* 图标形状 */
+  .icon-shape { width: 100%; height: 100%; display: block; }
+  .shape-circle .icon-shape { border-radius: 50%; }
+  .shape-squircle .icon-shape { border-radius: 26%; }
+
+  /* 方案说明卡 */
+  .note {
+    max-width: 720px; margin-top: 22px; background: #37474F; border-radius: 12px;
+    padding: 14px 18px; font-size: 13px; line-height: 1.8; color: #CFD8DC;
+  }
+  .note b { color: #80CBC4; }
+  .note .cur { color: #EF9A9A; }
+
+  /* 方案三：小 vector 无底色（模拟现状改深色） */
+  .plan3-vec { width: 30px; height: 30px; }
+</style>
+</head>
+<body>
+<h1>桌面快捷方式图标方案预览</h1>
+<p class="subtitle">
+  现状：<b>三个快捷方式都引用同一个纯白 24dp 图标</b>（ic_record_shortcut），白底弹层上白图标 = 看不见。<br>
+  以下为修复方案，切换对比后拍板。
+</p>
+
+<div class="controls">
+  <span class="seg-label">方案</span>
+  <div class="seg" id="segPlan">
+    <button data-p="1" class="on">一：三色区分</button>
+    <button data-p="2">二：统一品牌色</button>
+    <button data-p="3">三：仅去白最小改</button>
+  </div>
+  <span class="seg-label">图标形状</span>
+  <div class="seg" id="segShape">
+    <button data-s="circle" class="on">圆形</button>
+    <button data-s="squircle">圆角方</button>
+  </div>
+  <span class="seg-label">弹层</span>
+  <div class="seg" id="segTheme">
+    <button data-t="dark" class="on">深色</button>
+    <button data-t="light">浅色</button>
+  </div>
+</div>
+
+<div class="phone">
+  <div class="screen" id="screen">
+    <!-- 桌面上的 app 图标（长按对象） -->
+    <div class="desk-app">
+      <svg class="icon-shape shape-target" width="56" height="56" viewBox="0 0 108 108">
+        <rect width="108" height="108" rx="26" fill="#009688"/>
+        <g transform="translate(24,24) scale(2.5)">
+          <g fill="#fff">
+            <path d="M12,14c1.66,0 3,-1.34 3,-3V5c0,-1.66 -1.34,-3 -3,-3S9,3.34 9,5v6c0,1.66 1.34,3 3,3z"/>
+            <path d="M17,11c0,2.76 -2.24,5 -5,5s-5,-2.24 -5,-5H5c0,3.53 2.61,6.43 6,6.92V21h2v-3.08c3.39,-0.49 6,-3.39 6,-6.92h-2z"/>
+          </g>
+        </g>
+      </svg>
+      <span class="name">声物记</span>
+    </div>
+
+    <!-- 长按弹层 -->
+    <div class="sheet">
+      <div class="sheet-row">
+        <span class="icon-slot" data-icon="record"></span>
+        <div><div class="label">快速录音</div><div class="sub">com.shengwuji.app</div></div>
+      </div>
+      <div class="sheet-row">
+        <span class="icon-slot" data-icon="note"></span>
+        <div><div class="label">文本笔记</div><div class="sub">com.shengwuji.app</div></div>
+      </div>
+      <div class="sheet-row">
+        <span class="icon-slot" data-icon="overlay"></span>
+        <div><div class="label">悬浮窗录音</div><div class="sub">com.shengwuji.app</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="note" id="note"></div>
+
+<script>
+/* ---------- 前景图形（Material 风格 24 viewport path） ---------- */
+const FG = {
+  record: `<g fill="#fff">
+    <path d="M12,14c1.66,0 3,-1.34 3,-3V5c0,-1.66 -1.34,-3 -3,-3S9,3.34 9,5v6c0,1.66 1.34,3 3,3z"/>
+    <path d="M17,11c0,2.76 -2.24,5 -5,5s-5,-2.24 -5,-5H5c0,3.53 2.61,6.43 6,6.92V21h2v-3.08c3.39,-0.49 6,-3.39 6,-6.92h-2z"/>
+  </g>`,
+  note: `<g fill="#fff">
+    <path d="M3,17.25V21h3.75L17.81,9.94l-3.75,-3.75L3,17.25zM20.71,7.04c0.39,-0.39 0.39,-1.02 0,-1.41l-2.34,-2.34c-0.39,-0.39 -1.02,-0.39 -1.41,0l-1.83,1.83 3.75,3.75 1.83,-1.83z"/>
+  </g>`,
+  overlay: `<g fill="#fff">
+    <path d="M19,11h-8v6h8v-6zm4,8V4.98C23,3.88 22.1,3 21,3H3c-1.1,0 -2,0.88 -2,1.98V19c0,1.1 0.9,2 2,2h18c1.1,0 2,-0.9 2,-2zm-2,0.02H3V4.97h18v14.05z"/>
+  </g>`
+};
+
+/* ---------- 方案定义 ---------- */
+const PLANS = {
+  1: {
+    name: '方案一：三色圆底 adaptive 图标',
+    desc: '参考 app 主图标风格做 <b>adaptive-icon</b>（背景色块 + 白色前景，108dp）。三个入口<b>不同底色</b>一眼区分：录音=主题青、文本笔记=靛蓝、悬浮窗=琥珀橙。兼容性最好，HyperOS 对 shortcut 的 vector 渲染不可控，adaptive-icon 底色块由 launcher 位图化后绘制，浅色/深色弹层都清晰。',
+    colors: { record: '#009688', note: '#3949AB', overlay: '#FB8C00' },
+    mode: 'adaptive'
+  },
+  2: {
+    name: '方案二：统一主题色底 + 不同前景',
+    desc: '三个图标统一用品牌青 <b>#009688</b> 底，靠白色前景图形区分（麦克风/铅笔/悬浮窗）。更克制、品牌一致性强，但快速录音和悬浮窗录音都是"声音"语义，区分度略逊于方案一。',
+    colors: { record: '#009688', note: '#009688', overlay: '#009688' },
+    mode: 'adaptive'
+  },
+  3: {
+    name: '方案三：仅把白色改深（最小改动）',
+    desc: '保持 24dp 裸 vector 不加底色，仅把 <span class="cur">纯白 #FFFFFF</span> 改成深灰 <b>#5F6368</b>。改动一行，但三个图标完全相同、尺寸偏小，且部分 launcher 对 shortcut 小 vector 仍可能渲染异常——<b>不推荐</b>，仅作对比。',
+    colors: null,
+    mode: 'plain'
+  }
+};
+
+let plan = '1', shape = 'circle', theme = 'dark';
+
+function renderIcon(kind, el) {
+  const p = PLANS[plan];
+  const c = p.colors ? p.colors[kind] : 'transparent';
+  if (p.mode === 'adaptive') {
+    el.innerHTML = `
+      <svg class="icon-shape" viewBox="0 0 108 108" style="background:${c}">
+        <g transform="translate(24,24) scale(2.5)">${FG[kind]}</g>
+      </svg>`;
+  } else {
+    /* 方案三：裸 vector，白改深灰 */
+    el.innerHTML = `
+      <svg class="plan3-vec" viewBox="0 0 24 24" style="filter:none">
+        <g fill="#5F6368">${FG[kind].replaceAll('#fff', '#5F6368')}</g>
+      </svg>`;
+  }
+}
+
+function render() {
+  document.querySelectorAll('[data-icon]').forEach(el => renderIcon(el.dataset.icon, el));
+  document.getElementById('screen').className = 'screen' + (theme === 'light' ? ' light' : '');
+  document.querySelector('.sheet').className = 'sheet shape-' + shape;
+  document.getElementById('note').innerHTML =
+    `<b>${PLANS[plan].name}</b><br>${PLANS[plan].desc}`;
+  document.querySelectorAll('#segPlan button').forEach(b => b.classList.toggle('on', b.dataset.p === plan));
+  document.querySelectorAll('#segShape button').forEach(b => b.classList.toggle('on', b.dataset.s === shape));
+  document.querySelectorAll('#segTheme button').forEach(b => b.classList.toggle('on', b.dataset.t === theme));
+}
+
+document.getElementById('segPlan').addEventListener('click', e => { if (e.target.dataset.p) { plan = e.target.dataset.p; render(); } });
+document.getElementById('segShape').addEventListener('click', e => { if (e.target.dataset.s) { shape = e.target.dataset.s; render(); } });
+document.getElementById('segTheme').addEventListener('click', e => { if (e.target.dataset.t) { theme = e.target.dataset.t; render(); } });
+render();
+</script>
+</body>
+</html>

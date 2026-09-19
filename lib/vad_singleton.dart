@@ -52,7 +52,9 @@ class VadSingleton {
     // 如果文件已存在，直接返回路径（跳过拷贝）
     if (modelFile.existsSync()) {
       final modelSize = await modelFile.length();
-      log("📍 [VAD] 模型已存在于本地: ${modelFile.path} (${(modelSize / 1024).toStringAsFixed(1)}KB)");
+      log(
+        "📍 [VAD] 模型已存在于本地: ${modelFile.path} (${(modelSize / 1024).toStringAsFixed(1)}KB)",
+      );
       return modelFile.path;
     }
 
@@ -67,15 +69,22 @@ class VadSingleton {
     // 从 assets 加载模型字节
     final modelData = await rootBundle.load('assets/silero_vad.onnx');
     copySw.stop();
-    log("⏱️ [VAD] rootBundle.load(silero_vad) 耗时: ${copySw.elapsedMilliseconds}ms");
+    log(
+      "⏱️ [VAD] rootBundle.load(silero_vad) 耗时: ${copySw.elapsedMilliseconds}ms",
+    );
 
     copySw.reset();
     copySw.start();
     await modelFile.writeAsBytes(
-      modelData.buffer.asUint8List(modelData.offsetInBytes, modelData.lengthInBytes),
+      modelData.buffer.asUint8List(
+        modelData.offsetInBytes,
+        modelData.lengthInBytes,
+      ),
     );
     copySw.stop();
-    log("⏱️ [VAD] writeAsBytes(silero_vad) 耗时: ${copySw.elapsedMilliseconds}ms, 大小: ${(modelData.lengthInBytes / 1024).toStringAsFixed(1)}KB");
+    log(
+      "⏱️ [VAD] writeAsBytes(silero_vad) 耗时: ${copySw.elapsedMilliseconds}ms, 大小: ${(modelData.lengthInBytes / 1024).toStringAsFixed(1)}KB",
+    );
     log("📦 [VAD] silero_vad.onnx 拷贝完成: ${modelFile.path}");
     return modelFile.path;
   }
@@ -118,7 +127,9 @@ class VadSingleton {
         );
       });
       initSw.stop();
-      log("⏱️ [VAD] VoiceActivityDetector 创建耗时: ${initSw.elapsedMilliseconds}ms");
+      log(
+        "⏱️ [VAD] VoiceActivityDetector 创建耗时: ${initSw.elapsedMilliseconds}ms",
+      );
       log("✅ [VAD] 初始化成功");
       return true;
     } catch (e) {

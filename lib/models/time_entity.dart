@@ -64,7 +64,8 @@ class TimeEntity {
     final difference = dt.difference(now);
 
     // 判断是否为今天、明天或昨天
-    if (difference.inDays == 0 || (difference.inDays == -1 && dt.day == now.day)) {
+    if (difference.inDays == 0 ||
+        (difference.inDays == -1 && dt.day == now.day)) {
       // 今天
       final hour = dt.hour.toString().padLeft(2, '0');
       final minute = dt.minute.toString().padLeft(2, '0');

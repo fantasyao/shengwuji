@@ -19,9 +19,7 @@ class OverlayDataClient {
       // 上层对列表元素赋值（乐观 UI 替换条目）或改行字段都会抛
       // "Unsupported operation: read-only"——在客户端边界统一物化成
       // 普通可变 List + 可变 Map，调用方（OverlayHome）可自由修改
-      final mutable = list
-          .map((row) => Map<String, dynamic>.of(row))
-          .toList();
+      final mutable = list.map((row) => Map<String, dynamic>.of(row)).toList();
       print('📥 [OverlayDataClient] queryDiaries 返回 ${mutable.length} 条');
       return mutable;
     } catch (e, stack) {

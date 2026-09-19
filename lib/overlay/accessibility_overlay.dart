@@ -38,7 +38,7 @@ class AccessibilityOverlay {
   }
 
   /// 注册原生→Dart 消息（expand / reset / startVoiceMemo / stopVoiceMemo /
-  /// newNote）。
+  /// newNote / showProLockedHint）。
   /// 原生 showOverlay(autoExpand: true) 若早于本注册到达会被静默丢弃，
   /// 因此原生侧用 dartReady/pendingAutoExpand 握手兜底（语音速记的
   /// pendingVoiceMemoStart 同机制）。
@@ -48,12 +48,16 @@ class AccessibilityOverlay {
   ///（隐藏窗口由揭示门在"录音态首帧"构建完后发，见 overlay_home 的
   /// _revealGatePending 注释；消除揭示竞态）
   /// [onNewNote]：悬浮窗新增笔记（overlay_new_note 手势动作），payload null
+  /// [onShowProLockedHint]：Pro 门禁拦截按键后请求渲染「暂未解锁」提示胶囊
+  ///（窗口为 312×84 隐藏直建，渲染首帧后本侧发 voiceMemoUiReady 揭示，
+  /// Kotlin 3 秒后收窗），payload null
   static void setupNativeChannel({
     required VoidCallback onExpand,
     required VoidCallback onReset,
     required void Function(bool hiddenReveal) onStartVoiceMemo,
     required VoidCallback onStopVoiceMemo,
     VoidCallback? onNewNote,
+    VoidCallback? onShowProLockedHint,
   }) {
     _channel.setMethodCallHandler((call) async {
       switch (call.method) {
@@ -71,6 +75,8 @@ class AccessibilityOverlay {
           onStopVoiceMemo();
         case 'newNote':
           onNewNote?.call();
+        case 'showProLockedHint':
+          onShowProLockedHint?.call();
       }
       return null;
     });
@@ -120,6 +126,16 @@ class AccessibilityOverlay {
     await _channel.invokeMethod('voiceMemoFinished');
   }
 
+  /// 触觉反馈：overlay engine 无 Activity 够不着主 App 通道
+  /// （com.shengwuji.app/app 的 handler 在 MainActivity），由无障碍服务侧
+  /// performHaptic 同参实现（type → VibrationEffect 映射表与 MainActivity
+  /// 一致）。type 取值：'click' / 'heavy' / 'double' / 'tick'。
+  /// 调用方：OverlayVoiceMemoBar 停止按钮（'heavy'，对齐日记页
+  /// stopListening 的 _haptic('heavy')）
+  static Future<void> performHaptic(String type) async {
+    await _channel.invokeMethod('performHaptic', {'type': type});
+  }
+
   /// 系统分享面板（悬浮窗无 Activity，由原生 Service 侧起 ACTION_SEND，
   /// 内部已加 FLAG_ACTIVITY_NEW_TASK）。卡片分享入口已于 2026-09-05 替换为
   /// AI 对话按钮（见 launchApp），本方法暂留作通道 API 备用（Kotlin handler
@@ -148,6 +164,18 @@ class AccessibilityOverlay {
     return ok == true;
   }
 
+  /// 拉起主 App 并路由到日记页（悬浮窗 header「打开随手记」按钮）。
+  /// 原生 launcher intent 带 type=open_diary extra，MainActivity
+  /// extractShortcutType 路由到 Dart onShortcutLaunch 切日记页（main.dart
+  /// _handleOpenDiaryPage，与 requestCalendarPermission 的 grant_calendar
+  /// 同一条跨 engine 路由链）。返回 true = 已拉起。
+  /// 调用方：OverlayHome._openDiaryPage（调用前先收起面板并等缩窗链路走完，
+  /// 防全屏窗口的空白区吞触摸挡住主 App 首屏）
+  static Future<bool> openDiaryPage() async {
+    final ok = await _channel.invokeMethod('openDiaryPage');
+    return ok == true;
+  }
+
   /// 复制文本到系统剪贴板（原生侧 ClipboardManager 写入 + EFFECT_TICK 震动
   /// 反馈，对齐主 App 日记页卡片复制；Dart 的 Clipboard 系统通道在 overlay
   /// engine + 后台状态下不可靠）。返回 true = 写入成功。
@@ -161,6 +189,29 @@ class AccessibilityOverlay {
   /// 调用方：OverlayHome._onCardDelete（删除按钮两次点击）
   static Future<void> vibrateTick() async {
     await _channel.invokeMethod('vibrateTick');
+  }
+
+  // ── 把手长按拖动（收起态位置调整）──
+  // 手势识别全在 Dart（widgets/overlay_handle.dart 长按 + 纵向位移），原生只负责
+  // 移窗与落盘。窗口跟手移动后手指始终留在 28×88 窗口内，move 事件不丢
+
+  /// 通知原生拖动开始：原生缓存当前窗口 y 作基线（dragHandle 的目标位置 =
+  /// 基线 + 累计位移）。调用方：OverlayHome._onHandleDragStart（长按识别成功）
+  static Future<void> beginHandleDrag() async {
+    await _channel.invokeMethod('beginHandleDrag');
+  }
+
+  /// 拖动更新：[dy] = 自按下原点的纵向累计位移（逻辑像素 = dp，向下为正），
+  /// 原生换算目标位置并 clamp 到屏内后 updateViewLayout。
+  /// 调用方：OverlayHome._onHandleDragUpdate（onLongPressMoveUpdate 逐帧转发）
+  static Future<void> dragHandle(double dy) async {
+    await _channel.invokeMethod('dragHandle', {'dy': dy});
+  }
+
+  /// 拖动结束：原生把当前位置折算 dp 落盘 SharedPreferences，下次建窗恢复。
+  /// 调用方：OverlayHome._onHandleDragEnd / _onHandleDragCancel（松手或手势被打断）
+  static Future<void> endHandleDrag() async {
+    await _channel.invokeMethod('endHandleDrag');
   }
 
   // ── 语音速记临时静音（悬浮窗录音，与主 App 快捷录音同一份交互）──
@@ -192,7 +243,8 @@ class AccessibilityOverlay {
   /// notification = POST_NOTIFICATIONS（API 33+ 响铃通知必需，33 以下恒 true）。
   /// 通道异常返回 null（调用方按最严处理）。
   /// 调用方：OverlayHome._onCardAlarm（弹确认 sheet 前预检）
-  static Future<({bool calendar, bool notification})?> checkAlarmPermissions() async {
+  static Future<({bool calendar, bool notification})?>
+  checkAlarmPermissions() async {
     try {
       final raw = await _channel.invokeMethod('checkAlarmPermissions');
       if (raw is Map) {

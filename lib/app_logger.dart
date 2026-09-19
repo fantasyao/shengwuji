@@ -18,7 +18,12 @@ import 'package:share_plus/share_plus.dart';
 /// **用法**：把原本的 `print('...')` 改为 `log('...')`，签名兼容。
 /// 保留 `print()` 给纯调试场景（不进 AppLogger 的临时输出）。
 void log(Object? message, [Object? arg, Object? arg2, Object? arg3]) {
-  final parts = [message, arg, arg2, arg3].where((e) => e != null).map((e) => e.toString());
+  final parts = [
+    message,
+    arg,
+    arg2,
+    arg3,
+  ].where((e) => e != null).map((e) => e.toString());
   final msg = parts.join(' ');
   // ignore: avoid_print
   print(msg); // 控制台（flutter run 时可见）
@@ -64,7 +69,10 @@ class AppLogger {
   /// 记录一条日志（由 runZonedGuarded 的 print 拦截自动调用）
   /// 不需要再调 print，因为拦截器已经会输出到控制台
   static void appLog(String message) {
-    final timestamp = DateTime.now().toString().substring(11, 23); // HH:mm:ss.SSS
+    final timestamp = DateTime.now().toString().substring(
+      11,
+      23,
+    ); // HH:mm:ss.SSS
     final line = '[$timestamp] $message';
     _logs.add(line);
     // 超出上限则丢弃旧日志
@@ -195,7 +203,9 @@ class AppLogger {
     final buffer = StringBuffer();
     buffer.writeln('=== 应用运行日志 ===');
     buffer.writeln('导出时间: ${DateTime.now().toIso8601String()}');
-    buffer.writeln('设备: ${Platform.operatingSystem} ${Platform.operatingSystemVersion}');
+    buffer.writeln(
+      '设备: ${Platform.operatingSystem} ${Platform.operatingSystemVersion}',
+    );
     buffer.writeln('日志条数: ${_logs.length}');
     buffer.writeln('');
     for (final line in _logs) {
@@ -205,7 +215,9 @@ class AppLogger {
     final timestamp = DateTime.now().millisecondsSinceEpoch;
     final fallback = File('${dir.path}/app_log_$timestamp.txt');
     await fallback.writeAsString(buffer.toString());
-    await Share.shareXFiles([XFile(fallback.path)], text: '应用运行日志 (${_logs.length}条)');
+    await Share.shareXFiles([
+      XFile(fallback.path),
+    ], text: '应用运行日志 (${_logs.length}条)');
   }
 
   /// 内存缓冲当前条数

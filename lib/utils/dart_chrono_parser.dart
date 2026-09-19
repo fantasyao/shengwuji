@@ -368,8 +368,18 @@ class DartChronoParser {
   static int? _cnNumToInt(String raw) {
     if (RegExp(r'^\d+$').hasMatch(raw)) return int.tryParse(raw);
     const digitMap = {
-      '零': 0, '〇': 0, '一': 1, '二': 2, '两': 2, '三': 3,
-      '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9,
+      '零': 0,
+      '〇': 0,
+      '一': 1,
+      '二': 2,
+      '两': 2,
+      '三': 3,
+      '四': 4,
+      '五': 5,
+      '六': 6,
+      '七': 7,
+      '八': 8,
+      '九': 9,
     };
     if (raw == '十') return 10;
     if (raw.contains('十')) {
@@ -462,8 +472,16 @@ class DartChronoParser {
     // 判断一个实体是否是"纯时间"（日期用的是今天）
     bool isTimeOnly(TimeEntity e) {
       final dateKeywords = [
-        '今天', '明天', '后天', '昨天', '前天',
-        '周', '星期', '月', '日', '号',
+        '今天',
+        '明天',
+        '后天',
+        '昨天',
+        '前天',
+        '周',
+        '星期',
+        '月',
+        '日',
+        '号',
       ];
       return !dateKeywords.any((k) => e.text.contains(k));
     }
@@ -494,7 +512,9 @@ class DartChronoParser {
             final timeDt = timeEntity.dateTime!;
 
             // 从原始文本中截取合并后的完整文本
-            final mergedStart = current.start < next.start ? current.start : next.start;
+            final mergedStart = current.start < next.start
+                ? current.start
+                : next.start;
             final mergedEnd = current.end > next.end ? current.end : next.end;
             final mergedText = originalText.substring(mergedStart, mergedEnd);
 
@@ -507,14 +527,16 @@ class DartChronoParser {
               timeDt.minute,
             );
 
-            merged.add(TimeEntity(
-              text: mergedText,
-              start: mergedStart,
-              end: mergedEnd,
-              typeName: 'datetime',
-              value: finalDate.toIso8601String(),
-              timezone: 'Asia/Shanghai',
-            ));
+            merged.add(
+              TimeEntity(
+                text: mergedText,
+                start: mergedStart,
+                end: mergedEnd,
+                typeName: 'datetime',
+                value: finalDate.toIso8601String(),
+                timezone: 'Asia/Shanghai',
+              ),
+            );
 
             usedIndices.add(i);
             usedIndices.add(i + 1);
