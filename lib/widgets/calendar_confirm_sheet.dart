@@ -24,12 +24,19 @@ class CalendarConfirmResult {
 /// → 确认写系统日历。识别结果只决定初始位置，绝不直接定死。
 ///
 /// 布局（2026-09-14 由「左右日期+时间双转轮」改造）：
-/// 宽屏（逻辑宽 > [_CalendarConfirmSheetState.wideLayoutMinWidth]）为左右
-/// 结构——左 CalendarDatePicker 月视图（点一下选中 x月x号；头部「yyyy年M月」
-/// 点按切年份网格，‹ › 翻月箭头与滑动翻月均为组件自带），右
+/// 宽屏为左右结构——左 CalendarDatePicker 月视图（点一下选中 x月x号；头部
+/// 「yyyy年M月」点按切年份网格，‹ › 翻月箭头与滑动翻月均为组件自带），右
 /// CupertinoDatePicker time 模式时分双拨轮（分钟级，高度与日历同排等高）；
-/// 窄屏回落上下结构（日历全宽在上、时间轮固定高在下）——日期格宽 = 面板宽/7，
-/// 窄于阈值时每格不足 28dp 且头部标题被翻月按钮预留宽截断，挤压不可用。
+/// 窄屏回落上下结构（日历全宽在上、时间轮固定高在下）。「宽屏」阈值随拨轮
+/// 宽度联动（见 [_CalendarConfirmSheetState._wideThreshold]）：拨轮宽按
+/// 12h/24h 制式给足，12h 三列更宽 → 阈值更高、更多中窄屏回落上下结构。
+///
+/// ⚠️ 拨轮宽度必须给足（2026-09-23 用户 12h 手机复现「右边时钟区展示不全」）：
+/// CupertinoDatePicker 内部列宽按 locale 最长文案实测（_getColumnWidth），
+/// 容器窄于需求时 _DatePickerLayoutDelegate 把超宽均摊压缩首尾列——12h 三列
+/// 需求约 225dp 塞 132dp 时小时列被压到个位数 dp 宽、数字只剩半截「0」，
+/// 上午/下午列裁半（24h 两列需求约 167dp 压缩后数字尚完整，故只有 12h 用户
+/// 暴露）。任何「宽屏 + 12h 制」设备都触发，与屏幕尺寸无关。
 ///
 /// 震感：[onHaptic] 由调用方注入本 engine 的触觉通道——主 App 传
 /// DiaryTabState._haptic（MethodChannel com.shengwuji.app/app → MainActivity
@@ -102,16 +109,26 @@ class CalendarConfirmSheet extends StatefulWidget {
 }
 
 class _CalendarConfirmSheetState extends State<CalendarConfirmSheet> {
-  /// 左右结构的最小逻辑宽（dp）：低于此宽日期格每格 <28dp、头部标题被
-  /// 翻月按钮预留宽（CalendarDatePicker 固定预留 108dp）截断，回落上下结构
-  static const double wideLayoutMinWidth = 380;
+  /// 左右结构下日历的最小可用宽（dp）：月视图 7 格各 ≥28dp 且头部标题不被
+  /// 翻月按钮预留宽（CalendarDatePicker 固定预留 108dp）截断
+  static const double _calendarMinWidth = 206;
+
+  /// 左右结构的非日历固定开销（dp）：外边距 32 + 日历/拨轮间距 10；
+  /// 宽屏阈值 = 本值 + [_calendarMinWidth] + 拨轮宽（见 [_wideThreshold]）
+  static const double _sideBySideChrome = 32 + 10;
 
   /// 上下结构（窄屏回落）时时间轮的固定高度：显示约 3 行刻度
   static const double _stackedTimeWheelHeight = 106;
 
-  /// 左右结构时时间拨轮的固定宽度：24h 两列（时|分）舒适宽；
-  /// 12h 为三列（上午/下午|时|分）仍可容纳
-  static const double _timeWheelWidth = 132;
+  /// 时间拨轮宽度按制式给足（why 见文件头 ⚠️ 段）：24h 两列（时|分）需求
+  /// 约 167dp 给 176；12h 三列（时|分|上午/下午，中文 dayPeriod 两字约 34dp）
+  /// 需求约 225dp 给 240。宁可阈值联动抬高回落上下结构，不可窄容器压缩列
+  static double _timeWheelWidth(bool is24h) => is24h ? 176 : 240;
+
+  /// 左右结构的最小逻辑宽（dp）：日历保 [_calendarMinWidth] 的前提下还装得
+  /// 下对应制式的拨轮；低于此宽日期格每格 <28dp，回落上下结构
+  static double _wideThreshold(bool is24h) =>
+      _sideBySideChrome + _calendarMinWidth + _timeWheelWidth(is24h);
 
   late DateTime _selectedTime;
   late bool _enableAlarm;
@@ -173,7 +190,10 @@ class _CalendarConfirmSheetState extends State<CalendarConfirmSheet> {
         Theme.of(context).extension<AppThemeExtension>()?.isNeumorphic ??
         false;
     final now = DateTime.now();
-    final wide = MediaQuery.of(context).size.width > wideLayoutMinWidth;
+    // 12h/24h 跟随系统（与 _buildTimeWheelPicker 的 use24hFormat 同源）；
+    // 12h 三列拨轮更宽，宽屏阈值联动抬高，中窄屏回落上下结构保日历可用
+    final is24h = MediaQuery.of(context).alwaysUse24HourFormat;
+    final wide = MediaQuery.of(context).size.width > _wideThreshold(is24h);
     return SafeArea(
       top: false,
       // 小屏兜底可滚（见 showCalendarConfirmSheet 注释）
@@ -250,7 +270,7 @@ class _CalendarConfirmSheetState extends State<CalendarConfirmSheet> {
               // 纯 Flutter 组件，悬浮窗 engine 可直接渲染；中文文案来自两侧
               // MaterialApp 的 GlobalMaterialLocalizations/CupertinoLocalizations）
               if (wide)
-                _buildSideBySidePickers(colorScheme, now)
+                _buildSideBySidePickers(colorScheme, now, is24h)
               else
                 _buildStackedPickers(colorScheme, now),
               const SizedBox(height: 12),
@@ -286,8 +306,13 @@ class _CalendarConfirmSheetState extends State<CalendarConfirmSheet> {
 
   /// 宽屏：左日历 + 右时分双拨轮同排。IntrinsicHeight 取日历自然高
   ///（CalendarDatePicker 自身精确高 = 周表头 + 6 行网格）撑行高，
-  /// 拨轮列 stretch 等高——拨动行程与转轮时代相当且不随内容跳动
-  Widget _buildSideBySidePickers(ColorScheme colorScheme, DateTime now) {
+  /// 拨轮列 stretch 等高——拨动行程与转轮时代相当且不随内容跳动。
+  /// 拨轮宽按制式给足（[is24h]），不得回改固定窄值，why 见文件头 ⚠️ 段
+  Widget _buildSideBySidePickers(
+    ColorScheme colorScheme,
+    DateTime now,
+    bool is24h,
+  ) {
     return IntrinsicHeight(
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -295,7 +320,7 @@ class _CalendarConfirmSheetState extends State<CalendarConfirmSheet> {
           Expanded(child: _buildCalendarPicker(colorScheme, now)),
           const SizedBox(width: 10),
           SizedBox(
-            width: _timeWheelWidth,
+            width: _timeWheelWidth(is24h),
             child: _buildTimeWheelPicker(colorScheme, now),
           ),
         ],

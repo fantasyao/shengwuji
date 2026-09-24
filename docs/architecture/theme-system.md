@@ -26,7 +26,7 @@
 - **基础语义**: `primary`, `primaryLight`, `primaryDark`, `surface`, `cardBackground`, `scaffoldBackground`
 - **文字**: `textPrimary`, `textSecondary`, `textHint`, `textOnPrimary`
 - **功能色**: `positiveAccent`, `positiveText`, `warningAccent`, `warningText`, `dangerAccent`, `timeHighlight`, `timeHighlightBg`
-- **特殊色**: `splashBackground`, `goldAccent`, `goldLight`, `goldBorder`
+- **特殊色**: `splashBackground`, `splashGradient`, `splashGlow`, `goldAccent`, `goldLight`, `goldBorder`
 - **浮动按钮**: `fabReady`, `fabRecording`, `fabProcessing`, `fabDisabled`
 - **系统层**: `divider`, `isDarkOverlay`
 
@@ -68,6 +68,37 @@ return Container(color: ext.positiveAccent);
 
 启动恢复（main.dart）：Pro 主题且不可用（试用过期/未解锁）→ 回退 `default_teal` 并写回 prefs，首帧 SnackBar 提示一次（"下次启动回退"策略，当次会话不中断）。
 
+## 自定义主题（2026-09-22 新增，Pro 专属）
+
+**文件**: [lib/theme/custom_theme.dart](../../lib/theme/custom_theme.dart)（配置 + 色系派生）、[lib/settings/custom_theme_page.dart](../../lib/settings/custom_theme_page.dart)（编辑页）
+
+用户从选色盘挑一个**主色**（选中背景色的来源），app 自动派生一套推荐色系；背景色 / 按钮色 / 选中背景色三项可各自用选色盘**覆盖**推荐值（允许反差搭配，观感由用户负责）。存储与加载：
+
+- 配置只存 `seed` + 三个可选覆盖的 int 色值（prefs key `custom_theme_data`，JSON），**不存派生结果**——派生规则调整后旧配置按新规则自动重建，无需迁移
+- `selected_theme == 'custom'` 时主 App 启动链与悬浮窗 `_loadTheme` 都经 `loadThemeById()` 现建主题（`AppThemeDefinition(id: 'custom', isPro: true)`），坏配置/缺失返回 null 由调用方兜底默认青
+- Pro 门禁完全复用既有链：未解锁/试用过期时启动自动回退默认青，入口卡点击走 `ProGate.tryAccess`
+
+派生策略（`generateCustomTheme`，纯函数，对齐既有预设惯例）：
+
+| 槽位 | 规则 |
+|---|---|
+| `scaffoldBackground` | 主色极浅低饱和同色调（L 0.965 / S ≤0.12） |
+| `primaryLight`（选中背景） | 主色浅化（L 0.82 / S 减半封顶 0.55） |
+| `primaryDark` / `timeHighlight` | 主色加深（L ×0.72 封顶 0.45）；暖橙/墨绿预设先例：高亮跟随主色 |
+| `textOnPrimary` | WCAG 对比度 ≥3.0 用白字，否则主色深版（L 0.13，晴空蓝深蓝黑先例） |
+| `fabReady`（推荐按钮色） | 主色 L >0.55（过浅，白图标不可读）时自动落到 `primaryDark` |
+| `positiveAccent/Text`、`timeHighlightBg`、`splashBackground` | 同色系浅化/深化（splash L 0.14~0.30 避免黑底破坏调性） |
+| warning/danger/gold/fab 录音红·处理橙·禁用灰 | **固定不跟随**（5 套预设一致的惯例） |
+| 拟物 | 恒 `isNeumorphic=false`，悬浮窗无需拟物降级 |
+
+交互约定：主题选择 sheet 网格末尾追加"自定义"卡（有配置=派生色槽预览+Pro 徽章，复用 `_buildThemeCard`；无配置=虚线创建入口）；点击**不直接切主题**，先过 Pro 门禁再进编辑页，应用动作统一在编辑页"使用此主题"完成（避免点击语义二义），pop(true)=已应用才关 sheet。编辑页内换主色会清空三项微调（推荐色系随新主色重新生成）；删除自定义主题时若正在使用则回退默认青。
+
+测试：`test/custom_theme_test.dart`（派生关系/对比度切换/覆盖生效/恢复推荐/JSON 往返/加载链兜底，19 例）。已知物理舍入：极浅背景（L≈0.97）RGB 8bit 量化可折算十几度色相抖动，测试色相断言容差 25°。
+
+## 启动页配色（2026-09-24 重设计）
+
+方案 B「深海极光」（用户从配色预览选定）：默认主题新增 `splashGradient`（深海三段渐变 `#0D1B2E→#13253C→#16304A`）与 `splashGlow`（图标区冷蓝辉光 `#5A5E9EDC` 径向淡出），其余主题维持各自纯色 `splashBackground` 回落；`splashBackground` 在默认主题降级为兜底纯色（渐变层之下/系统导航栏区域）+ 授权按钮文字色。装饰槽 lerp 按 t<0.5 取自身（与 bool 槽同策略，不做逐色插值）。配套：启动页图标 `assets/icon/icon2.png` 由薄荷绿渐变底重制为藏青 `#2C3E50` 底（与桌面图标同源，脚本 `test/design_preview/recolor_icon_navy.py` 可复现）；Android 12+ 系统启动画面背景 `#0D1B2E`（`values-v31/styles.xml`，与 Flutter 渐变起始色衔接）。详见 `lib/splash_screen.dart` 的 `SplashShell` 与 `test/splash_theme_test.dart`（8 例）。
+
 ## Pro 门禁
 
 **文件**: [lib/utils/pro_gate.dart](../../lib/utils/pro_gate.dart)、[pro-license.md](pro-license.md)（授权体系权威文档）
@@ -88,6 +119,8 @@ return Container(color: ext.positiveAccent);
 
 - [lib/theme/app_theme_extension.dart](../../lib/theme/app_theme_extension.dart) - 语义化色槽
 - [lib/theme/app_theme.dart](../../lib/theme/app_theme.dart) - 主题定义注册表
+- [lib/theme/custom_theme.dart](../../lib/theme/custom_theme.dart) - 自定义主题（配置存取 + 色系派生）
+- [lib/settings/custom_theme_page.dart](../../lib/settings/custom_theme_page.dart) - 自定义主题编辑页（选色盘）
 - [lib/main.dart](../../lib/main.dart) - `AppRoot.themeNotifier` 全局切换
 - [lib/utils/pro_gate.dart](../../lib/utils/pro_gate.dart) - Pro 门禁
 - [lib/settings_tab.dart](../../lib/settings_tab.dart) - 主题选择 UI

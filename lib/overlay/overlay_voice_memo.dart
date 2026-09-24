@@ -124,6 +124,12 @@ class OverlayVoiceMemoController extends ChangeNotifier {
   /// 长按音量上键」旧文案。读失败按关闭兜底，与旧文案语义一致）
   bool singleClickStopEnabled = false;
 
+  /// 本次录音是否为「按住说话」（PTT）会话（start(ptt: true) 置位，stop/fail
+  /// 复位）。UI 消费方 OverlayVoiceMemoBar：true 时停止提示切「松开音量键，
+  /// 停止并转写」——PTT 的停录主路径是松开按键（Kotlin UP 分支发 stop），
+  /// 文案优先级高于单击停录
+  bool isPttSession = false;
+
   /// 是否展示停止提示（纯函数可测）：已展示次数未达上限
   static bool shouldShowStopHint(int shownCount) =>
       shownCount < OverlayConstants.voiceMemoStopHintMaxShows;
@@ -144,8 +150,13 @@ class OverlayVoiceMemoController extends ChangeNotifier {
   /// 开始语音速记录音。返回是否成功（失败由调用方回执 voiceMemoFailed）。
   ///
   /// 调用方：OverlayHome 收到 Kotlin `startVoiceMemo` 消息时。
+  /// [ptt] true = 「按住说话」会话（Kotlin ptt_record 手势：松开同一键即停录），
+  /// 仅影响停止提示文案（isPttSession 快照），录音/转写/互斥链路与普通速记一致。
   /// 失败路径全部 return false（不回执、不改状态），资源清理在各自分支内完成。
-  Future<bool> start() async {
+  Future<bool> start({bool ptt = false}) async {
+    // PTT 快照置顶（后续任一失败 return 也已生效；stop/fail 会复位）——
+    // 文案必须与实际交互一致，置位晚了揭示首帧可能还拿旧值
+    isPttSession = ptt;
     // 1. 防重入：录音/转写中再来一次 startVoiceMemo（Kotlin toggle 正常不会发，
     //    这里兜底防状态机错乱）
     if (_state != OverlayVoiceMemoState.idle) {
@@ -385,6 +396,7 @@ class OverlayVoiceMemoController extends ChangeNotifier {
   Future<void> stop({bool manualStop = true}) async {
     if (_state != OverlayVoiceMemoState.recording) return;
     _showStopHint = false; // 提示只在录音态有意义（进转写即撤）
+    isPttSession = false; // PTT 快照随会话结束复位（下会话由 start 重新置位）
     _state = OverlayVoiceMemoState.transcribing;
     notifyListeners(); // UI 切三点跳动胶囊
 
@@ -455,6 +467,7 @@ class OverlayVoiceMemoController extends ChangeNotifier {
     _pcmBuffer.clear();
     _startTime = null;
     _showStopHint = false;
+    isPttSession = false;
     _state = OverlayVoiceMemoState.idle;
     notifyListeners();
     AccessibilityOverlay.voiceMemoFailed(reason);

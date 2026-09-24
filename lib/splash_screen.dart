@@ -6,6 +6,60 @@ import 'recognizer_singleton.dart';
 import 'startup_logger.dart';
 import 'theme/app_theme_extension.dart';
 
+/// 启动页统一外壳（2026-09-24 方案 B「深海极光」，用户从配色预览中选定）：
+/// 主题带 [AppThemeExtension.splashGradient] 时铺深海渐变 + 图标区冷蓝辉光，
+/// 否则回落纯色 [AppThemeExtension.splashBackground]（其余主题/自定义主题路径）。
+/// 辉光只做 Stack 装饰叠层，不参与布局也不挡点击。
+/// 独立成 widget 便于测试（绕开 SplashScreen 的模型预加载副作用）。
+class SplashShell extends StatelessWidget {
+  final Widget child;
+
+  const SplashShell({super.key, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    final ext = AppThemeExtension.of(context);
+    final glow = ext.splashGlow;
+    return Scaffold(
+      backgroundColor: ext.splashBackground,
+      body: Stack(
+        children: [
+          if (ext.splashGradient != null)
+            Positioned.fill(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: ext.splashGradient!,
+                  ),
+                ),
+              ),
+            ),
+          if (glow != null)
+            // 辉光中心对准图标区（页面约 25% 高度处），矩形按径向渐变自然成椭圆
+            Align(
+              alignment: const Alignment(0, -0.5),
+              child: FractionallySizedBox(
+                widthFactor: 0.95,
+                heightFactor: 0.42,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: RadialGradient(
+                      radius: 1.0,
+                      colors: [glow, glow.withValues(alpha: 0)],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          child,
+        ],
+      ),
+    );
+  }
+}
+
 /// 启动页：在显示主界面前完成模型预加载和权限请求
 class SplashScreen extends StatefulWidget {
   final Widget child;
@@ -132,9 +186,8 @@ class _SplashScreenState extends State<SplashScreen> {
 
     // 等待用户点击授权按钮
     if (_waitingForPermission) {
-      return Scaffold(
-        backgroundColor: ext.splashBackground,
-        body: Center(
+      return SplashShell(
+        child: Center(
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 40),
             child: Column(
@@ -271,9 +324,8 @@ class _SplashScreenState extends State<SplashScreen> {
     }
 
     // 后台初始化中（模型预加载阶段）
-    return Scaffold(
-      backgroundColor: ext.splashBackground,
-      body: Center(
+    return SplashShell(
+      child: Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,

@@ -212,9 +212,9 @@ class MainActivity: FlutterActivity() {
                     val title = call.argument<String>("title") ?: "提醒"
                     val enableAlarm = call.argument<Boolean>("enableAlarm") ?: true
                     // 日历逻辑在 CalendarEventHelper（与无障碍 Service 侧悬浮窗
-                    // 闹钟共用，见该文件头注释——两个 FlutterEngine 通道不通）
-                    val success = CalendarEventHelper.addCalendarEvent(this, timestamp, title, enableAlarm)
-                    result.success(success)
+                    // 闹钟共用，见该文件头注释——两个 FlutterEngine 通道不通）。
+                    // 返回结果码字符串（"ok"/"no_calendar_account"/…），Dart 侧按码出提示
+                    result.success(CalendarEventHelper.addCalendarEvent(this, timestamp, title, enableAlarm))
                 }
                 "isAccessibilityServiceEnabled" -> {
                     val enabled = isAccessibilityServiceEnabled()
@@ -278,6 +278,21 @@ class MainActivity: FlutterActivity() {
                 "verifyLicense" -> {
                     val code = call.argument<String>("code") ?: ""
                     result.success(verifyLicenseCode(code))
+                }
+                // AI 应用分享：列出桌面应用供二级页 + 号添加自定义应用（上限在 Dart 侧管）
+                "getInstalledApps" -> {
+                    result.success(getInstalledApps())
+                }
+                // 笔记锁定：主 App（DiaryTab）发起系统认证。与悬浮窗同一条
+                // NoteUnlockCoordinator 链路（锁屏中 requestDismissKeyguard /
+                // 未锁屏 BiometricPrompt），结果经 flutterChannel 推 noteUnlockResult
+                "requestUnlockAuth" -> {
+                    result.success(NoteUnlockCoordinator.launch(this, fromOverlay = false))
+                }
+                // 图标按需懒加载（列表接口不带图标，避免一次性传几百张图）
+                "getAppIcon" -> {
+                    val packageName = call.argument<String>("packageName") ?: ""
+                    result.success(loadAppIconPng(packageName))
                 }
                 else -> result.notImplemented()
             }
@@ -666,5 +681,56 @@ class MainActivity: FlutterActivity() {
             }
         }
         return out // 80 bits 整除 10 字节，无余位
+    }
+
+    // --- AI 应用分享：已安装应用枚举（Dart 侧 settings/ai_app_page.dart 调用）---
+    // Android 11+ 包可见性靠 manifest 的 QUERY_ALL_PACKAGES 权限（个人分发应用，无商店政策约束）
+
+    /** 有桌面入口的已安装应用（名称+包名），按名称排序；排除本 APP（自己跳自己无意义） */
+    private fun getInstalledApps(): List<Map<String, String>> {
+        val pm = packageManager
+        val apps = mutableListOf<Map<String, String>>()
+        val self = packageName
+        for (info in pm.getInstalledApplications(PackageManager.GET_META_DATA)) {
+            if (info.packageName == self) continue
+            val label = info.loadLabel(pm)?.toString()?.trim() ?: continue
+            if (label.isEmpty()) continue
+            // 只要有桌面入口的应用——用户在桌面上找得到，跳过去才符合直觉
+            if (pm.getLaunchIntentForPackage(info.packageName) == null) continue
+            apps.add(mapOf("appName" to label, "packageName" to info.packageName))
+        }
+        val collator = java.text.Collator.getInstance(java.util.Locale.CHINA)
+        apps.sortWith(compareBy(collator) { it["appName"] ?: "" })
+        println("📱 [MainActivity] getInstalledApps: ${apps.size} 个桌面应用")
+        return apps
+    }
+
+    /** 应用图标转 PNG 字节（缩到 96px 控制传输体积）；查不到/转换失败返回 null，Dart 侧兜底占位图标 */
+    private fun loadAppIconPng(packageName: String): ByteArray? {
+        return try {
+            val drawable = packageManager.getApplicationIcon(packageName)
+            val bitmap = when (drawable) {
+                is android.graphics.drawable.BitmapDrawable -> drawable.bitmap
+                else -> {
+                    val size = maxOf(drawable.intrinsicWidth, drawable.intrinsicHeight)
+                        .coerceAtLeast(1)
+                    android.graphics.Bitmap.createBitmap(
+                        size, size, android.graphics.Bitmap.Config.ARGB_8888
+                    ).also { bmp ->
+                        val canvas = android.graphics.Canvas(bmp)
+                        drawable.setBounds(0, 0, canvas.width, canvas.height)
+                        drawable.draw(canvas)
+                    }
+                }
+            }
+            val scaled = if (bitmap.width <= 96 && bitmap.height <= 96) bitmap
+            else android.graphics.Bitmap.createScaledBitmap(bitmap, 96, 96, true)
+            val out = java.io.ByteArrayOutputStream()
+            scaled.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+            out.toByteArray()
+        } catch (e: Exception) {
+            println("⚠️ [MainActivity] 加载应用图标失败 $packageName: $e")
+            null
+        }
     }
 }

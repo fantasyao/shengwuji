@@ -46,7 +46,10 @@ android {
 
 dependencies {
     // Note: Using chrono.js for date-time parsing (see lib/utils/chrono_parser.dart)
-    // No Android native dependencies needed
+    // 笔记解锁认证（NoteUnlockActivity）：androidx.biometric 系统认证对话框
+    // （指纹/面部优先、锁屏密码兜底）。appcompat 由其传递带入（API<28 兼容
+    // 对话框要求 AppCompat 主题）
+    implementation("androidx.biometric:biometric:1.1.0")
 }
 
 flutter {

@@ -6,8 +6,10 @@ import '../overlay_constants.dart';
 /// 视觉：药丸式双色胶囊——上半白 / 下半绿、中间一道接缝横线（配色见
 /// OverlayConstants handleCapsule*），外围细白描边与笔记卡片的
 /// cardBorderWidth 白描边同语言；静置态整体稍透明（handleRestingOpacity）。
-/// 胶囊本体比窗口小一圈（handleInset* 内缩）：窗口 28×88 是原生硬编码副本
-/// 与语音胶囊 84<88 不变量的联动值不动，触控面积也不变，仅视觉缩小
+/// 胶囊本体比窗口小一圈（按把手大小档位内缩，handleInsetXxxOf 派生）：窗口
+/// 28×88 是原生硬编码副本与语音胶囊 84<88 不变量的联动值不动，触控面积也不
+/// 变，仅视觉缩小；文字仅标准档显示（75%/50% 档太挤），拟物胶囊💊主题
+/// （HandleTheme.pill3d）纯造型无图标无文字、叠高光/暗部两层出立体感
 ///
 /// 手势（识别在本组件，效果回调给父层 OverlayHome）：
 /// - 点按 / 向屏幕内侧滑动 → 展开面板（既有行为，从 _buildHandle 原样迁入；
@@ -26,6 +28,8 @@ class OverlayHandle extends StatefulWidget {
     required this.onTap,
     required this.onSwipeInward,
     this.dockLeft = false,
+    this.sizePercent = OverlayConstants.handleSizeDefaultPercent,
+    this.theme = HandleTheme.duo,
     this.onDragStart,
     this.onDragUpdate,
     this.onDragEnd,
@@ -42,6 +46,15 @@ class OverlayHandle extends StatefulWidget {
   /// 停靠侧：false（默认）= 屏幕右缘（历史行为），true = 左缘。
   /// 只影响"朝屏幕内侧"滑动的方向判定（展开手势镜像），拖动为纵向不受影响
   final bool dockLeft;
+
+  /// 把手大小档位（百分比）：胶囊本体视觉缩放，窗口 28×88 与触控面积不变
+  ///（设置页「把手大小」三档 100/75/50，读取方 OverlayHome 传入；75%/50% 档
+  /// 不显示竖排文字——真机反馈小胶囊文字太挤，仅标准档保留）
+  final int sizePercent;
+
+  /// 把手主题（皮肤）：色值与内容显隐见 [HandleThemeVisuals]；拟物胶囊💊
+  /// 另叠高光条 + 下半暗部渐变（立体感），纯造型无图标无文字
+  final HandleTheme theme;
 
   /// 长按识别成功 → 进入拖动模式（父层：暂停自动隐藏 + 震感 + beginHandleDrag）
   final VoidCallback? onDragStart;
@@ -101,7 +114,21 @@ class _OverlayHandleState extends State<OverlayHandle> {
 
   @override
   Widget build(BuildContext context) {
+    // 档位派生值集中算一次：胶囊视觉尺寸 = 基准 × 档位，窗口恒 28×88 只变内缩
+    final capsuleWidth = OverlayConstants.handleCapsuleWidth(widget.sizePercent);
+    final capsuleHeight = OverlayConstants.handleCapsuleHeight(
+      widget.sizePercent,
+    );
+    final mini = OverlayConstants.isMiniHandleSize(widget.sizePercent);
+    final theme = widget.theme;
+    final showLabel = OverlayConstants.handleShowsLabel(widget.sizePercent, theme);
     return GestureDetector(
+      // ⚠️ 必须 opaque 整窗命中（同 _buildEdgeLine 竖线的既有做法）：默认
+      // deferToChild 时命中区=有 decoration 的胶囊本体，胶囊外的透明内缩环
+      // 不可点——档位缩小后环越宽（75% 档纵向空隙 14dp），用户点视觉胶囊
+      // 附近的透明区全部落空，感知为"触发区变小/有空隙唤不出"（真机反馈
+      // 2026-09-22）。opaque 后触控区=整窗 28×88，兑现"视觉缩、触控不缩"
+      behavior: HitTestBehavior.opaque,
       onTap: widget.onTap,
       onHorizontalDragUpdate: (details) {
         // 朝屏幕内侧滑动超过阈值，标记为待展开：停靠右缘 = 向左（历史行为），
@@ -125,11 +152,13 @@ class _OverlayHandleState extends State<OverlayHandle> {
       onLongPressMoveUpdate: _onLongPressMoveUpdate,
       onLongPressEnd: _onLongPressEnd,
       onLongPressCancel: _onLongPressCancel,
-      // 窗口（28×88）不变，胶囊本体向内缩一圈：视觉缩小但触控面积不丢
+      // 窗口（28×88）不变，胶囊本体按档位向内缩：视觉变小但触控面积不丢
       child: Padding(
-        padding: const EdgeInsets.symmetric(
-          horizontal: OverlayConstants.handleInsetHorizontal,
-          vertical: OverlayConstants.handleInsetVertical,
+        padding: EdgeInsets.symmetric(
+          horizontal: OverlayConstants.handleInsetHorizontalOf(
+            widget.sizePercent,
+          ),
+          vertical: OverlayConstants.handleInsetVerticalOf(widget.sizePercent),
         ),
         // 拖动态满不透明（静置稍透明），沿用「拖动 = 满不透明」分层语言
         child: AnimatedOpacity(
@@ -137,32 +166,24 @@ class _OverlayHandleState extends State<OverlayHandle> {
           opacity: _dragging ? 1.0 : OverlayConstants.handleRestingOpacity,
           child: AnimatedContainer(
             duration: OverlayConstants.animationDuration,
-            width:
-                OverlayConstants.handleWidth -
-                2 * OverlayConstants.handleInsetHorizontal,
-            height:
-                OverlayConstants.handleHeight -
-                2 * OverlayConstants.handleInsetVertical,
+            width: capsuleWidth,
+            height: capsuleHeight,
             decoration: BoxDecoration(
-              // 药丸双色：上半白 / 下半绿在胶囊正中硬切（hard-stop 渐变，
+              // 药丸双色：上半 / 下半在胶囊正中硬切（hard-stop 渐变，
               // BoxDecoration 的 borderRadius 自动裁出胶囊轮廓，无需 ClipRRect）
-              gradient: const LinearGradient(
+              gradient: LinearGradient(
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
                 colors: [
-                  OverlayConstants.handleCapsuleTopColor,
-                  OverlayConstants.handleCapsuleTopColor,
-                  OverlayConstants.handleCapsuleBottomColor,
-                  OverlayConstants.handleCapsuleBottomColor,
+                  theme.capsuleTopColor,
+                  theme.capsuleTopColor,
+                  theme.capsuleBottomColor,
+                  theme.capsuleBottomColor,
                 ],
-                stops: [0.0, 0.5, 0.5, 1.0],
+                stops: const [0.0, 0.5, 0.5, 1.0],
               ),
-              // 全圆角胶囊：半径 = 胶囊宽度一半，随内缩后的宽度自动适配
-              borderRadius: BorderRadius.circular(
-                (OverlayConstants.handleWidth -
-                        2 * OverlayConstants.handleInsetHorizontal) /
-                    2,
-              ),
+              // 全圆角胶囊：半径 = 胶囊宽度一半，随档位缩放自动适配
+              borderRadius: BorderRadius.circular(capsuleWidth / 2),
               // 细白描边与笔记卡片同款（cardBorderWidth），静置态常驻；
               // 拖动态加粗到 1.5 作为拖动反馈（描边画在胶囊内侧不溢出窗口）
               border: Border.all(
@@ -171,47 +192,104 @@ class _OverlayHandleState extends State<OverlayHandle> {
               ),
               // 无 boxShadow：窗口尺寸=把手尺寸，阴影向胶囊外扩散会被窗口
               // 边缘硬裁剪成灰色矩形色块（同面板"透明背景不留 boxShadow"
-              // 的既有决策）；层次感由白描边 + 双色胶囊自身承担
+              // 的既有决策）；层次感由白描边 + 主题色胶囊自身承担
             ),
-            // 上半区闪电 / 中缝接缝线 / 下半区竖排「闪记」——两个 Expanded
-            // 把内容各钉在自己的色半区，接缝天然落在胶囊正中
-            child: Column(
-              children: [
-                Expanded(
-                  child: Center(
-                    child: Icon(
-                      Icons.bolt,
-                      size: OverlayConstants.handleIconSize,
-                      // 图标取下半绿同色：落在白半区上与绿半区呼应成对
-                      color: OverlayConstants.handleCapsuleBottomColor,
-                    ),
-                  ),
-                ),
-                // 中缝接缝线：双色胶囊（药丸）两半的接合处的平面投影，
-                // 半透明黑在白/绿两半上都读作凹陷缝
-                Container(
-                  width: double.infinity,
-                  height: 1,
-                  color: OverlayConstants.handleSeamColor,
-                ),
-                Expanded(
-                  child: Center(
-                    child: Text(
-                      // 中文逐字竖排：字符间插入换行，每个汉字独占一行
-                      OverlayConstants.handleLabel.characters.join('\n'),
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: OverlayConstants.handleFontSize,
-                        height: 1.25,
-                        fontWeight: FontWeight.w500,
-                        // 白字落在绿半区（与白描边同语言）
-                        color: Colors.white,
+            // 拟物胶囊💊：纯造型（无图标无文字）——中缝分界 + 下半暗部渐变
+            //（50% 起加深、上半白不受影响）+ 左侧高光条（圆柱反光），三层叠
+            // 出立体感；其余主题走「图标/中缝/竖排文字」三段 Column
+            child: theme.isPill3d
+                ? Stack(
+                    children: [
+                      Positioned(
+                        left: 0,
+                        right: 0,
+                        top: capsuleHeight / 2 - 0.5,
+                        child: Container(
+                          height: 1,
+                          color: OverlayConstants.handleSeamColor,
+                        ),
                       ),
-                    ),
+                      Positioned.fill(
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            borderRadius:
+                                BorderRadius.circular(capsuleWidth / 2),
+                            gradient: const LinearGradient(
+                              begin: Alignment.topCenter,
+                              end: Alignment.bottomCenter,
+                              colors: [
+                                Color(0x00000000),
+                                Color(0x14000000),
+                                Color(0x33000000),
+                              ],
+                              stops: [0.0, 0.5, 1.0],
+                            ),
+                          ),
+                        ),
+                      ),
+                      Positioned(
+                        left: capsuleWidth * 0.14,
+                        top: capsuleHeight * 0.07,
+                        width: capsuleWidth * 0.2,
+                        height: capsuleHeight * 0.6,
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            borderRadius:
+                                BorderRadius.circular(capsuleWidth * 0.1),
+                            gradient: const LinearGradient(
+                              begin: Alignment.topCenter,
+                              end: Alignment.bottomCenter,
+                              colors: [Color(0xA6FFFFFF), Color(0x00FFFFFF)],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  )
+                : Column(
+                    children: [
+                      Expanded(
+                        child: Center(
+                          child: theme.showsIcon
+                              ? Icon(
+                                  Icons.bolt,
+                                  size: mini
+                                      ? OverlayConstants.handleIconSizeMini
+                                      : OverlayConstants.handleIconSize,
+                                  color: theme.iconColor,
+                                )
+                              : const SizedBox.shrink(),
+                        ),
+                      ),
+                      // 中缝接缝线：双色胶囊（药丸）两半的接合处的平面投影，
+                      // 半透明黑在两半上都读作凹陷缝
+                      Container(
+                        width: double.infinity,
+                        height: 1,
+                        color: OverlayConstants.handleSeamColor,
+                      ),
+                      Expanded(
+                        child: Center(
+                          // 75%/50% 档不显示文字（真机反馈小胶囊太挤）、
+                          // 三段结构与中缝位置保持不变（视觉语言连续）
+                          child: showLabel
+                              ? Text(
+                                  // 中文逐字竖排：字符间插入换行，每个汉字独占一行
+                                  OverlayConstants.handleLabel.characters
+                                      .join('\n'),
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontSize: OverlayConstants.handleFontSize,
+                                    height: 1.25,
+                                    fontWeight: FontWeight.w500,
+                                    color: theme.labelColor,
+                                  ),
+                                )
+                              : const SizedBox.shrink(),
+                        ),
+                      ),
+                    ],
                   ),
-                ),
-              ],
-            ),
           ),
         ),
       ),

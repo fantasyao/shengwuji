@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../theme/app_theme.dart';
+import '../theme/custom_theme.dart';
 import 'overlay_home.dart';
 
 /// 悬浮窗根 Widget
@@ -29,7 +30,8 @@ class _OverlayAppState extends State<OverlayApp> {
     try {
       final prefs = await SharedPreferences.getInstance();
       final themeId = prefs.getString('selected_theme');
-      var theme = AppThemes.findById(themeId) ?? AppThemes.defaultTheme;
+      // 预设 findById；'custom' 按保存的配置现建，坏配置回退默认青
+      var theme = await loadThemeById(themeId) ?? AppThemes.defaultTheme;
       // ⚠️ 新拟物主题降级为默认青（悬浮窗视觉零变化）：
       // 悬浮窗 FlutterView 背景透明，拟物的外扩散双阴影会被窗口边缘硬裁剪成
       // 灰块（透明窗口教训，overlay_constants 同类约束），且灰底面板与桌面

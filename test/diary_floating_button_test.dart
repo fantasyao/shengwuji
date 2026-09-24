@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shengwuji_app/theme/app_theme.dart';
+import 'package:shengwuji_app/theme/custom_theme.dart';
 import 'package:shengwuji_app/widgets/diary_floating_button.dart';
 
 /// 日记页浮动麦克风按钮（性能审查 Top6 回归）：
@@ -21,12 +22,13 @@ void main() {
   Future<void> pumpButton(
     WidgetTester tester, {
     bool isLockedRecording = false,
+    ThemeData? theme,
   }) async {
     counter.reset();
     await tester.pumpWidget(
       MaterialApp(
         // AppThemeExtension.of 经 Theme.extension 解析，必须挂应用主题
-        theme: AppThemes.defaultTheme.toThemeData(),
+        theme: theme ?? AppThemes.defaultTheme.toThemeData(),
         home: Scaffold(
           body: Stack(
             children: [
@@ -184,6 +186,48 @@ void main() {
     await gesture.up();
     await tester.pumpAndSettle();
     expect(counter.stopCalls, 1, reason: '松开停止录音');
+  });
+
+  testWidgets('自定义主题浅色 seed：麦克风图标恒白、黏土阴影减淡（2026-09-23 三页统一回归）', (
+    tester,
+  ) async {
+    // 浅色 seed（用户截图同款浅蓝）：白字对比度 <3.0 → textOnPrimary 按
+    // WCAG 自动落深色（L=0.13）。旧实现非拟物分支图标/阴影高光引用该槽，
+    // 麦克风变「黑」、高光变黑晕显得阴影过重，且与日记页硬编码白不一致。
+    // 定稿：非拟物图标恒白；高光固定白 + 暗影 alpha 0.12（main.dart 查物品
+    // 浮动钮/录入页钉底栏为同款副本，本用例守护三处共享的视觉规格）
+    final theme = generateCustomTheme(
+      const CustomThemeConfig(seed: 0xFF6FA0C8),
+    );
+    // 前置：该 seed 下 textOnPrimary 必须非白，否则用例失去回归意义
+    expect(theme.extension.textOnPrimary, isNot(Colors.white));
+
+    await pumpButton(tester, theme: theme.toThemeData());
+
+    expect(
+      tester.widget<Icon>(find.byIcon(Icons.mic)).color,
+      Colors.white,
+      reason: '非拟物分支麦克风图标恒白，不随自定义主题 textOnPrimary 变深',
+    );
+    // 按钮本体的圆形 AnimatedContainer（Aa 徽章的容器是 borderRadius 胶囊，
+    // shape 为矩形默认值，不会误中）
+    final decoration = tester
+        .widgetList<AnimatedContainer>(find.byType(AnimatedContainer))
+        .map((c) => c.decoration)
+        .whereType<BoxDecoration>()
+        .firstWhere((d) => d.shape == BoxShape.circle);
+    final shadows = decoration.boxShadow!;
+    expect(shadows, hasLength(2));
+    expect(
+      shadows[0].color,
+      Colors.white.withValues(alpha: 0.4),
+      reason: '顶部高光固定白色（不用 textOnPrimary，防自定义主题染成黑晕）',
+    );
+    expect(
+      shadows[1].color,
+      Colors.black.withValues(alpha: 0.12),
+      reason: '底部暗影减淡（0.2→0.12，用户反馈阴影偏重）',
+    );
   });
 }
 

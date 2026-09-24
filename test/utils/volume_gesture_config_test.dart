@@ -254,30 +254,73 @@ void main() {
         VolumeGestureAction.overlayNewNote,
       );
     });
+
+    test('新 key 值为 ptt_record（按住说话动作，实验分支）→ 合法值原样生效，不走推导', () async {
+      // 旧 key 故意配成 off（推导会出 none），验证合法新值不被迁移覆盖——
+      // ptt_record 只会由设置页写入，迁移推导永不产出它
+      SharedPreferences.setMockInitialValues({
+        'volume_key_mode': 'off',
+        'volume_gesture_long_press_down': VolumeGestureAction.pttRecord,
+      });
+      final prefs = await SharedPreferences.getInstance();
+
+      final result = await loadVolumeGestureActions(prefs);
+
+      expect(
+        result[VolumeGestureSlot.longPressDown],
+        VolumeGestureAction.pttRecord,
+      );
+    });
   });
 
   // ============================================================
-  // VolumeLongPressMs.normalize（长按阈值档位校验）
+  // VolumeLongPressMs.normalize（长按阈值校验：预设档 + 自定义范围）
   // ============================================================
-  group('VolumeLongPressMs.normalize 长按阈值档位校验', () {
-    test('4 个合法档位原样返回', () {
+  group('VolumeLongPressMs.normalize 长按阈值校验', () {
+    test('4 个预设档原样返回', () {
       for (final ms in VolumeLongPressMs.choices) {
         expect(VolumeLongPressMs.normalize(ms), ms);
       }
     });
 
-    test('null（从未设置）→ 默认 500', () {
+    test('null（从未设置）→ 默认 400', () {
       expect(VolumeLongPressMs.normalize(null), VolumeLongPressMs.defaultMs);
-      expect(VolumeLongPressMs.defaultMs, 500);
+      expect(VolumeLongPressMs.defaultMs, 400);
     });
 
-    test('非法值（越界/档位间隙脏值）→ 默认 500', () {
-      // 300 在刻意单击误触区间内，档位刻意不收录——脏值落进来也要回落
-      expect(VolumeLongPressMs.normalize(300), VolumeLongPressMs.defaultMs);
-      expect(VolumeLongPressMs.normalize(501), VolumeLongPressMs.defaultMs);
+    test('自定义档（范围内任意值，含边界）原样生效', () {
+      // 2026-09-23 新增「自定义」档：合法域从预设集合放开为 [50, 2000]
+      // 闭区间，Kotlin 侧 getLongPressDurationMs 同范围校验（跨端硬编码副本）
+      expect(VolumeLongPressMs.minMs, 50);
+      expect(VolumeLongPressMs.maxMs, 2000);
+      expect(VolumeLongPressMs.normalize(50), 50); // 下边界
+      expect(VolumeLongPressMs.normalize(2000), 2000); // 上边界
+      expect(VolumeLongPressMs.normalize(150), 150); // 用户诉求：<200 的值
+    });
+
+    test('旧档位 500/800/1200 在范围内，升级后按原值继续生效', () {
+      // 2026-09-21 版曾把「不在新预设集合内」一律回落 400（旧默认 500 就近
+      // 迁移）；自定义档放开后范围取代集合成为合法域——旧档位都落在
+      // [50,2000] 内，老用户升级后尊重其当年显式选的档位，不再二次改写
+      expect(VolumeLongPressMs.normalize(500), 500);
+      expect(VolumeLongPressMs.normalize(800), 800);
+      expect(VolumeLongPressMs.normalize(1200), 1200);
+    });
+
+    test('越界/脏值 → 默认 400', () {
       expect(VolumeLongPressMs.normalize(0), VolumeLongPressMs.defaultMs);
-      expect(VolumeLongPressMs.normalize(2000), VolumeLongPressMs.defaultMs);
+      expect(VolumeLongPressMs.normalize(49), VolumeLongPressMs.defaultMs);
       expect(VolumeLongPressMs.normalize(-500), VolumeLongPressMs.defaultMs);
+      expect(VolumeLongPressMs.normalize(2001), VolumeLongPressMs.defaultMs);
+      expect(VolumeLongPressMs.normalize(9999), VolumeLongPressMs.defaultMs);
+    });
+
+    test('isCustom：不在预设集合内即为自定义档', () {
+      for (final ms in VolumeLongPressMs.choices) {
+        expect(VolumeLongPressMs.isCustom(ms), isFalse);
+      }
+      expect(VolumeLongPressMs.isCustom(150), isTrue);
+      expect(VolumeLongPressMs.isCustom(500), isTrue);
     });
   });
 }

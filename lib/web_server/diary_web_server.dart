@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import '../app_logger.dart';
 import '../db_helper.dart';
 import '../utils/diary_sync_bridge.dart';
+import '../utils/note_unlock_session.dart' show kLockedMaskText;
 import 'diary_web_page.dart';
 
 /// 电脑访问服务（日记页内容的局域网 HTTP 服务）
@@ -128,20 +129,27 @@ class DiaryServerStartResult {
   }
 }
 
-/// 服务的日记 JSON 行（⚠️ 不暴露文件系统绝对路径，录音只给 /audio/{id} 相对地址）
+/// 服务的日记 JSON 行（⚠️ 不暴露文件系统绝对路径，录音只给 /audio/{id} 相对地址）。
+/// 锁定笔记（is_locked=1）：content 脱敏为固定星号、音频 URL 不给——局域网
+/// 是悬浮窗/锁屏之外的第三个泄露面，锁定即全链路脱敏；电脑端要编辑/收听
+/// 需先在手机上解除锁定
 Map<String, Object?> diaryNoteToJson(Map<String, dynamic> row) {
   final audioPath = row['audio_path'] as String?;
   final hasAudio = audioPath != null && audioPath.isNotEmpty;
   final archived = row['is_archived'];
+  final locked = row['is_locked'] == 1;
   return {
     'id': row['id'],
-    'content': (row['content'] as String?) ?? '',
+    'content': locked
+        ? kLockedMaskText
+        : ((row['content'] as String?) ?? ''),
     'createdAt': row['created_at'],
     'duration': row['duration'],
     'isArchived': archived == 1 || archived == true,
+    'isLocked': locked,
     'tag': row['tag'],
     'hasAudio': hasAudio,
-    'audioUrl': hasAudio ? '/audio/${row['id']}' : null,
+    'audioUrl': hasAudio && !locked ? '/audio/${row['id']}' : null,
   };
 }
 
@@ -477,7 +485,19 @@ class DiaryWebServer {
   }
 
   /// 电脑端编辑：PUT /api/notes/{id}，body {"content": "..."}
+  /// 锁定笔记拒绝编辑（锁定 = 内容级操作全门禁，与手机端一致）
   Future<void> _handleUpdateNote(HttpRequest req, int id) async {
+    final row = await _repo!.getNoteById(id);
+    if (row == null) {
+      return await _replyJson(req, {'error': 'not found'}, status: 404);
+    }
+    if (row['is_locked'] == 1) {
+      return await _replyJson(
+        req,
+        {'error': 'note is locked, unlock it on the phone first'},
+        status: 403,
+      );
+    }
     final raw = await utf8.decoder.bind(req).join();
     Object? decoded;
     try {
@@ -502,11 +522,19 @@ class DiaryWebServer {
     await _replyJson(req, {'ok': true});
   }
 
-  /// 电脑端删除：DELETE /api/notes/{id}（连同录音文件，与日记页删除语义一致）
+  /// 电脑端删除：DELETE /api/notes/{id}（连同录音文件，与日记页删除语义一致）。
+  /// 锁定笔记拒绝删除（内容级操作全门禁，与手机端一致）
   Future<void> _handleDeleteNote(HttpRequest req, int id) async {
     final row = await _repo!.getNoteById(id);
     if (row == null) {
       return await _replyJson(req, {'error': 'not found'}, status: 404);
+    }
+    if (row['is_locked'] == 1) {
+      return await _replyJson(
+        req,
+        {'error': 'note is locked, unlock it on the phone first'},
+        status: 403,
+      );
     }
     await _repo!.deleteById(id);
     await _deleteAudioFileSafely(row['audio_path'] as String?);
@@ -521,6 +549,10 @@ class DiaryWebServer {
   Future<void> _replyAudio(HttpRequest req, int id) async {
     final row = await _repo!.getNoteById(id);
     final audioPath = row?['audio_path'] as String?;
+    // 锁定笔记的录音同属锁定内容：JSON 不给 audioUrl 之外，直构 URL 也拦截
+    if (row?['is_locked'] == 1) {
+      return await _replyJson(req, {'error': 'note is locked'}, status: 403);
+    }
     if (audioPath == null || audioPath.isEmpty) {
       return await _replyJson(req, {'error': 'no audio'}, status: 404);
     }

@@ -69,6 +69,15 @@ class AppThemeExtension extends ThemeExtension<AppThemeExtension> {
   /// 启动页背景（原 #2C3E50）
   final Color splashBackground;
 
+  /// 启动页背景渐变（2026-09-24 方案 B「深海极光」）：自上而下三段深蓝
+  ///
+  /// null = 用纯色 [splashBackground]。仅默认主题配了深海渐变，
+  /// 其余主题维持各自同色系纯色底（见 app_theme.dart 各主题注释）。
+  final List<Color>? splashGradient;
+
+  /// 启动页图标辉光色（径向渐变中心色，向外淡出为全透明）；null = 不画辉光
+  final Color? splashGlow;
+
   /// Pro 金色主色（原 #D4A437）
   final Color goldAccent;
 
@@ -140,6 +149,8 @@ class AppThemeExtension extends ThemeExtension<AppThemeExtension> {
     required this.timeHighlight,
     required this.timeHighlightBg,
     required this.splashBackground,
+    this.splashGradient,
+    this.splashGlow,
     required this.goldAccent,
     required this.goldLight,
     required this.goldBorder,
@@ -175,6 +186,8 @@ class AppThemeExtension extends ThemeExtension<AppThemeExtension> {
     Color? timeHighlight,
     Color? timeHighlightBg,
     Color? splashBackground,
+    List<Color>? splashGradient,
+    Color? splashGlow,
     Color? goldAccent,
     Color? goldLight,
     Color? goldBorder,
@@ -207,6 +220,8 @@ class AppThemeExtension extends ThemeExtension<AppThemeExtension> {
       timeHighlight: timeHighlight ?? this.timeHighlight,
       timeHighlightBg: timeHighlightBg ?? this.timeHighlightBg,
       splashBackground: splashBackground ?? this.splashBackground,
+      splashGradient: splashGradient ?? this.splashGradient,
+      splashGlow: splashGlow ?? this.splashGlow,
       goldAccent: goldAccent ?? this.goldAccent,
       goldLight: goldLight ?? this.goldLight,
       goldBorder: goldBorder ?? this.goldBorder,
@@ -251,6 +266,9 @@ class AppThemeExtension extends ThemeExtension<AppThemeExtension> {
         other.splashBackground,
         t,
       )!,
+      // 启动页渐变/辉光是装饰层：不做逐色插值，t<0.5 取自身（与 bool 槽同策略）
+      splashGradient: t < 0.5 ? splashGradient : other.splashGradient,
+      splashGlow: t < 0.5 ? splashGlow : other.splashGlow,
       goldAccent: Color.lerp(goldAccent, other.goldAccent, t)!,
       goldLight: Color.lerp(goldLight, other.goldLight, t)!,
       goldBorder: Color.lerp(goldBorder, other.goldBorder, t)!,

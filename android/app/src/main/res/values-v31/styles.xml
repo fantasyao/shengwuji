@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12+ 系统启动画面配色（API 31+ 才有 windowSplashScreen* 属性，故拆 v31）。
+     MainActivity 主题是 NormalTheme（LaunchTheme 未被 manifest 引用），系统启动画面
+     从活动主题取色：背景给深海蓝 #0D1B2E（与 Flutter 启动页渐变起始色一致），
+     图标沿用桌面自适应图标（藏青底白线稿）。不改背景色时系统默认落到
+     colorBackground（白底），白底藏青图标与 Flutter 深海页之间会闪一下跳色。 -->
+<resources>
+    <style name="NormalTheme" parent="@android:style/Theme.Light.NoTitleBar">
+        <item name="android:windowBackground">?android:colorBackground</item>
+        <item name="android:fontFamily">@null</item>
+        <item name="android:textColor">@android:color/black</item>
+        <item name="android:windowSplashScreenBackground">@color/splash_screen_background</item>
+    </style>
+</resources>

@@ -27,12 +27,20 @@ payload = salt(2B 随机) + SHA256("{secret}:{androidId}:{salt_hex}")[0:8]   # �
 
 ### 生成工具（开发者本机）
 
+三套入口，算法单点在 `gen_license.py`，另两处只是调用/移植：
+
+1. **桌面 GUI**：双击 `tools/license/授权码工具.vbs`（或其桌面快捷方式）→ 输入安卓 ID → 生成 → 自动复制，带历史记录（存 `tools/license/history.json`，gitignore）。等价命令：`uv run tools/license/license_gui.py`。GUI 直接 import `gen_license`，启动失败查 `%TEMP%\shengwuji_license_gui.log`。
+2. **安卓 APP**：`tools/license-keygen-android/`（整目录 gitignore——含掩码 secret 常量，不入公开仓库）。单 Activity 经典 View 实现，手机离线发码；`LicenseGen.kt` 移植生成/校验算法，掩码常量与主工程相同。构建：`cd tools/license-keygen-android && cmd /c gradlew.bat testDebugUnitTest assembleDebug`，产物 debug APK 传手机安装。
+3. **命令行**（GUI 的底层，也是交叉验证工具）：
+
 ```bash
 uv run tools/license/gen_license.py keygen                    # 首次：生成 secret（已执行过勿重复）
 uv run tools/license/gen_license.py issue <androidId>         # 给用户发码
 uv run tools/license/gen_license.py verify <androidId> <code> # 与 App 内实现交叉验证
-uv run tools/license/gen_license.py kotlinc                   # 输出 secret 掩码常量（换 secret 时重贴 MainActivity）
+uv run tools/license/gen_license.py kotlinc                   # 输出 secret 掩码常量（换 secret 时重贴）
 ```
+
+⚠️ **换 secret 同步点（2026-09-21 起）**：secret.txt（明文唯一）、主工程 `MainActivity.kt` 掩码常量、发码 APP `LicenseGen.kt` 掩码常量——后两者都由 `gen_license.py kotlinc` 输出重贴；随后**所有已付费用户重发码**（旧 secret 下发的码全部失效）。
 
 ## 安卓 ID
 
@@ -94,6 +102,9 @@ uv run tools/license/gen_license.py kotlinc                   # 输出 secret �
 | 文件 | 说明 |
 |---|---|
 | `tools/license/gen_license.py` | 授权码生成/验证/密钥工具（secret.txt 已 gitignore） |
+| `tools/license/license_gui.py` | 发码 GUI（tkinter，复用 gen_license 算法；history.json 已 gitignore） |
+| `tools/license/授权码工具.vbs` | GUI 启动器（隐藏控制台跑 uv，日志落 %TEMP%） |
+| `tools/license-keygen-android/` | 安卓发码 APP（本地 gitignore；LicenseGen.kt 算法移植 + 掩码常量） |
 | `android/.../MainActivity.kt` | `getAndroidId` / `verifyLicenseCode` / base32 解码 / secret 掩码常量 |
 | `lib/utils/license_service.dart` | channel 封装 + 收款邮箱常量 + 格式预校验 |
 | `lib/utils/pro_gate.dart` | 门禁判定（永久解锁 + 试用窗口）+ tryAccess |
@@ -105,3 +116,5 @@ uv run tools/license/gen_license.py kotlinc                   # 输出 secret �
 |---|---|
 | 2026-09-19 | 授权码体系 + 7 天试用落地，替换君子协定解锁；新拟物主题 Pro 化 |
 | 2026-09-19 | 存量君子协定用户失效处理：永久解锁判定升级为「解锁布尔 + 授权码记录」双要素（判定升级，非物理刷字段） |
+| 2026-09-21 | 发码工具 GUI 化：license_gui.py（输入框/复制/历史记录）+ 授权码工具.vbs 启动器，算法仍单点在 gen_license.py |
+| 2026-09-21 | 安卓发码 APP：tools/license-keygen-android/ 独立最小工程（整目录 gitignore），固定盐单测与 Python 端逐字符对拍；换 secret 同步点从两处变三处 |

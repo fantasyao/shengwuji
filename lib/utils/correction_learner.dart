@@ -17,10 +17,17 @@ class CorrectionPair {
   /// 学习/命中次数（DB 层维护，内存构造默认 1）
   final int hitCount;
 
+  /// 学习时间 / 最近命中时间（ISO 8601 串原样存取；老数据与部分导入可能
+  /// 为 null）。仅修正对管理页排序/展示用，替换与学习链路不消费
+  final String? createdAt;
+  final String? lastUsedAt;
+
   const CorrectionPair({
     required this.error,
     required this.correct,
     this.hitCount = 1,
+    this.createdAt,
+    this.lastUsedAt,
   });
 
   @override

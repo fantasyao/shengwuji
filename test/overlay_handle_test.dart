@@ -14,7 +14,11 @@ void main() {
   // 事件序列记录：'start' / dy 值（update）/ 'end' / 'cancel' / 'tap' / 'swipe'
   final events = <Object>[];
 
-  Future<void> pumpHandle(WidgetTester tester, {bool dockLeft = false}) async {
+  Future<void> pumpHandle(
+    WidgetTester tester, {
+    bool dockLeft = false,
+    int sizePercent = OverlayConstants.handleSizeDefaultPercent,
+  }) async {
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
@@ -23,6 +27,7 @@ void main() {
               onTap: () => events.add('tap'),
               onSwipeInward: () => events.add('swipe'),
               dockLeft: dockLeft,
+              sizePercent: sizePercent,
               onDragStart: () => events.add('start'),
               onDragUpdate: (dy) => events.add(dy),
               onDragEnd: () => events.add('end'),
@@ -209,9 +214,12 @@ void main() {
     expect(
       tester.getSize(find.byType(AnimatedContainer)),
       Size(
-        OverlayConstants.handleWidth -
-            2 * OverlayConstants.handleInsetHorizontal,
-        OverlayConstants.handleHeight - 2 * OverlayConstants.handleInsetVertical,
+        OverlayConstants.handleCapsuleWidth(
+          OverlayConstants.handleSizeDefaultPercent,
+        ),
+        OverlayConstants.handleCapsuleHeight(
+          OverlayConstants.handleSizeDefaultPercent,
+        ),
       ),
     );
 

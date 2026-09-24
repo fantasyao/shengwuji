@@ -9,6 +9,10 @@ import 'package:shengwuji_app/widgets/calendar_confirm_sheet.dart';
 /// 宽/窄屏两种布局、日历点选的日期替换 + 时分保留、震感回调注入。
 ///（Cupertino 拨轮的滚动交互不在本测试范围——flaky，遵循转轮时代先例；
 /// 确认返回的是 onDateTimeChanged 回写前的预填/点选值）
+///
+/// 布局宽度矩阵（2026-09-23 12h 裁字回归）：拨轮宽按制式给足（24h=176/
+/// 12h=240，why 见组件文件头 ⚠️ 段），宽屏阈值联动。测试环境默认 12h
+///（alwaysUse24HourFormat=false，openSheet 的 use24hFormat 参数注入 24h）。
 void main() {
   final initial = DateTime(2026, 9, 5, 20);
 
@@ -22,10 +26,19 @@ void main() {
     String? recognizedPhrase = '周六晚上八点',
     bool alarmAvailable = true,
     void Function(String type)? onHaptic,
+    bool use24hFormat = false,
   }) async {
     holder.value = null;
     await tester.pumpWidget(
       MaterialApp(
+        // builder 注入系统 24h 制：弹层读 MediaQuery.alwaysUse24HourFormat
+        // 决定拨轮列数（两列/三列）与宽度档位
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(
+            context,
+          ).copyWith(alwaysUse24HourFormat: use24hFormat),
+          child: child!,
+        ),
         home: Scaffold(
           body: Builder(
             builder: (context) => Center(
@@ -128,21 +141,65 @@ void main() {
     expect(holder.value!.time, initial);
   });
 
-  testWidgets('宽屏（>380dp）左右结构：月视图日历在左、时分拨轮在右同排', (tester) async {
-    // 测试环境默认逻辑宽 800 > 380，走左右结构
+  testWidgets('宽屏左右结构：月视图日历在左、时分拨轮在右同排（12h 拨轮给足 240dp）', (tester) async {
+    // 测试环境默认逻辑宽 800，12h 制（阈值 488）→ 走左右结构
     await openSheet(tester);
     final calendar = find.byType(CalendarDatePicker);
     final wheel = find.byKey(const ValueKey('calendar_confirm_picker'));
     expect(calendar, findsOneWidget);
     expect(wheel, findsOneWidget);
-    // 时间轮 = CupertinoDatePicker time 模式（时/分双轮、分钟级）
+    // 时间轮 = CupertinoDatePicker time 模式（12h 三列：时/分/上午下午）
     expect(
       tester.widget<CupertinoDatePicker>(wheel).mode,
       CupertinoDatePickerMode.time,
     );
+    // 拨轮容器给足 12h 三列宽（窄容器会被 SDK 布局委托压缩首尾列裁字）
+    expect(tester.getSize(wheel).width, 240);
     // 左右排布：拨轮在日历右侧、顶部对齐（IntrinsicHeight stretch 等高）
     expect(tester.getTopLeft(wheel).dx, greaterThan(tester.getTopLeft(calendar).dx));
     expect(tester.getTopLeft(wheel).dy, tester.getTopLeft(calendar).dy);
+  });
+
+  testWidgets('24h 制宽屏左右结构：拨轮两列给足 176dp', (tester) async {
+    await openSheet(tester, use24hFormat: true);
+    final wheel = find.byKey(const ValueKey('calendar_confirm_picker'));
+    expect(
+      tester.widget<CupertinoDatePicker>(wheel).use24hFormat,
+      isTrue,
+    );
+    expect(tester.getSize(wheel).width, 176);
+    expect(
+      tester.getTopLeft(wheel).dx,
+      greaterThan(tester.getTopLeft(find.byType(CalendarDatePicker)).dx),
+    );
+  });
+
+  testWidgets('12h 制中宽屏（400dp，旧 380 阈值误走左右排致裁字）：回落上下结构', (tester) async {
+    tester.view.physicalSize = const Size(400 * 3, 900 * 3);
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await openSheet(tester);
+    final calendar = find.byType(CalendarDatePicker);
+    final wheel = find.byKey(const ValueKey('calendar_confirm_picker'));
+    // 上下排布：时间轮在日历下方、占满全宽（三列完整，无压缩裁字）
+    expect(tester.getTopLeft(wheel).dy, greaterThan(tester.getTopLeft(calendar).dy));
+    expect(tester.getSize(wheel).width, greaterThan(300));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('24h 制中宽屏（400dp，新阈值 424）：同样回落上下结构', (tester) async {
+    tester.view.physicalSize = const Size(400 * 3, 900 * 3);
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await openSheet(tester, use24hFormat: true);
+    final wheel = find.byKey(const ValueKey('calendar_confirm_picker'));
+    expect(
+      tester.getTopLeft(wheel).dy,
+      greaterThan(tester.getTopLeft(find.byType(CalendarDatePicker)).dy),
+    );
+    expect(tester.getSize(wheel).width, greaterThan(300));
   });
 
   testWidgets('窄屏（≤380dp）回落上下结构：日历在上、时间轮在下，无布局异常', (tester) async {

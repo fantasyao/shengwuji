@@ -22,6 +22,7 @@ import 'recognizer_singleton.dart';
 import 'splash_screen.dart';
 import 'theme/app_theme.dart';
 import 'theme/app_theme_extension.dart';
+import 'theme/custom_theme.dart';
 import 'overlay/overlay_constants.dart';
 import 'utils/alarm_ringing_notifier.dart';
 import 'utils/pro_gate.dart';
@@ -59,10 +60,11 @@ void main() async {
   // 预读模型路径，使 hasModel 在模型未加载时也能正确判断
   await RecognizerSingleton.preloadModelPath();
 
-  // 预读用户选择的主题（默认青兜底，找不到 ID 也回退到默认青）
+  // 预读用户选择的主题（预设 findById；'custom' 按保存的配置现建自定义主题，
+  // 坏配置/找不到 ID 都回退默认青）
   final prefs = await SharedPreferences.getInstance();
   final themeId = prefs.getString('selected_theme');
-  var initialTheme = AppThemes.findById(themeId) ?? AppThemes.defaultTheme;
+  var initialTheme = await loadThemeById(themeId) ?? AppThemes.defaultTheme;
   // Pro 主题门禁（试用过期/未解锁）：启动回退默认青并写回 prefs（用户拍板
   // "下次启动回退"——当次会话不强行中断，悬浮窗等按键门禁则即时判断），
   // 回退后 MainScaffold 首帧 SnackBar 提示一次
@@ -249,6 +251,11 @@ class _MainScaffoldState extends State<MainScaffold>
   // [新增] 日记页的 Key
   final GlobalKey<DiaryTabState> _diaryTabKey = GlobalKey<DiaryTabState>();
 
+  /// 设置页：切回该 tab 时刷新云端同步入口行摘要（数据可能在其他 tab 变更，
+  /// 待同步态需重算，见 SettingsTabState.refreshCloudSyncSummary）
+  final GlobalKey<SettingsTabState> _settingsTabKey =
+      GlobalKey<SettingsTabState>();
+
   // 日记页浮动按钮（DiaryFloatingButton，widgets/diary_floating_button.dart）
   // 上滑手势的拖拽状态已下沉到该组件自有 State——拖拽帧只重建按钮子树，
   // 不再 MainScaffold 整页 setState（性能审查 Top6）
@@ -324,6 +331,14 @@ class _MainScaffoldState extends State<MainScaffold>
       } else if (call.method == 'showOverlay') {
         // 原生层（如音量键长按）请求显示悬浮窗，显示后把主 App 退到后台
         await _showFloatingOverlay(moveToBack: true);
+      } else if (call.method == 'noteUnlockResult') {
+        // 笔记解锁认证结果（原生 NoteUnlockCoordinator → flutterChannel）：
+        // 成功续期解锁会话并刷新打码；失败静默（用户取消）或原生已 Toast
+        // （无锁屏凭据场景）
+        final args = call.arguments;
+        final success = args is Map && args['success'] == true;
+        final reason = args is Map ? (args['reason'] as String? ?? '') : '';
+        await _diaryTabKey.currentState?.onNoteUnlockResult(success, reason);
       } else if (call.method == 'onAlarmRinging' ||
           call.method == 'onAlarmStopped') {
         // 闹钟响铃开始/停止事件（原生 AlarmReceiver 推送，见
@@ -729,6 +744,11 @@ class _MainScaffoldState extends State<MainScaffold>
         _diaryTabKey.currentState?.refreshEngine(); // 已修改为支持按需加载
         _diaryTabKey.currentState?.refreshList();
       }
+      if (semantic == tabIndexSettings) {
+        // 数据可能在其他 tab 变更（记日记/存物品/悬浮窗速记），
+        // 切回设置页重算云端同步入口行的待同步态
+        _settingsTabKey.currentState?.refreshCloudSyncSummary();
+      }
     });
   }
 
@@ -896,7 +916,11 @@ class _MainScaffoldState extends State<MainScaffold>
           },
         );
       case tabIndexSettings:
-        return SettingsTab(processor: _processor, dbHelper: _dbHelper);
+        return SettingsTab(
+          key: _settingsTabKey,
+          processor: _processor,
+          dbHelper: _dbHelper,
+        );
       default:
         throw ArgumentError('未知的 Tab 语义索引: $semantic');
     }
@@ -967,21 +991,23 @@ class _MainScaffoldState extends State<MainScaffold>
 
     // 颜色和图标逻辑（仿日记页浮动按钮）
     // 拟物主题：底色恒为同色凸起，状态色（青/红/橙/灰）落在中心图标；
-    // 旧主题：按钮底色随状态变化，图标恒白
+    // 旧主题：按钮底色随状态变化，图标恒白（2026-09-23 从 ext.textOnPrimary
+    // 改回恒白：自定义主题主色偏浅时该槽按 WCAG 自动落深色，麦克风变黑，
+    // 与日记页 Colors.white 不一致）
     final bool isNeu = ext.isNeumorphic;
     Color btnColor = ext.fabReady; // 默认青色（旧主题=按钮底色；拟物=中心图标色）
-    Widget btnChild = Icon(Icons.mic, color: isNeu ? ext.primary : ext.textOnPrimary, size: 46);
+    Widget btnChild = Icon(Icons.mic, color: isNeu ? ext.primary : Colors.white, size: 46);
 
     if (!state.isReady && !RecognizerSingleton.hasModel) {
       // 模型文件不存在 → 禁用按钮
       btnColor = ext.fabDisabled;
-      btnChild = Icon(Icons.mic, color: isNeu ? ext.textHint : ext.textOnPrimary, size: 46);
+      btnChild = Icon(Icons.mic, color: isNeu ? ext.textHint : Colors.white, size: 46);
     } else if (state.isListening) {
       // 录音中 → 红色
       btnColor = ext.fabRecording;
       btnChild = Icon(
         Icons.fiber_manual_record,
-        color: isNeu ? ext.fabRecording : ext.textOnPrimary,
+        color: isNeu ? ext.fabRecording : Colors.white,
         size: 46,
       );
     } else if (state.isProcessing) {
@@ -991,7 +1017,7 @@ class _MainScaffoldState extends State<MainScaffold>
         width: 40,
         height: 40,
         child: CircularProgressIndicator(
-          color: isNeu ? ext.fabProcessing : ext.textOnPrimary,
+          color: isNeu ? ext.fabProcessing : Colors.white,
           strokeWidth: 3,
         ),
       );
@@ -1033,17 +1059,19 @@ class _MainScaffoldState extends State<MainScaffold>
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: btnColor,
-                // 🎨 黏土拟态阴影（仿日记页）
+                // 🎨 黏土拟态阴影（仿日记页，2026-09-23 用户反馈统一减淡：
+                // 高光固定白（自定义主题 textOnPrimary 是深色会把高光染成黑晕）、
+                // 暗影 alpha 0.2→0.12；与 diary_floating_button.dart 同款需同步）
                 boxShadow: [
                   // 顶部高光阴影（模拟光源从上方）
                   BoxShadow(
-                    color: ext.textOnPrimary.withValues(alpha: 0.4),
+                    color: Colors.white.withValues(alpha: 0.4),
                     offset: const Offset(-4, -4),
                     blurRadius: 8,
                   ),
                   // 底部深色阴影（模拟凹陷感）
                   BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.2),
+                    color: Colors.black.withValues(alpha: 0.12),
                     offset: const Offset(4, 4),
                     blurRadius: 10,
                   ),
@@ -1091,20 +1119,22 @@ class _MainScaffoldState extends State<MainScaffold>
 
     // 颜色/图标状态机（复现 record_tab.dart 原非搬家模式染色）
     // 拟物主题：底色恒为同色凸起，状态色（青/红/橙/灰）落在中心图标；
-    // 旧主题：按钮底色随状态变化，图标恒白
+    // 旧主题：按钮底色随状态变化，图标恒白（2026-09-23 从 ext.textOnPrimary
+    // 改回恒白：自定义主题主色偏浅时该槽按 WCAG 自动落深色，麦克风变黑，
+    // 与日记页 Colors.white 不一致）
     final bool isNeu = ext.isNeumorphic;
     Color btnColor = ext.fabReady;
-    Widget btnChild = Icon(Icons.mic, color: isNeu ? ext.primary : ext.textOnPrimary, size: 55);
+    Widget btnChild = Icon(Icons.mic, color: isNeu ? ext.primary : Colors.white, size: 55);
 
     if (!state.isReady && !RecognizerSingleton.hasModel) {
       // 模型文件不存在 → 禁用按钮（灰色）
       btnColor = ext.fabDisabled;
-      btnChild = Icon(Icons.mic, color: isNeu ? ext.textHint : ext.textOnPrimary, size: 55);
+      btnChild = Icon(Icons.mic, color: isNeu ? ext.textHint : Colors.white, size: 55);
     } else if (state.isListening) {
       btnColor = ext.fabRecording;
       btnChild = Icon(
         Icons.fiber_manual_record,
-        color: isNeu ? ext.fabRecording : ext.textOnPrimary,
+        color: isNeu ? ext.fabRecording : Colors.white,
         size: 55,
       );
     } else if (state.isProcessing) {
@@ -1113,7 +1143,7 @@ class _MainScaffoldState extends State<MainScaffold>
         width: 45,
         height: 45,
         child: CircularProgressIndicator(
-          color: isNeu ? ext.fabProcessing : ext.textOnPrimary,
+          color: isNeu ? ext.fabProcessing : Colors.white,
           strokeWidth: 3,
         ),
       );
@@ -1160,18 +1190,29 @@ class _MainScaffoldState extends State<MainScaffold>
                     onLongPressStart: (_) => state.startListening(),
                     onLongPressEnd: (_) => state.stopListening(),
                     // 拟物主题：同色凸起底、图标直接落在凸面上（无凹环，
-                    // 2026-09-18 与随手记页统一为无环定稿）；旧主题保持彩色光晕圆钮
+                    // 2026-09-18 与随手记页统一为无环定稿）；旧主题改用与
+                    // 日记/查物品页同款黏土浅阴影（2026-09-23 用户反馈三页
+                    // 阴影不一致：原彩色光晕无方向性，读不出「阴影」）
                     child: ext.isNeumorphic
                         ? NeuVoiceFab(size: 100, child: btnChild)
                         : AnimatedContainer(
                       duration: const Duration(milliseconds: 200),
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
+                        // 🎨 黏土拟态阴影（diary_floating_button.dart 同款，
+                        // 高光固定白 + 暗影 0.12，改动需三处同步）
                         boxShadow: [
+                          // 顶部高光阴影（模拟光源从上方）
                           BoxShadow(
-                            color: btnColor.withValues(alpha: 0.3),
-                            blurRadius: 25,
-                            spreadRadius: 5,
+                            color: Colors.white.withValues(alpha: 0.4),
+                            offset: const Offset(-4, -4),
+                            blurRadius: 8,
+                          ),
+                          // 底部深色阴影（模拟凹陷感）
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.12),
+                            offset: const Offset(4, 4),
+                            blurRadius: 10,
                           ),
                         ],
                       ),

@@ -66,6 +66,7 @@ class OverlayVoiceMemoBar extends StatelessWidget {
                   _StopHintPill(
                     dockLeft: dockLeft,
                     singleClickStop: controller.singleClickStopEnabled,
+                    ptt: controller.isPttSession,
                   ),
                 ],
               ],
@@ -402,9 +403,11 @@ class _TranscribingCapsuleState extends State<_TranscribingCapsule>
 ///   对比度保障（白字对黑 72% 底，即使垫纯白背景等效底色也接近 #4a4a4a，
 ///   对比度 ≈ 8:1），且与录音胶囊构成同一视觉家族，不像外来的悬浮元素
 /// - 文案必须与实际交互一致，措辞不准会制造新困惑（用户照文案操作却看到
-///   音量条、录音没停）。关 →「再次长按音量上键」（短按是系统音量）；
-///   开（单击键结束录音）→「单击音量键」（短按已被 Kotlin 拦截停录，单击
-///   音量加/减都停），快照在 controller.start() 读，见其 singleClickStopEnabled
+///   音量条、录音没停）。PTT 会话 →「松开音量键」（按住说话松手即停，优先级
+///   最高——即使单击停录也开着，松手才是该会话的主停录路径）；关 →「再次长按
+///   音量上键」（短按是系统音量）；开（单击键结束录音）→「单击音量键」（短按
+///   已被 Kotlin 拦截停录，单击音量加/减都停），快照在 controller.start() 读，
+///   见其 singleClickStopEnabled
 class _StopHintPill extends StatelessWidget {
   /// 停靠侧（父层透传：贴屏端边距随侧镜像，与录音胶囊对齐规则一致）
   final bool dockLeft;
@@ -412,7 +415,14 @@ class _StopHintPill extends StatelessWidget {
   /// 「单击键结束录音」开关的本次录音快照（true 时切单击文案）
   final bool singleClickStop;
 
-  const _StopHintPill({required this.dockLeft, this.singleClickStop = false});
+  /// 「按住说话」会话快照（true 时优先切松手文案，压过 singleClickStop）
+  final bool ptt;
+
+  const _StopHintPill({
+    required this.dockLeft,
+    this.singleClickStop = false,
+    this.ptt = false,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -431,7 +441,11 @@ class _StopHintPill extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
       ),
       child: Text(
-        singleClickStop ? '单击音量键，停止并转写' : '再次长按音量上键，停止并转写',
+        ptt
+            ? '松开音量键，停止并转写'
+            : singleClickStop
+            ? '单击音量键，停止并转写'
+            : '再次长按音量上键，停止并转写',
         style: const TextStyle(fontSize: 11, height: 1.2, color: Colors.white),
       ),
     );

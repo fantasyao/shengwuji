@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show OverflowBoxFit;
 import 'package:intl/intl.dart' hide TextDirection;
 import '../../utils/diary_tag.dart';
+import '../../utils/note_unlock_session.dart' show kLockedMaskText;
 import '../overlay_constants.dart';
 
 /// 展开态正文行首内联勾选框的占位尺寸（WidgetSpan 子树包围盒）：
@@ -81,10 +82,10 @@ double _measureCollapsedTextWidth(
 ///   白底圆 + 深色图标（复选框勾选态同款语言），点击播放/暂停（语义在父层
 ///   OverlayHome._toggleAudioPlay），不冒泡触发展开
 /// - 展开态多行布局（对齐闪念原型，见 _buildExpandedContent）：
-///   时间行（含右上角收起 chevron）→ 正文（勾选框 WidgetSpan 内联首行，
-///   后续行顶格）→ 重放录音独立行 → 底部按钮条（删除/闹钟/复制/AI 对话/
-///   标注入口，删除二次确认态整行替换为「确认删除？✓ ✗」，标注选择态整行
-///   替换为「❗ ⭐ 💡 ✗」）。展开态面板整体加宽到
+///   时间行（标注三色按钮一级直出 + 右上角收起 chevron）→ 正文（勾选框
+///   WidgetSpan 内联首行，后续行顶格）→ 重放录音独立行 → 底部按钮条
+///   （删除/闹钟/复制/AI 对话/锁定，删除二次确认态整行替换为「确认删除？
+///   ✓ ✗」）。展开态面板整体加宽到
 ///   OverlayConstants.expandedPanelWidthRatio（0.92，由父层 OverlayHome 切换）
 class OverlayDiaryCard extends StatelessWidget {
   final Map<String, dynamic> diary;
@@ -150,22 +151,20 @@ class OverlayDiaryCard extends StatelessWidget {
   final VoidCallback? onEditSave;
   final VoidCallback? onEditCancel;
 
-  /// 标注选择态（真值在父层 OverlayHome._tagPickingIds 按 diary id 管理）：
-  /// true 时底部按钮条整行替换为「❗ ⭐ 💡 ✗返回」（优先级低于编辑态与
-  /// 删除确认态——这两种态下标注入口不可见，结构互斥）
-  final bool isTagPicking;
-
-  /// 底部按钮条标注入口按钮（Icons.label_outline）点击回调：父层据此把
-  /// 本卡 id 加入标注选择态；null 不渲染该按钮
-  final VoidCallback? onTagEntry;
-
-  /// 标注行 tag 按钮点击回调，参数 = 目标 tag（'urgent'/'star'/'idea'）；
-  /// 点击当前已选中的 tag = 取消标注，传 null（toggle 回默认色）。
-  /// 写库与退出选择态由父层 OverlayHome._setDiaryTag 处理
+  /// 标注三色按钮（时间行一级直出，紧凑 32×32 命中区）点击回调，参数 =
+  /// 目标 tag（'urgent'/'star'/'idea'）；点击当前已选中的 tag = 取消标注，
+  /// 传 null（toggle 回默认色）。写库由父层 OverlayHome._setDiaryTag 处理
   final ValueChanged<String?>? onTagToggle;
 
-  /// 标注行 ✗ 返回回调（退出标注选择态，底行还原为查看态按钮条）
-  final VoidCallback? onTagPickCancel;
+  /// 锁定且会话外（真值在父层 OverlayHome._isLockedHidden，含 is_locked +
+  /// 解锁会话两重判定）：收起态/展开态正文均渲染打码占位（[kLockedMaskText]
+  /// 固定字数，不泄露笔记长度），播放行隐藏。内容级操作的认证门禁在父层
+  /// 各动作方法里（本组件只管渲染）
+  final bool lockedHidden;
+
+  /// 底部按钮条锁定开关按钮（Icons.lock/lock_open）：锁定 = 结束解锁会话
+  /// 整体打码；解除锁定会话外先认证（语义在父层 OverlayHome._toggleDiaryLock）
+  final VoidCallback? onLockToggle;
 
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
@@ -198,10 +197,9 @@ class OverlayDiaryCard extends StatelessWidget {
     this.onTextTap,
     this.onEditSave,
     this.onEditCancel,
-    this.isTagPicking = false,
-    this.onTagEntry,
     this.onTagToggle,
-    this.onTagPickCancel,
+    this.lockedHidden = false,
+    this.onLockToggle,
     this.onTap,
     this.onLongPress,
     this.dockLeft = false,
@@ -227,13 +225,21 @@ class OverlayDiaryCard extends StatelessWidget {
     // 播放按钮渲染条件（对齐主 App 播放条惯例 audio_path!=null && !isArchived）：
     // 有回调 + 有录音 + 未归档。归档卡不显示播放控件（恢复后可正常播）。
     // 不做 existsSync 预检——避免每次 build 同步 IO，play 失败由父层 catch 归零
+    // 锁定打码卡不渲染（录音内容与正文同属锁定范围）
     final bool showPlayButton =
-        onPlayToggle != null && audioPath.isNotEmpty && !isArchived;
+        onPlayToggle != null &&
+        audioPath.isNotEmpty &&
+        !isArchived &&
+        !lockedHidden;
 
     // 收起态单行展示文本：多行内容（文本笔记/手动编辑可能含换行）压成单行——
     // maxLines:1 下换行点会顶出省略号（"前4字\n后2字"只显示"前4字+…"）。
     // 宽度估算必须用同一字符串（见 _estimateCollapsedWidth）
-    final collapsedText = content.replaceAll('\n', ' ');
+    // 锁定打码卡：展示打码占位（固定字数不泄露长度），宽度估算同文本——
+    // 原文的压行/度量输入一并不出现
+    final collapsedText = lockedHidden
+        ? kLockedMaskText
+        : content.replaceAll('\n', ' ');
     // 文字度量环境必须与实际渲染严格一致（046fe0b 起估算值兼任收起态
     // maxWidth 补间终点 = 稳态宽度上限，估算偏窄会把短文字顶出省略号）：
     // textScaler 取 MediaQuery 实际值——overlay 引擎跟随系统字体缩放（如
@@ -601,14 +607,14 @@ class OverlayDiaryCard extends StatelessWidget {
   }
 
   /// 展开态多行内容（对齐闪念原型）：
-  /// 1. 时间行：created_at 格式化小字 + 右上角收起 chevron（展开态唯一收起
-  ///    入口——整卡 onTap 在展开态被父层置空，防与按钮区误触）
+  /// 1. 时间行：created_at 格式化小字 + 标注三色按钮（一级直出）+ 右上角
+  ///    收起 chevron（展开态唯一收起入口——整卡 onTap 在展开态被父层置空，
+  ///    防与按钮区误触）
   /// 2. 正文：勾选框 WidgetSpan 内联首行文字前，后续行自然顶格
   /// 3. 重放行（有录音才显示）：白底圆播放钮 + 「重放录音」标签，独立一行
   ///    不挤正文；钮 + 标签整体一个矩形命中区（点文字同样触发回放）
-  /// 4. 底部按钮条：删除 / 闹钟 / 复制 / AI 对话 / 标注入口；
-  ///    删除确认态整行替换为「确认删除？✓ ✗」，标注选择态整行替换为
-  ///   「❗ ⭐ 💡 ✗返回」
+  /// 4. 底部按钮条：删除 / 闹钟 / 复制 / AI 对话；
+  ///    删除确认态整行替换为「确认删除？✓ ✗」
   /// [textScaler] 由 build 传入（StatelessWidget 方法取不到 context）：
   /// 查看态勾选框的 WidgetSpan 反缩放倍率换算用，见 _buildViewingBody
   Widget _buildExpandedContent(
@@ -618,9 +624,12 @@ class OverlayDiaryCard extends StatelessWidget {
     TextScaler textScaler,
   ) {
     final createdAt = DateTime.tryParse((diary['created_at'] as String?) ?? '');
+    // 横杠日期（2026-09-22 08:45，2026-09-22 用户要求替代「2026年9月22日」）：
+    // 省出时间行横向空间给标注三色按钮（见下方时间行）
     final timeText = createdAt == null
         ? ''
-        : DateFormat('yyyy年M月d日 HH:mm').format(createdAt);
+        : DateFormat('yyyy-MM-dd HH:mm').format(createdAt);
+    final currentTag = diary['tag'] as String?;
     // 局部 AnimatedSize：稳态一次性高度变化（编辑打字加行 / 查看↔编辑切换 /
     // 删除确认与标注行替换）的 200ms 平滑（替代已移除的卡片外层
     // AnimatedSize）。⚠️ 勿移回卡片外层——外层在收起动画期间 child 尺寸
@@ -635,18 +644,41 @@ class OverlayDiaryCard extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // 1. 时间行 + 右上角收起 chevron
+          // 1. 时间行 + 标注三色按钮（一级直出，2026-09-22 用户要求从二级
+          // 标注选择态上提——时间文本后紧凑排列，点按即换色/取消）+ 右上角
+          // 收起 chevron。Spacer 吃掉按钮组与 chevron 之间的空隙
           Row(
             children: [
-              Expanded(
-                child: Text(
-                  timeText,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: Colors.white.withValues(alpha: 0.75),
-                  ),
+              Text(
+                timeText,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.white.withValues(alpha: 0.75),
                 ),
               ),
+              if (onTagToggle != null) ...[
+                const SizedBox(width: 4),
+                _buildInlineTagButton(
+                  Icons.priority_high,
+                  DiaryTag.urgent,
+                  currentTag == DiaryTag.urgent,
+                ),
+                // 按钮间 4dp 间距（2026-09-22 用户复验要求稍微隔开——时间行
+                // 右侧到 chevron 仍有富余，与时间文本后的间距同值）
+                const SizedBox(width: 4),
+                _buildInlineTagButton(
+                  Icons.star_rounded,
+                  DiaryTag.star,
+                  currentTag == DiaryTag.star,
+                ),
+                const SizedBox(width: 4),
+                _buildInlineTagButton(
+                  Icons.lightbulb_outline,
+                  DiaryTag.idea,
+                  currentTag == DiaryTag.idea,
+                ),
+              ],
+              const Spacer(),
               if (onCollapse != null)
                 GestureDetector(
                   behavior: HitTestBehavior.opaque,
@@ -699,7 +731,11 @@ class OverlayDiaryCard extends StatelessWidget {
                   )
                 : KeyedSubtree(
                     key: const ValueKey('card-body-viewing'),
-                    child: _buildViewingBody(content, isArchived, textScaler),
+                    // 锁定打码卡：正文整块替换为打码占位行（锁图标 + 固定
+                    // 星号），明文一帧都不进组件树
+                    child: lockedHidden
+                        ? _buildLockedBody()
+                        : _buildViewingBody(content, isArchived, textScaler),
                   ),
           ),
           // 3. 重放录音独立行（有录音且未归档才显示，条件与收起态一致）。
@@ -744,8 +780,8 @@ class OverlayDiaryCard extends StatelessWidget {
           ],
           // 4. 底部按钮条：编辑态整行替换为「✗取消 / ✓保存」（优先级最高，
           // 对齐删除确认行「确认删除？✓✗」的整行替换先例）；删除确认态整行替换
-          // 为「确认删除？✓✗」；标注选择态整行替换为「❗ ⭐ 💡 ✗返回」；
-          // 查看态为 删除/闹钟/复制/AI 对话/标注入口
+          // 为「确认删除？✓✗」；查看态为 删除/闹钟/复制/AI 对话（标注已上提
+          // 时间行一级直出，底条不再有标注入口）
           const SizedBox(height: 8),
           Divider(color: Colors.white.withValues(alpha: 0.3), height: 1),
           const SizedBox(height: 4),
@@ -753,11 +789,30 @@ class OverlayDiaryCard extends StatelessWidget {
               ? _buildEditActionRow()
               : isDeleteConfirming
               ? _buildDeleteConfirmRow()
-              : isTagPicking
-              ? _buildTagPickRow()
               : _buildActionRow(),
         ],
       ),
+    );
+  }
+
+  /// 锁定打码态正文：锁图标 + 固定字数星号占位（与收起态同一文本常量）。
+  /// 解锁入口 = 收起卡再点卡片（父层 _toggleExpand 门禁认证），打码行本身
+  /// 无交互
+  Widget _buildLockedBody() {
+    return Row(
+      children: [
+        Icon(Icons.lock, size: 15, color: Colors.white.withValues(alpha: 0.9)),
+        const SizedBox(width: 8),
+        Text(
+          kLockedMaskText,
+          style: TextStyle(
+            fontSize: OverlayConstants.cardFontSize,
+            height: 1.4,
+            color: Colors.white.withValues(alpha: 0.95),
+            letterSpacing: 2,
+          ),
+        ),
+      ],
     );
   }
 
@@ -1014,7 +1069,10 @@ class OverlayDiaryCard extends StatelessWidget {
     } catch (_) {
       bodyH = 0; // 度量异常兜底：偏置与 clamp 接管，仍被淡出掩盖
     }
-    final double timeRowH = onCollapse != null ? 32 : 17;
+    // 时间行高：chevron 命中盒 32 主导（时间行标注按钮命中区同为 32，不改变
+    // 行高）；两者皆无回调时只剩 12pt 小字 ≈17
+    final double timeRowH =
+        (onCollapse != null || onTagToggle != null) ? 32 : 17;
     final double audioRowH = showPlayButton ? 8 + 40 : 0;
     const double actionRowH = 8 + 1 + 4 + 40;
     return timeRowH + 4 + bodyH + audioRowH + actionRowH + 10; // +10 过估偏置
@@ -1055,7 +1113,7 @@ class OverlayDiaryCard extends StatelessWidget {
     );
   }
 
-  /// 底部按钮条：删除 / 闹钟 / 复制 / AI 对话 / 标注入口。
+  /// 底部按钮条：删除 / 闹钟 / 复制 / AI 对话 / 锁定。
   /// 白色图标 + 40×40 opaque 命中区（内层手势竞技场胜出，不冒泡），
   /// 与复选框/播放钮同款命中模式
   Widget _buildActionRow() {
@@ -1076,9 +1134,13 @@ class OverlayDiaryCard extends StatelessWidget {
         // AI 对话：图标对齐日记页卡片同款按钮（chat_bubble_outline），
         // 点击复制 + 跳转 AI 应用（语义在父层 _onCardShareToAI）
         if (showAiChat) _buildActionButton(Icons.chat_bubble_outline, onAiChat),
-        // 标注入口：点击进入标注选择态（整行替换，见 _buildTagPickRow）
-        if (onTagEntry != null)
-          _buildActionButton(Icons.label_outline, onTagEntry),
+        // 锁定开关：锁定 = 结束解锁会话整体打码；解除锁定会话外先认证。
+        // 锁定态高亮闭合锁，未锁定态开锁轮廓（与主 App 锁按钮同语义）
+        if (onLockToggle != null)
+          _buildActionButton(
+            (diary['is_locked'] as int?) == 1 ? Icons.lock : Icons.lock_open,
+            onLockToggle,
+          ),
       ],
     );
   }
@@ -1115,60 +1177,35 @@ class OverlayDiaryCard extends StatelessWidget {
     );
   }
 
-  /// 标注选择行：「❗紧急 ⭐收藏 💡灵感 ✗返回」（整行替换查看态按钮条，
-  /// 对齐删除确认行的整行替换先例）。
-  /// 点击 tag → onTagToggle(tag)；点击当前已选中的 tag = 取消标注
-  ///（onTagToggle(null)，toggle 回默认色）；✗ → onTagPickCancel 退出还原。
-  /// 已选中的 tag 按钮加视觉强调：白底圆 + 图标换标注色（对齐 _buildCheckbox
-  /// 勾选态「白底圆+深色图标」的视觉语言）
-  Widget _buildTagPickRow() {
-    final currentTag = diary['tag'] as String?;
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-      children: [
-        _buildTagButton(
-          Icons.priority_high,
-          DiaryTag.urgent,
-          currentTag == DiaryTag.urgent,
-        ),
-        _buildTagButton(
-          Icons.star_rounded,
-          DiaryTag.star,
-          currentTag == DiaryTag.star,
-        ),
-        _buildTagButton(
-          Icons.lightbulb_outline,
-          DiaryTag.idea,
-          currentTag == DiaryTag.idea,
-        ),
-        _buildActionButton(Icons.close, onTagPickCancel),
-      ],
-    );
-  }
-
-  /// 标注行单个 tag 按钮：未选中 = 白色图标（同 _buildActionButton）；
-  /// 选中 = 白底圆 + 标注色图标（对齐 _buildCheckbox 勾选态视觉语言）。
-  /// 40×40 opaque 命中区（点按钮不冒泡，同其他底条按钮）
-  Widget _buildTagButton(IconData icon, String tag, bool selected) {
+  /// 时间行标注按钮（紧凑版，一级直出——2026-09-22 用户要求从二级标注选择态
+  /// 上提到时间行）：未选中 = 白色小图标（同 _buildActionButton 视觉语言）；
+  /// 选中 = 白底圆 + 标注色图标（对齐 _buildCheckbox 勾选态「白底圆+深色图标」
+  /// 的视觉语言，此处图标为标注色）。点击 tag → onTagToggle(tag)；点击当前
+  /// 已选中的 tag = 取消标注（onTagToggle(null)，toggle 回默认色）。
+  /// 32×32 opaque 命中区 = 时间行高（与 chevron 命中区 32 同高，不撑高时间行，
+  /// _estimateExpandedHeight 的 timeRowH 分母不变）；相邻按钮间 4dp 间距——
+  /// 命中区自带留白（视觉图标 17，加上间距后相邻图标净隔 19dp），比原二级
+  /// 菜单 40×40 spaceEvenly 紧凑得多，三个按钮 + 时间文本在展开面板宽内富余
+  Widget _buildInlineTagButton(IconData icon, String tag, bool selected) {
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       // 点击已选中的 tag = 取消标注（传 null，toggle 回默认色）
       onTap: () => onTagToggle?.call(selected ? null : tag),
       child: SizedBox(
-        width: 40,
-        height: 40,
+        width: 32,
+        height: 32,
         child: Center(
           child: selected
               ? Container(
-                  width: 28,
-                  height: 28,
+                  width: 24,
+                  height: 24,
                   decoration: const BoxDecoration(
                     shape: BoxShape.circle,
                     color: Colors.white,
                   ),
-                  child: Icon(icon, size: 18, color: DiaryTag.colors[tag]),
+                  child: Icon(icon, size: 15, color: DiaryTag.colors[tag]),
                 )
-              : Icon(icon, size: 20, color: Colors.white),
+              : Icon(icon, size: 17, color: Colors.white),
         ),
       ),
     );

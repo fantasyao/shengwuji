@@ -23,6 +23,9 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- AI 应用分享：枚举已安装应用供二级页添加自定义跳转目标
+         （Android 11+ queries 白名单只够启动 4 个内置 AI，列全部桌面应用必须本权限） -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
     <application
         android:label="声物记"
         android:name=".ShengwujiApplication"
@@ -105,6 +108,19 @@
                 <category android:name="android.intent.category.DEFAULT"/>
             </intent-filter>
         </activity>
+
+        <!-- 笔记解锁透明认证 Activity（NoteUnlockCoordinator 拉起）：锁屏中走
+             requestDismissKeyguard（系统解锁界面），未锁屏弹 androidx.biometric
+             对话框（指纹/面部优先、锁屏密码兜底）。AppCompat 透明主题是
+             androidx.biometric API<28 兼容对话框的要求；独立 task +
+             excludeFromRecents 不带动主 App 任务栈（同 ShortcutDispatchActivity 模板） -->
+        <activity
+            android:name=".NoteUnlockActivity"
+            android:exported="false"
+            android:theme="@style/NoteUnlockTheme"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:noHistory="true" />
 
         <!-- ==================== Phase 4：图标包切换（activity-alias） ==================== -->
 

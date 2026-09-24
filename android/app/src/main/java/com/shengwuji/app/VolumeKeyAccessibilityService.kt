@@ -15,6 +15,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.PowerManager
 import android.content.Context
+import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -38,20 +39,25 @@ import io.flutter.plugin.common.MethodChannel
 class VolumeKeyAccessibilityService : AccessibilityService() {
 
     companion object {
-        // 长按阈值的默认/回落值（毫秒）：prefs 缺失或脏值时用。用户可在设置页
-        // 「音量键快捷操作」选档，每次按键 DOWN 实时读落盘（getLongPressDurationMs）
-        private const val LONG_PRESS_DURATION_MS = 500L
+        // 长按阈值的默认/回落值（毫秒）：prefs 缺失或越界脏值时用。用户可在
+        // 设置页「音量键快捷操作」选预设档或输入自定义值，每次按键 DOWN 实时读
+        // 落盘（getLongPressDurationMs）
+        private const val LONG_PRESS_DURATION_MS = 400L
         // 长按阈值 prefs key（long，毫秒；写入方：Flutter 设置页 setInt；
         // 读取方：getLongPressDurationMs）。⚠️ 必须 getLong 读：Flutter
         // shared_preferences 的 setInt 在 Android 端落盘即 Long（Dart int 64 位，
         // 插件走 putLong，同 pro_trial_deadline_ms 先例），getInt 读会
         // ClassCastException 崩服务进程（2026-09-19 真机炸过：选 1200ms 后长按即崩）
         private const val LONG_PRESS_MS_KEY = "flutter.volume_long_press_ms"
-        // 长按阈值合法档位（毫秒）：⚠️ 硬编码副本——唯一真值在 Dart 侧
-        // lib/utils/volume_gesture_config.dart VolumeLongPressMs.choices，改档位必须
-        // 双侧同步。下限 400：刻意单击的按压时长约 100~300ms，再低会误判成长按。
-        // LongArray 是为 contains(ms) 直接匹配 getLong 读出的 Long
-        private val LONG_PRESS_MS_CHOICES = longArrayOf(400L, 500L, 800L, 1200L)
+        // 长按阈值合法范围边界（毫秒，闭区间）：⚠️ 硬编码副本——唯一真值在
+        // Dart 侧 lib/utils/volume_gesture_config.dart VolumeLongPressMs.minMs/maxMs，
+        // 改边界必须双侧同步。2026-09-23 设置页新增「自定义」档（点 chip 弹输入框，
+        // 范围内任意值写同一 key）后，校验从档位集合白名单（旧
+        // LONG_PRESS_MS_CHOICES.contains）改为范围校验——预设集合 {200,300,400,700}
+        // 与 2026-09-21 前的旧档位 {400,500,800,1200} 都落在范围内，老用户升级后
+        // 按原值继续生效（刻意选择：尊重其当年显式选的档位，不再回落 400）
+        private const val LONG_PRESS_MS_MIN = 50L
+        private const val LONG_PRESS_MS_MAX = 2000L
         // 「录音中单击结束录音」开关 prefs key（bool，默认 false；写入方：Flutter 设置页；
         // 读取方：onKeyEvent / isSingleClickStopEnabled 每次按键实时读）。与
         // keep_muted_on_volume_down（按音量减保持静音）互斥二选一——互斥在 Flutter
@@ -98,6 +104,13 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
         // 悬浮窗新增笔记：显示浮窗（若未显示）并自动展开面板 + 新增一条空白笔记进入编辑态
         //（Kotlin 只发 newNote 消息，expand + 新增由 Dart 侧 handler 完成；已显示时不 toggle 隐藏，直接再发一次）
         private const val ACTION_OVERLAY_NEW_NOTE = "overlay_new_note"
+        // 按住说话（实验分支 2026-09-21）：长按槽位专属动作——按住达阈值即开录，
+        // 松开同一键立即停录转写（与 toggle 制「松手后继续录、再长按才停」的根本
+        // 差异）。复用悬浮窗语音速记整条链路（隐藏窗直建 / pendingVoiceMemoStart
+        // 握手 / 四级 watchdog / 3s stop 回执兜底），只在触发与收尾时机上不同；
+        // 会话跟踪见 pttHold* 系列。⚠️ 与 Dart 侧 VolumeGestureAction.pttRecord
+        // 严格一致（跨端硬编码副本，改值必须双侧同步）
+        private const val ACTION_PTT_RECORD = "ptt_record"
         // stopVoiceMemo 回执超时（毫秒）：Dart 卡死时防 toggle 死锁的最简兜底
         // （完整四级 watchdog 见 voiceMemoWatchdog* 系列——本超时只负责 stop 消息的回执兜底）
         private const val VOICE_MEMO_STOP_TIMEOUT_MS = 3000L
@@ -155,6 +168,22 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
         // 整体换侧，与 Dart 侧 OverlayHome._refreshSide 的镜像同步
         private const val OVERLAY_SIDE_LEFT_KEY = "flutter.overlay_side_left"
 
+        // 笔记解锁会话的持久化 key（long，epoch 毫秒；0=未解锁）。⚠️ 硬编码副本
+        // ——唯一真值在 Dart 侧 lib/utils/note_unlock_session.dart NoteUnlockSession.key
+        //（Flutter setInt 落盘即 Long，本服务只 putLong 清零，不 getLong 读）。
+        // 写入方：Dart NoteUnlockSession.extend（认证成功）/ 本服务 SCREEN_OFF
+        // 广播（锁屏即重锁：直接清零，不依赖 Dart isolate 存活——悬浮窗锁屏
+        // 偷看的最大威胁兜底就在这条链路）；读取方：Dart 侧 isUnlocked（reload 后读）
+        private const val NOTE_UNLOCK_UNTIL_KEY = "flutter.notes_unlock_until_ms"
+
+        // 认证让位的透明度：指纹对话框是系统窗口（TYPE_BIOMETRIC_PROMPT），
+        // 层级低于无障碍悬浮窗（TYPE_ACCESSIBILITY_OVERLAY 特权层），会整块
+        // 被面板挡住——拉起认证 Activity 时把窗口整体降到近透明让位（用户
+        // 2026-09-22 反馈「指纹弹窗在悬浮窗下一层」，备选方案「透明一下」定版
+        // 整体降透明而非只透下半），认证结果回发时恢复 1f。留 0.15 而非 0：
+        // 用户仍隐约感知面板在场，恢复时无「窗口闪现」感
+        private const val OVERLAY_AUTH_DIM_ALPHA = 0.15f
+
         // 供主 Activity / Flutter 调用，控制无障碍浮窗
         var instance: VolumeKeyAccessibilityService? = null
             private set
@@ -166,6 +195,10 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
     // 写入方：onKeyEvent ACTION_DOWN（缓存）；清空方：ACTION_UP + onInterrupt。
     // 为什么缓存：runnable 执行时若二次读 prefs，期间配置被改写会与 DOWN 时的判定不一致
     private var currentLongPressAction: String? = null
+    // DOWN 时缓存的长按槽位键码：PTT 会话归属判定用（UP 只认发起 PTT 的那一键，
+    // 防止按住 A 键录音时另一键的 UP 误停）。清空方：ACTION_UP（onInterrupt 不清
+    // ——服务被中断时进行中的 PTT 会话仍应能被 UP 幂等收尾）
+    private var currentLongPressKeyCode = 0
 
     // Handler 方案：不依赖 repeatCount（三星 ROM 不发送重复事件）
     private val longPressHandler = Handler(Looper.getMainLooper())
@@ -186,6 +219,23 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
     private var overlayWindowManager: WindowManager? = null
     private var overlayView: FlutterView? = null
     private var overlayMethodChannel: MethodChannel? = null
+
+    // 锁屏即重锁 + 息屏隐藏：监听屏幕熄灭/点亮。
+    // - SCREEN_OFF：直接清零笔记解锁会话（flutter.notes_unlock_until_ms，不依赖
+    //   Dart isolate 存活）+ 通知悬浮窗 Dart 打码已展开的锁定卡片 + 把悬浮窗
+    //   visibility 置 GONE（TYPE_ACCESSIBILITY_OVERLAY 在 AOD 息屏时钟上仍参与
+    //   合成，把手/贴边竖线会跟着时钟杵在息屏画面上——2026-09-22 用户反馈）。
+    //   ACTION_SCREEN_OFF 在息屏时刻即发出（AOD 属非交互态），无需专门的 AOD
+    //   检测 API，「屏幕变黑」与「进入 AOD」两种形态都被它覆盖
+    // - SCREEN_ON：恢复 VISIBLE（见 setOverlayGoneForScreen）
+    // 注册在服务而不是 MainActivity：服务常驻，主 App 未启动/已被划掉时
+    // MainActivity 的 receiver 不存在，而悬浮窗恰恰在锁屏上显示
+    private var screenOffReceiver: android.content.BroadcastReceiver? = null
+
+    // 悬浮窗因息屏处于 GONE 的标志：SCREEN_ON 只在本标志为 true 时恢复 VISIBLE，
+    // 防未来其他机制隐藏窗口后（visibility 归它管的前提破坏）被亮屏误揭示。
+    // 随 service 实例生死（onDestroy 注销 receiver + hideOverlay 移窗，无跨实例残留）
+    private var overlayHiddenByScreenOff = false
 
     // 把手长按拖动中：beginHandleDrag 到达时缓存的窗口 y 基线（px，gravity
     // CENTER_VERTICAL 语义 = 相对屏幕垂直中心的偏移）。dragHandle 的每次更新都
@@ -209,6 +259,17 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
     private var voiceMemoActive = false
     // Dart 未就绪时挂起的语音速记启动请求（dartReady 握手到达后补发，与 pendingAutoExpand 同机制）
     private var pendingVoiceMemoStart = false
+
+    // ===== 按住说话（ptt_record，实验分支 2026-09-21）=====
+    // 长按阈值已开录、等待本键 UP 停录的 PTT 会话标志 + 归属键码。
+    // 写入方：triggerPttVoiceMemo（开录成功时）；清零方：stopPttHold / destroyOverlayEngine
+    private var pttHoldActive = false
+    private var pttHoldKeyCode = 0
+    // 松手已请求停录、但 Dart 尚未回执 voiceMemoStarted（start 的 await 链还在跑）。
+    // 此时早发的 stopVoiceMemo 会被 Dart stop() 的非录音态守卫静默 no-op 丢弃，等
+    // voiceMemoStarted 回执到达后必须补发一次 stop——toggle 时代「stop 追上 start」
+    // 只在冷启动极快连按两下长按时才可能撞上，PTT 短按住让它变成常态路径
+    private var pttReleasePending = false
     // 语音速记隐藏窗口标记：showOverlay(hidden=true) 时窗口直接以胶囊尺寸（312×84）addView，
     // 但 alpha=0 + FLAG_NOT_TOUCHABLE（FlutterView 在 engine 渲染期间必须 attach 到窗口——
     // 未 attach 时 Dart 推 semantics 更新，AccessibilityBridge.sendAccessibilityEvent 调
@@ -291,12 +352,13 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
         }
     }
 
-    // 通用读取：新 key 的值为 6 个合法动作之一则直接用，否则（不存在/非法值）走迁移推导
+    // 通用读取：新 key 的值为 7 个合法动作之一则直接用，否则（不存在/非法值）走迁移推导
     private fun getGestureAction(prefs: SharedPreferences, newKey: String, migrate: () -> String): String {
         val action = prefs.getString(newKey, null)
         return when (action) {
             ACTION_NONE, ACTION_SHOW_OVERLAY, ACTION_OVERLAY_RECORD,
-            ACTION_QUICK_RECORD, ACTION_QUICK_TEXT_NOTE, ACTION_OVERLAY_NEW_NOTE -> action!!
+            ACTION_QUICK_RECORD, ACTION_QUICK_TEXT_NOTE, ACTION_OVERLAY_NEW_NOTE,
+            ACTION_PTT_RECORD -> action!!
             else -> migrate()
         }
     }
@@ -347,14 +409,15 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
         }
     }
 
-    // 长按触发阈值：读设置页写入的档位（400/500/800/1200ms，档位集合见
-    // LONG_PRESS_MS_CHOICES），缺失/脏值回落默认 500。每次按键实时读落盘 prefs
-    // （与手势槽位动作同模式：无需 MethodChannel、App 未打开也生效）。
+    // 长按触发阈值：读设置页写入的值（预设档 200/300/400/700 或自定义
+    // [LONG_PRESS_MS_MIN, LONG_PRESS_MS_MAX] 内任意值），缺失/脏值/越界回落 400。
+    // 每次按键实时读落盘 prefs（与手势槽位动作同模式：无需 MethodChannel、
+    // App 未打开也生效）。
     // ⚠️ 必须 getLong：Flutter setInt 落盘即 Long，getInt 会崩（key 注释详见）
     private fun getLongPressDurationMs(): Long {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val ms = prefs.getLong(LONG_PRESS_MS_KEY, LONG_PRESS_DURATION_MS)
-        return if (LONG_PRESS_MS_CHOICES.contains(ms)) ms else LONG_PRESS_DURATION_MS
+        return if (ms in LONG_PRESS_MS_MIN..LONG_PRESS_MS_MAX) ms else LONG_PRESS_DURATION_MS
     }
 
     // 检查 Flutter 层是否正在录音
@@ -490,9 +553,12 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
             pendingSingleClick = null
 
             // 长按槽有动作才启动长按计时（DOWN 时缓存动作，runnable 执行用；
-            // 时长读设置页档位，默认 500ms）
+            // 时长读设置页档位/自定义值，默认 400ms）
             if (longAction != ACTION_NONE) {
                 currentLongPressAction = longAction
+                // 键码随动作一并缓存：PTT 的 UP 只认发起会话的这一键（按住 A 键
+                // 录音期间另一键的 UP 不得误停）
+                currentLongPressKeyCode = event.keyCode
                 longPressHandler.postDelayed(longPressRunnable, getLongPressDurationMs())
             }
             // longAction==none：不启动长按计时，按住不放无动作，UP 走调音量路径
@@ -503,9 +569,17 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
             longPressHandler.removeCallbacks(longPressRunnable)
             currentLongPressAction = null
             val wasLongPress = isLongPressTriggered
+            val wasPttKeyCode = currentLongPressKeyCode == keyCode
+            currentLongPressKeyCode = 0
             isLongPressTriggered = false
 
             if (wasLongPress) {
+                // 按住说话（ptt_record）：长按阈值已开录的会话在本键 UP 时停录转写
+                // ——PTT 与 toggle 制的全部差异就在这一行；键码校验防按住 A 键录音
+                // 时另一键的 UP 误停。非 PTT 长按维持原语义（松手不追发动作）
+                if (pttHoldActive && wasPttKeyCode) {
+                    stopPttHold()
+                }
                 println("🔑 [Accessibility] 按键抬起: 长按已处理")
                 return true // 长按已处理，不进双击
             }
@@ -571,7 +645,16 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
             KeyEvent.KEYCODE_VOLUME_DOWN -> AudioManager.ADJUST_LOWER
             else -> return
         }
-        audioManager.adjustVolume(direction, AudioManager.FLAG_SHOW_UI)
+        // 交互态走原路径；非交互态（AOD/熄屏）走 adjustVolumeInDoze——实机曾出现调节请求
+        // 被收下后静默丢弃（dumpsys audio 只记一行无 VOLUME_CHANGED 跟随），真凶是
+        // HyperOS「媒体音量控制」权限为「仅在使用中允许」：熄屏态被判非使用中而拦截，
+        // 改「始终允许」即愈（2026-09-20）；回退链保留作其他 ROM/权限受限时的兜底
+        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (powerManager.isInteractive) {
+            audioManager.adjustVolume(direction, AudioManager.FLAG_SHOW_UI)
+        } else {
+            adjustVolumeInDoze(audioManager, direction)
+        }
         // 如果正在录音静音中，用户按了音量减，标记为保持静音
         if (direction == AudioManager.ADJUST_LOWER) {
             val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
@@ -584,6 +667,40 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
             }
         }
         println("🔑 [Accessibility] 短按手动调音量: keyCode=$keyCode")
+    }
+
+    /**
+     * 非交互态（AOD/熄屏）下的音量调节回退链：
+     * 1. adjustStreamVolume(STREAM_MUSIC)——显式流，绕开 USE_DEFAULT_STREAM_TYPE 解析；
+     * 2. 仍无效 → setStreamVolume 显式写值 ±1。
+     * 每步 getStreamVolume 回读判定是否生效，已生效就不再走下一级（避免连跳两级）。
+     * 实机备注（2026-09-20）：权限「媒体音量控制=仅在使用中允许」时曾两路全被拦
+     * （140 → 140 目标 139、调用不抛异常），改「始终允许」即愈，权限正常时第一级
+     * 即生效；若两路仍未生效优先引导查该权限，勿再叠加代码兜底（曾加过第三级
+     * 「点亮屏幕转交互态补调」，体验差且权限修正后无用，已移除）。
+     * 整段 try/catch：任何异常只打日志，绝不能崩掉无障碍服务（服务崩溃会连带杀主进程）。
+     */
+    private fun adjustVolumeInDoze(audioManager: AudioManager, direction: Int) {
+        try {
+            val before = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+            audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, AudioManager.FLAG_SHOW_UI)
+            val afterAdjust = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+            if (afterAdjust != before) {
+                println("🎵 [Accessibility] DOZE 调音量: adjustStreamVolume 生效 $before → $afterAdjust")
+                return
+            }
+            val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            val target = (before + if (direction == AudioManager.ADJUST_RAISE) 1 else -1).coerceIn(0, max)
+            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, target, AudioManager.FLAG_SHOW_UI)
+            val afterSet = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+            if (afterSet != before) {
+                println("🎵 [Accessibility] DOZE 调音量: setStreamVolume 回退生效 $before → $afterSet")
+            } else {
+                println("⚠️ [Accessibility] DOZE 调音量: 两路均未生效 (音量仍 $before)——检查系统设置里本 App 的「媒体音量控制」权限是否「始终允许」")
+            }
+        } catch (e: Exception) {
+            println("⚠️ [Accessibility] DOZE 调音量失败: ${e.message}")
+        }
     }
 
     /**
@@ -696,6 +813,7 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
             ACTION_SHOW_OVERLAY -> triggerShowOverlay()
             ACTION_OVERLAY_RECORD -> triggerVoiceMemoOverlay()
             ACTION_OVERLAY_NEW_NOTE -> triggerOverlayNewNote()
+            ACTION_PTT_RECORD -> triggerPttVoiceMemo()
             else -> println("⚠️ [Accessibility] 未知手势动作: $action")
         }
     }
@@ -947,12 +1065,98 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
             // hiddenReveal 负载告知 Dart 当前是否为隐藏窗口（alpha=0 等揭示）——Dart 据此
             // 决定 voiceMemoUiReady 的发送时机：隐藏模式在 handler 顶部挂揭示门，等录音态
             // 首帧构建完才发（窗口从创建起就是胶囊尺寸，首帧即正确尺寸，根治揭示竞态）；
-            // 把手在屏上的原地切换路径（false）维持立即发（Kotlin 侧非 pending 时收到也 no-op）
-            overlayMethodChannel?.invokeMethod("startVoiceMemo", mapOf("hiddenReveal" to pendingVoiceMemoReveal))
+            // 把手在屏上的原地切换路径（false）维持立即发（Kotlin 侧非 pending 时收到也 no-op）。
+            // ptt 负载：true = 按住说话会话，Dart 据此把停止提示切「松开音量键，停止并转写」
+            //（普通语音速记恒 false——非 PTT 路径置位前 pttHoldActive 必为 false；旧版本
+            // Dart 不识此 key 自动忽略）
+            overlayMethodChannel?.invokeMethod(
+                "startVoiceMemo",
+                mapOf("hiddenReveal" to pendingVoiceMemoReveal, "ptt" to pttHoldActive)
+            )
         } else {
             pendingVoiceMemoStart = true
             println("⏳ [Accessibility] Dart 未就绪，语音速记启动请求已挂起")
         }
+    }
+
+    /**
+     * 按住说话（action=ptt_record，实验分支）：长按阈值到期开录，松开同一键停录。
+     * 复用悬浮窗语音速记整条基础设施（隐藏窗直建 / pendingVoiceMemoStart 握手 /
+     * 四级 watchdog / 3s stop 回执兜底），差异只有触发与收尾时机：
+     * - 开录 = 长按阈值到期（与 overlay_record 同一时刻、同一入口 executeGestureAction），
+     *   额外登记 PTT 会话（pttHoldActive/pttHoldKeyCode）
+     * - 停录 = 本键 ACTION_UP → stopPttHold，而非下一次长按 toggle
+     * 停录后端选悬浮窗语音速记而非主 APP 快捷录音：松手即停要求停录指令延迟低且
+     * 不依赖 Activity 启动——quick_record 的 Intent 冷启动期间 is_recording 尚未落盘，
+     * 快速松手的 toggle 停录会被 Flutter 侧当成「开始」反向误触
+     */
+    private fun triggerPttVoiceMemo() {
+        if (voiceMemoActive) {
+            // 会话已在场（外部快捷方式重入等边缘）：不开第二条录音，本键 UP 仍会走
+            // stopPttHold 幂等收尾在场会话
+            println("🎤 [Accessibility] 按住说话：语音速记已在场，忽略重复启动")
+            return
+        }
+        // Pro 门禁：与悬浮窗语音速记同一闸（PTT 就是它的按住版，链路完全复用）
+        if (blockOverlayIfProLocked()) return
+        if (isRecording()) {
+            // 主 APP 录音中 → 麦克风互斥不开录。与 overlay_record 的「退回显示浮窗」
+            // 不同：松手即停的瞬时手势不该顺手改变浮窗可见性
+            println("🎤 [Accessibility] 按住说话：主 APP 录音中，麦克风互斥不开录")
+            return
+        }
+        // 锁屏状态下先点亮屏幕（与 triggerVoiceMemoOverlay 同款前置）
+        wakeScreenIfLocked()
+        vibrateOneShot(50, 50)
+        if (overlayView == null) {
+            // 与语音速记同款：hidden=true 隐藏窗口直建（胶囊尺寸 + alpha=0 +
+            // FLAG_NOT_TOUCHABLE），Dart 录音态首帧 voiceMemoUiReady 才揭示
+            val shown = showOverlay(autoExpand = false, hidden = true)
+            if (!shown) {
+                println("❌ [Accessibility] 按住说话：浮窗创建失败，放弃启动录音")
+                return
+            }
+        }
+        voiceMemoActive = true
+        startVoiceMemoWatchdog()
+        // 先登记会话再发启动消息：ptt 负载读 pttHoldActive（dartReady 握手补发
+        // 场景同读此标志——用户若已松手，stopPttHold 会连挂起一起取消，不会补发）
+        pttHoldActive = true
+        pttHoldKeyCode = currentLongPressKeyCode
+        notifyDartStartVoiceMemo()
+        println("✅ [Accessibility] 按住说话已启动（keyCode=$pttHoldKeyCode，等待松手停录）")
+    }
+
+    /**
+     * PTT 松手停录（本键 ACTION_UP，wasLongPress 分支内调用）。三路分流：
+     * - 启动请求还挂着（冷启动 Dart 未就绪）→ 取消挂起启动并收掉未揭示的隐藏窗。
+     *   不能照发 stopVoiceMemo：handler 未注册时 invokeMethod 静默丢弃，等 dartReady
+     *   握手补发启动后录音会开始却没人停（挂起请求在 stopPttHold 前必须先撤）
+     * - 会话已被别的路径收尾（单击停录 / voiceMemoFailed 回执 / watchdog）→ 幂等 no-op
+     * - 正常路径 → tick 清脆震 + stopVoiceMemo + 3s 回执兜底；若 Dart 的 start await
+     *   链还没跑完（stop 被非录音态守卫静默丢弃），voiceMemoStarted 回执到达时按
+     *   pttReleasePending 补发一次
+     */
+    private fun stopPttHold() {
+        pttHoldActive = false
+        pttHoldKeyCode = 0
+        if (pendingVoiceMemoStart) {
+            pendingVoiceMemoStart = false
+            voiceMemoActive = false
+            cancelVoiceMemoWatchdog()
+            hideOverlay()
+            println("✅ [Accessibility] 按住说话：松手于 Dart 就绪前，已取消挂起的启动")
+            return
+        }
+        if (!voiceMemoActive) {
+            println("ℹ️ [Accessibility] 按住说话：会话已不在场，松手无需停录")
+            return
+        }
+        pttReleasePending = true
+        performHaptic("tick")
+        overlayMethodChannel?.invokeMethod("stopVoiceMemo", null)
+        scheduleVoiceMemoStopTimeout()
+        println("✅ [Accessibility] 按住说话：松手，请求停止录音")
     }
 
     /**
@@ -966,6 +1170,8 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
             voiceMemoStopTimeoutRunnable = null
             if (voiceMemoActive) {
                 voiceMemoActive = false
+                // PTT 的待补发停录随会话一并作废（会话都不在场了，回执无从谈起）
+                pttReleasePending = false
                 // 强制复位时一并撤 watchdog：toggle 状态已解锁，救生链无需再 escalate
                 cancelVoiceMemoWatchdog()
                 // Dart 卡死判定路径：常亮 flag 也要兜底清掉（否则浮窗 LayoutParams 上残留）
@@ -1027,6 +1233,10 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
         overlayMethodChannel = null
         dartReady = false
         voiceMemoActive = false
+        // PTT 会话标志随 engine 一并清零（T4 销毁路径 / service 重建后不留陈旧会话态）
+        pttHoldActive = false
+        pttHoldKeyCode = 0
+        pttReleasePending = false
         pendingAutoExpand = false
         pendingNewNote = false
         pendingVoiceMemoStart = false
@@ -1109,12 +1319,23 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
                         "voiceMemoStarted" -> {
                             cancelVoiceMemoStopTimeout()
                             setOverlayKeepScreenOn()
+                            if (pttReleasePending) {
+                                // PTT 松手早于 Dart 开录完成：此前发的 stopVoiceMemo 落在
+                                // start await 链中途，被 Dart stop() 的非录音态守卫静默
+                                // no-op 丢弃；此刻录音已真正开始，补发停录（3s 回执超时
+                                // 兜底照排——Dart 卡死时由超时强制复位）
+                                pttReleasePending = false
+                                overlayMethodChannel?.invokeMethod("stopVoiceMemo", null)
+                                scheduleVoiceMemoStopTimeout()
+                                println("✅ [Accessibility] 按住说话：开录回执晚于松手，补发停录")
+                            }
                             println("✅ [Accessibility] Dart 回执：语音速记录音已开始")
                             result.success(true)
                         }
                         // 语音速记录音回执：录音已停止（进入转写）→ 复位 toggle 状态 + 撤 watchdog
                         "voiceMemoStopped" -> {
                             voiceMemoActive = false
+                            pttReleasePending = false
                             cancelVoiceMemoStopTimeout()
                             cancelVoiceMemoWatchdog()
                             println("✅ [Accessibility] Dart 回执：语音速记已停止")
@@ -1130,6 +1351,7 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
                         // 语音速记录音回执：Dart 自报失败（权限未授予/麦克风被占等）→ 复位 + 隐藏浮窗 + 撤 watchdog
                         "voiceMemoFailed" -> {
                             voiceMemoActive = false
+                            pttReleasePending = false
                             cancelVoiceMemoStopTimeout()
                             cancelVoiceMemoWatchdog()
                             // 失败路径也清常亮（hideOverlay 移窗后 flag 天然消失，
@@ -1292,31 +1514,37 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
                         }
                         // 悬浮窗闹钟确认后写日历：与主 App 日记页共用 CalendarEventHelper
                         // （逻辑同 MainActivity 原实现，Service 上下文直接可用）。
-                        // 成功/失败反馈走原生 Toast（悬浮窗小窗口不适合 SnackBar）
+                        // 成功/失败反馈走原生 Toast（悬浮窗小窗口不适合 SnackBar），
+                        // 文案按结果码区分（"no_calendar_account" = 手机上没有
+                        // 日历账户，常见于系统日历 app 被卸载/停用，如摩托罗拉）
                         "addCalendarEvent" -> {
                             val timestamp = call.argument<Long>("timestamp") ?: 0L
                             val title = call.argument<String>("title") ?: "提醒"
                             val enableAlarm = call.argument<Boolean>("enableAlarm") ?: true
-                            val ok = if (!CalendarEventHelper.hasCalendarPermission(this@VolumeKeyAccessibilityService)) {
+                            val code = if (!CalendarEventHelper.hasCalendarPermission(this@VolumeKeyAccessibilityService)) {
                                 Toast.makeText(this@VolumeKeyAccessibilityService, "日历权限未授予，添加失败", Toast.LENGTH_LONG).show()
                                 println("❌ [Accessibility] 写日历中止：日历权限未授予")
-                                false
+                                CalendarEventHelper.RESULT_PERMISSION_DENIED
                             } else {
-                                val success = CalendarEventHelper.addCalendarEvent(
+                                val code = CalendarEventHelper.addCalendarEvent(
                                     this@VolumeKeyAccessibilityService, timestamp, title, enableAlarm
                                 )
                                 Toast.makeText(
                                     this@VolumeKeyAccessibilityService,
-                                    when {
-                                        success && enableAlarm -> "已添加到系统日历，到点响铃提醒"
-                                        success -> "已添加到系统日历（无响铃）"
-                                        else -> "添加日历事件失败，请检查日历账户"
+                                    when (code) {
+                                        CalendarEventHelper.RESULT_OK ->
+                                            if (enableAlarm) "已添加到系统日历，到点响铃提醒" else "已添加到系统日历（无响铃）"
+                                        CalendarEventHelper.RESULT_NO_CALENDAR_ACCOUNT ->
+                                            "手机上没有可用的日历，请检查系统日历应用是否被卸载或停用"
+                                        CalendarEventHelper.RESULT_PERMISSION_DENIED ->
+                                            "日历权限未授予，添加失败"
+                                        else -> "添加日历事件失败"
                                     },
                                     Toast.LENGTH_SHORT
                                 ).show()
-                                success
+                                code
                             }
-                            result.success(ok)
+                            result.success(code)
                         }
                         // 展开卡片底部分享按钮：系统分享面板。Service 无 Activity
                         // 上下文，ACTION_SEND 和 Chooser 都必须加 FLAG_ACTIVITY_NEW_TASK。
@@ -1418,9 +1646,14 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
                             // 挂起的语音速记启动请求同样补发（与 pendingAutoExpand 同一握手机制）
                             if (pendingVoiceMemoStart) {
                                 pendingVoiceMemoStart = false
-                                // hiddenReveal 负载语义同 notifyDartStartVoiceMemo（补发时
-                                // pendingVoiceMemoReveal 仍有效，Dart 据此决定揭示信号时机）
-                                overlayMethodChannel?.invokeMethod("startVoiceMemo", mapOf("hiddenReveal" to pendingVoiceMemoReveal))
+                                // hiddenReveal / ptt 负载语义同 notifyDartStartVoiceMemo
+                                //（补发时 pendingVoiceMemoReveal 仍有效；PTT 会话未松手
+                                // 才可能走到补发——松手路径连挂起一并取消了，ptt 负载
+                                // 读 pttHoldActive 即当时真值）
+                                overlayMethodChannel?.invokeMethod(
+                                    "startVoiceMemo",
+                                    mapOf("hiddenReveal" to pendingVoiceMemoReveal, "ptt" to pttHoldActive)
+                                )
                             }
                             // 挂起的新增笔记请求同样补发（与 pendingAutoExpand 同一握手机制）
                             if (pendingNewNote) {
@@ -1468,6 +1701,23 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
                                 }
                             }
                             result.success(null)
+                        }
+                        // ── 笔记锁定：悬浮窗点锁定卡片发起系统认证（2026-09-22）──
+                        // 由 NoteUnlockCoordinator 拉起透明认证 Activity：锁屏中走
+                        // requestDismissKeyguard（系统解锁界面），未锁屏弹
+                        // BiometricPrompt（指纹/面部优先、锁屏密码兜底）。
+                        // 结果异步经 notifyNoteUnlockResult 回发，此处不等待。
+                        // 指纹弹窗（系统窗口）层级低于本悬浮窗会被面板挡住，
+                        // 拉起前先整体降透明让位（见 OVERLAY_AUTH_DIM_ALPHA）；
+                        // 拉起失败立即恢复，成功则等结果回发时恢复
+                        "requestUnlockAuth" -> {
+                            setOverlayDimForAuth(true)
+                            val ok = NoteUnlockCoordinator.launch(
+                                this@VolumeKeyAccessibilityService,
+                                fromOverlay = true
+                            )
+                            if (!ok) setOverlayDimForAuth(false)
+                            result.success(ok)
                         }
                         else -> result.notImplemented()
                     }
@@ -1888,7 +2138,124 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
         serviceInfo = serviceInfo.apply {
             flags = flags or android.accessibilityservice.AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS
         }
+        // 锁屏即重锁（笔记锁定功能）+ 息屏隐藏悬浮窗：注册在服务生命周期内
+        // （onDestroy 注销），幂等防服务重建重复注册。SCREEN_OFF/SCREEN_ON 都是
+        // 受保护系统广播，仅系统可发，registerReceiver 无需 export flag
+        if (screenOffReceiver == null) {
+            screenOffReceiver = object : android.content.BroadcastReceiver() {
+                override fun onReceive(context: Context?, intent: Intent?) {
+                    when (intent?.action) {
+                        Intent.ACTION_SCREEN_OFF -> {
+                            try {
+                                getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                                    .edit()
+                                    .putLong(NOTE_UNLOCK_UNTIL_KEY, 0L)
+                                    .apply()
+                                println("🔒 [Accessibility] 屏幕熄灭，笔记解锁会话已清零（锁屏即重锁）")
+                            } catch (e: Exception) {
+                                println("⚠️ [Accessibility] 清笔记解锁会话失败: ${e.message}")
+                            }
+                            // 通知悬浮窗 Dart 收起/打码已展开的锁定卡片（dartReady=false
+                            // 时丢弃无害——engine 刚建时列表尚未渲染锁定明文）
+                            if (dartReady) {
+                                overlayMethodChannel?.invokeMethod("relockNotes", null)
+                            }
+                            // 息屏隐藏：AOD 息屏时钟上不再显示把手/贴边竖线/录音胶囊
+                            setOverlayGoneForScreen(true)
+                            // 息屏推进（2026-09-22 用户拍板「进 AOD 必须收、亮屏/解锁
+                            // 不得复活把手/面板」）：通知 Dart 立即收起到驻留终态——
+                            // 竖线开关开 → 缩成贴边竖线（亮屏后恢复的只有竖线），
+                            // 关 → closeOverlay 彻底移除。必须在 GONE 之后发：黑屏
+                            // 期间 Dart 跳终态/缩窗，用户看不见任何过程。
+                            // Pro 提示窗不推进（3 秒自收窗，与把手/面板生命周期无关）；
+                            // dartReady=false（engine 冷启动中）丢弃无害，下轮息屏再推进
+                            if (dartReady && !proHintActive) {
+                                overlayMethodChannel?.invokeMethod("screenAutoHide", null)
+                            }
+                        }
+                        Intent.ACTION_SCREEN_ON -> setOverlayGoneForScreen(false)
+                    }
+                }
+            }
+            registerReceiver(screenOffReceiver, IntentFilter(Intent.ACTION_SCREEN_OFF).apply {
+                addAction(Intent.ACTION_SCREEN_ON)
+            })
+        }
         println("✅ [Accessibility] 无障碍服务已连接，按键过滤已启用")
+    }
+
+    /**
+     * 通知悬浮窗 Dart 笔记认证结果（NoteUnlockCoordinator 完成后调用）。
+     * 必须先恢复认证让位的透明度再回发——Dart 收到结果后会立刻 setState
+     * 展开卡片/解除锁定，窗口必须已可见。dartReady=false（engine 冷启动中）
+     * 时丢弃事件——认证由用户主动发起，Dart 未就绪意味着面板都没渲染，
+     * 结果无人消费
+     */
+    fun notifyNoteUnlockResult(success: Boolean) {
+        setOverlayDimForAuth(false)
+        if (dartReady) {
+            overlayMethodChannel?.invokeMethod("noteUnlockResult", mapOf("success" to success))
+        }
+        println("🔒 [Accessibility] 笔记认证结果已通知悬浮窗: success=$success")
+    }
+
+    /**
+     * 认证让位：悬浮窗窗口整体透明度切换（true=降到近透明让出指纹弹窗，
+     * false=恢复不透明）。幂等；窗口已移除（overlayView 空跳过）时无需处理
+     * ——下次 showOverlay 重建窗口 alpha 恒 1，不会残留降透明态
+     */
+    private fun setOverlayDimForAuth(dim: Boolean) {
+        val view = overlayView ?: return
+        val wm = overlayWindowManager ?: return
+        // 防御：恢复分支撞上语音速记隐藏窗的揭示期（alpha=0 等首帧揭示）时
+        // 跳过——揭示机制自己会置 1，提前恢复成 1 会让未渲染的把手帧闪现。
+        // 时序上正常到不了这里（dim 只在面板态发起，录音态无卡片可点），纯兜底
+        if (!dim && pendingVoiceMemoReveal) return
+        try {
+            val params = view.layoutParams as WindowManager.LayoutParams
+            val target = if (dim) OVERLAY_AUTH_DIM_ALPHA else 1f
+            if (params.alpha == target) return
+            params.alpha = target
+            wm.updateViewLayout(view, params)
+            println(if (dim) "🔒 [Accessibility] 认证让位：悬浮窗已降透明 (${OVERLAY_AUTH_DIM_ALPHA})"
+                    else "🔒 [Accessibility] 认证结束：悬浮窗透明度已恢复")
+        } catch (e: Exception) {
+            println("⚠️ [Accessibility] 悬浮窗透明度切换失败: ${e.message}")
+        }
+    }
+
+    /**
+     * 息屏隐藏 / 亮屏恢复悬浮窗（2026-09-22 用户反馈：录完音不管它，息屏后把手/
+     * 贴边竖线跟着 AOD 息屏时钟一直杵在息屏画面上）。
+     *
+     * 用 visibility=GONE 而非 hideOverlay() 移窗：窗口 token、Dart engine、录音/
+     * 转写链路、自动隐藏计时全部原样保留；hideOverlay 会发 reset 复位 Dart 并
+     * 打断这套状态，代价不成比例。正常路径下 SCREEN_OFF 同时发 screenAutoHide
+     * 让 Dart 收起到驻留终态（竖线/移除），故亮屏恢复 VISIBLE 看到的只是竖线
+     * （或录音中的胶囊——该场景 screenAutoHide 被守卫跳过，活动会话不掐 UI），
+     * 把手/面板不会复活。
+     *
+     * 与 alpha（隐藏窗揭示期 0 / 认证让位 0.15）是两个正交维度：恢复 VISIBLE
+     * 不会泄露 alpha=0 的未揭示窗口。onReceive 在主线程（无参 registerReceiver
+     * 默认主线程），直接动 view 属性无线程问题。幂等；窗口已移除（overlayView
+     * 空 = 悬浮窗本就彻底隐藏）时 no-op。
+     */
+    private fun setOverlayGoneForScreen(gone: Boolean) {
+        val view = overlayView ?: return
+        if (gone) {
+            view.visibility = View.GONE
+            overlayHiddenByScreenOff = true
+            println("🌙 [Accessibility] 屏幕熄灭，悬浮窗已隐藏（亮屏恢复）")
+        } else if (overlayHiddenByScreenOff) {
+            view.visibility = View.VISIBLE
+            overlayHiddenByScreenOff = false
+            // GONE 期间 FlutterView 的窗口可见性回调可能把 engine lifecycle 带进
+            // paused（停止出帧）——同 getOrCreateOverlayEngine 复用分支的手动
+            // appIsResumed 兜底，防「窗口回来了画面冻结在最后一帧」
+            FlutterEngineCache.getInstance().get(OVERLAY_ENGINE_CACHE_KEY)
+                ?.lifecycleChannel?.appIsResumed()
+            println("☀️ [Accessibility] 屏幕点亮，悬浮窗已恢复显示")
+        }
     }
 
     override fun onDestroy() {
@@ -1896,6 +2263,15 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
         cancelVoiceMemoStopTimeout()
         // 同理撤四级 watchdog（最长 76s，比 stop 超时更不能泄漏到已销毁的 service 实例上）
         cancelVoiceMemoWatchdog()
+        // 撤销锁屏重锁广播（与 onServiceConnected 注册配对）
+        screenOffReceiver?.let {
+            try {
+                unregisterReceiver(it)
+            } catch (e: Exception) {
+                println("⚠️ [Accessibility] 注销 SCREEN_OFF receiver 失败（服务已销毁？）: ${e.message}")
+            }
+            screenOffReceiver = null
+        }
         hideOverlay()
         instance = null
         super.onDestroy()

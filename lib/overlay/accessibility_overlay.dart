@@ -38,7 +38,7 @@ class AccessibilityOverlay {
   }
 
   /// 注册原生→Dart 消息（expand / reset / startVoiceMemo / stopVoiceMemo /
-  /// newNote / showProLockedHint）。
+  /// newNote / showProLockedHint / relockNotes / noteUnlockResult）。
   /// 原生 showOverlay(autoExpand: true) 若早于本注册到达会被静默丢弃，
   /// 因此原生侧用 dartReady/pendingAutoExpand 握手兜底（语音速记的
   /// pendingVoiceMemoStart 同机制）。
@@ -46,18 +46,31 @@ class AccessibilityOverlay {
   /// [onStartVoiceMemo] 携带 Kotlin 发来的 hiddenReveal 负载：true = 当前是
   /// 隐藏窗口（alpha=0 等揭示），Dart 据此决定 voiceMemoUiReady 的发送时机
   ///（隐藏窗口由揭示门在"录音态首帧"构建完后发，见 overlay_home 的
-  /// _revealGatePending 注释；消除揭示竞态）
+  /// _revealGatePending 注释；消除揭示竞态）；ptt = true 表示本次是「按住说话」
+  /// 会话（松手即停，Kotlin 在 UP 时发 stopVoiceMemo），Dart 据此切停止提示
+  /// 文案「松开音量键」（旧版本 Kotlin 不带此 key 按 false 兼容）
   /// [onNewNote]：悬浮窗新增笔记（overlay_new_note 手势动作），payload null
   /// [onShowProLockedHint]：Pro 门禁拦截按键后请求渲染「暂未解锁」提示胶囊
   ///（窗口为 312×84 隐藏直建，渲染首帧后本侧发 voiceMemoUiReady 揭示，
   /// Kotlin 3 秒后收窗），payload null
+  /// [onRelockNotes]：原生 ACTION_SCREEN_OFF（锁屏即重锁）→ 清会话快照并
+  /// 打码已展开的锁定卡片，payload null。会话本身（notes_unlock_until_ms）
+  /// 由原生广播直接清零，本回调只负责 UI 刷新
+  /// [onNoteUnlockResult]：认证结果回发（NoteUnlockCoordinator 完成），
+  /// payload {success: bool}
+  /// [onScreenAutoHide]：原生 ACTION_SCREEN_OFF（息屏自动隐藏，2026-09-22）→
+  /// 立即推进到驻留终态（贴边竖线/彻底移除），不等自动隐藏计时——亮屏/解锁
+  /// 后把手/面板不复活，payload null
   static void setupNativeChannel({
     required VoidCallback onExpand,
     required VoidCallback onReset,
-    required void Function(bool hiddenReveal) onStartVoiceMemo,
+    required void Function(bool hiddenReveal, bool ptt) onStartVoiceMemo,
     required VoidCallback onStopVoiceMemo,
     VoidCallback? onNewNote,
     VoidCallback? onShowProLockedHint,
+    VoidCallback? onRelockNotes,
+    void Function(bool success)? onNoteUnlockResult,
+    VoidCallback? onScreenAutoHide,
   }) {
     _channel.setMethodCallHandler((call) async {
       switch (call.method) {
@@ -66,17 +79,27 @@ class AccessibilityOverlay {
         case 'reset':
           onReset();
         case 'startVoiceMemo':
-          // Kotlin 携带 hiddenReveal 负载（map）；旧版本发 null 时按 false
-          // 兼容（把手在屏上路径语义：立即发 voiceMemoUiReady，Kotlin 非
+          // Kotlin 携带 hiddenReveal / ptt 负载（map）；旧版本发 null 时均按
+          // false 兼容（把手在屏上路径语义：立即发 voiceMemoUiReady，Kotlin 非
           // pendingVoiceMemoReveal 时收到是 no-op）
           final args = call.arguments;
-          onStartVoiceMemo(args is Map && args['hiddenReveal'] == true);
+          onStartVoiceMemo(
+            args is Map && args['hiddenReveal'] == true,
+            args is Map && args['ptt'] == true,
+          );
         case 'stopVoiceMemo':
           onStopVoiceMemo();
         case 'newNote':
           onNewNote?.call();
         case 'showProLockedHint':
           onShowProLockedHint?.call();
+        case 'relockNotes':
+          onRelockNotes?.call();
+        case 'noteUnlockResult':
+          final args = call.arguments;
+          onNoteUnlockResult?.call(args is Map && args['success'] == true);
+        case 'screenAutoHide':
+          onScreenAutoHide?.call();
       }
       return null;
     });
@@ -191,6 +214,16 @@ class AccessibilityOverlay {
     await _channel.invokeMethod('vibrateTick');
   }
 
+  /// 笔记解锁：发起系统认证（由原生 NoteUnlockCoordinator 拉起透明认证
+  /// Activity——锁屏中 requestDismissKeyguard 弹系统解锁界面，未锁屏弹
+  /// androidx.biometric 对话框）。invokeMethod 只等「是否成功拉起」；
+  /// 认证结果异步经 noteUnlockResult 事件回发（setupNativeChannel 的
+  /// onNoteUnlockResult）。返回 false = 已有认证在进行。
+  /// 调用方：OverlayHome._ensureNoteUnlocked（锁定卡片的内容级操作门禁）
+  static Future<bool> requestUnlockAuth() async {
+    return await _channel.invokeMethod('requestUnlockAuth') == true;
+  }
+
   // ── 把手长按拖动（收起态位置调整）──
   // 手势识别全在 Dart（widgets/overlay_handle.dart 长按 + 纵向位移），原生只负责
   // 移窗与落盘。窗口跟手移动后手指始终留在 28×88 窗口内，move 事件不丢
@@ -272,17 +305,20 @@ class AccessibilityOverlay {
 
   /// 写系统日历 + 按需设置 AlarmManager 精确响铃（与日记页写日历同一份
   /// 原生逻辑 CalendarEventHelper）。成功/失败反馈由原生侧 Toast 完成。
-  /// 返回 true = 事件写入成功。调用方：OverlayHome._onCardAlarm
-  static Future<bool> addCalendarEvent({
+  /// 返回结果码字符串："ok" = 写入成功；失败码（no_calendar_account /
+  /// permission_denied / write_failed / invalid_time）与
+  /// android CalendarEventHelper.kt 的 RESULT_* 常量互为跨端副本，改动须同步。
+  /// 调用方：OverlayHome._onCardAlarm
+  static Future<String> addCalendarEvent({
     required DateTime time,
     required String title,
     required bool enableAlarm,
   }) async {
-    final ok = await _channel.invokeMethod('addCalendarEvent', {
+    final code = await _channel.invokeMethod('addCalendarEvent', {
       'timestamp': time.millisecondsSinceEpoch,
       'title': title,
       'enableAlarm': enableAlarm,
     });
-    return ok == true;
+    return code is String ? code : 'write_failed';
   }
 }

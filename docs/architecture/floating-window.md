@@ -4,7 +4,7 @@
 
 ## 功能概述
 
-系统级悬浮窗（锤子"闪念胶囊"样式），收起态为贴屏幕停靠缘（右缘为默认，可在设置页切换左缘，见"停靠侧左右切换"小节）的竖长**药丸双色胶囊把手**（窗口 28×88dp，胶囊本体向内缩一圈 ≈24×80dp 视觉缩小、触控面积不变；上半白/下半绿中间一道接缝横线，外围 1dp 细白描边与笔记卡片同款，⚡ 图标 + 竖排"闪记"居上半/下半两区，整体静置稍透明，默认垂直居中，**长按后可上下拖动调整位置**，见"把手长按拖动"小节），点击或朝屏幕内侧滑动展开 300dp 宽侧栏面板（"随手记"日记列表）。
+系统级悬浮窗（锤子"闪念胶囊"样式），收起态为贴屏幕停靠缘（右缘为默认，可在设置页切换左缘，见"停靠侧左右切换"小节）的竖长**药丸双色胶囊把手**（窗口 28×88dp，胶囊本体向内缩一圈 ≈24×80dp 视觉缩小、触控面积不变；上半白/下半绿中间一道接缝横线，外围 1dp 细白描边与笔记卡片同款，⚡ 图标 + 竖排"闪记"居上半/下半两区，整体静置稍透明，默认垂直居中，**长按后可上下拖动调整位置**，见"把手长按拖动"小节；**视觉大小可在设置页三档调整（标准/小/迷你，迷你档只渲染闪电图标），竖线高度跟随缩**，见"把手大小档位"小节），点击或朝屏幕内侧滑动展开 300dp 宽侧栏面板（"随手记"日记列表）。
 
 基于 **TYPE_ACCESSIBILITY_OVERLAY** 窗口类型实现（不走 `SYSTEM_ALERT_WINDOW` 悬浮窗权限——该路径在小米/HyperOS 上被系统拦截），由无障碍服务 `VolumeKeyAccessibilityService` 创建窗口并承载独立 FlutterEngine 渲染。
 
@@ -37,6 +37,11 @@
 | （2026-09-17 本次提交） | 语音速记触感按真机反馈再调两处：①开始录音震感 heavy→click——小米 15 上 heavy 体感太轻，对齐日记页手动长按录音按钮的开始震感（主 App 快速录音 lockedMode 开始 `_haptic('heavy')` 同步改 click，Kotlin triggerVoiceMemoOverlay 同步 `performHaptic("click")`）；②转写成功震让位规则：手动停（停止按钮/音量键 toggle）且录音 <30s 跳过成功震——停止操作震刚响过、短录音转写快会贴脸干扰（`stop(manualStop:)` 区分手动/自动停，VAD 自动停与上限停恒震；判定抽静态纯函数 `shouldHapticOnTranscribeSuccess` + 常量 `voiceMemoSuccessHapticMinSeconds=30`，4 用例单测）；flutter analyze 0 error + 398 测试全过 + compileDebugKotlin 通过 |
 | （2026-09-17 本次提交） | 开始震感再升一档 click→tick + 删快速录音开机嗡（用户真机反馈：click 清脆仍偏弱，且音量键快速录音开始有「嗡+清脆」两下重叠）：①快速录音 lockedMode 开始与悬浮窗语音速记开始统一 `tick`（该机最重清脆档，实测体感 heavy<click<tick）；②删 triggerQuickRecord 的 vibrateOneShot(100,70)——本函数开始/录音中双击停录共用，嗡与 Dart 侧震感叠两下，删除后开始触感只剩 diary_tab 一记 tick、停止走 stopListening 既有 heavy（预设档位不可调强度参数，只能换档枚举——用户询问"清脆能否更强"的技术答案）；flutter analyze 0 error + 398 测试全过 + compileDebugKotlin 通过 |
 | （2026-09-17 本次提交） | 触感定版「开始嗡、停止清脆」（用户真机试 tick 开始后拍板改向）：①triggerQuickRecord 按 isRecording() 互斥桥分流——非录音中（开始）震 vibrateOneShot(50,50) 嗡（悬浮窗旧停止震同款 one-shot）、录音中（双击/长按 toggle 停录）震 performHaptic("tick") 清脆；②悬浮窗 triggerVoiceMemoOverlay 对调：开始改 50,50 嗡、toggle 停止改 tick；③悬浮窗停止按钮 heavy→tick 同档（overlay_voice_memo_bar，单测断言同步）；④删 diary_tab lockedMode 开始的 _haptic('tick')——触感收敛到按键侧一下防重叠（开始震移 Kotlin 即时反馈）；30s 成功震让位规则自动适配（短录音手动停=tick 一记）；主 App 音量键停止=Kotlin tick + stopListening 既有 heavy（轻，保留，复测嫌叠再删）；flutter analyze 0 error + 398 测试全过 + compileDebugKotlin 通过 |
+| （2026-09-22 本次提交） | 把手大小可调（三档，用户反馈"把手胶囊有点大"）：设置页悬浮窗二级页新增「把手大小」ChoiceChip 标准（100%，历史视觉）/ 小（75%）/ 迷你（50%，胶囊 12×40 放不下竖排文字、只渲染闪电图标 handleIconSizeMini=9），prefs `overlay_handle_size_percent`（int，非法值兜底 100）；**方案 A「只缩视觉不缩窗口」**——窗口恒 28×88（原生 HANDLE_WIDTH_DP 副本 + 语音胶囊 84<88 不变量 + dragHandle 宽守卫 + EDGE_LINE_WIDTH_THRESHOLD_DP=24 分流四者联动，真缩到一半宽 14<24 还会与竖线态撞车），胶囊本体=基准 24×80×档位、内缩派生 (2,4)/(5,14)/(8,24)，触控面积不变；竖线视觉高度跟随档位等比缩 64/48/32（用户定夺"把手变小竖线同步缩、只缩高"——宽 4dp 是可见性下限不缩），窗口 20×64 触摸缓冲区不动；读取方 _refreshSide/_scheduleAutoHide（跨 engine reload 惯例，下一次展开/收起状态转换生效，已显示中的把手不瞬变，同停靠侧心智）；Kotlin 零改动；新增 overlay_handle_size_test（纯函数三档派生 + widget 迷你档无文字/75% 档保留 8 例），flutter analyze 0 error + 564 测试全过；详见"把手大小档位"小节 |
+| （2026-09-22 本次提交） | 把手主题三套 + 文字仅标准档（真机复验反馈"小档文字很挤"）：①文字显示收窄为仅标准档——`handleShowsLabel(percent, theme)` = 标准档且非拟物主题（首版迷你档隐藏文字，复验 75% 档 18×60 竖排文字也挤，档位与主题正交）；②新增「把手主题」三选一（prefs `overlay_handle_theme` string=enum name 坏串兜底 duo）：双色药丸（默认历史视觉）/ 蓝紫（笔记卡片色系——上=卡片默认蓝 defaultCardColor #6F9AF0、下=灵感标注紫 #AE82E4，测试断言引用 defaultCardColor 钉死一致性）/ 拟物胶囊💊（白+珊瑚红 #E0524E 纯造型无图标无文字——中缝+左侧高光条+下半暗部渐变三层出立体感），渲染属性集中 HandleThemeVisuals extension；③_refreshSide 改名 _refreshOverlayConfig（现管停靠侧+大小+主题三项，4 调用点全在本文件私有零外部风险）；设置页选择器 avatar 用上下双色 16dp 小圆直接预览配色；Kotlin 零改动；新增 overlay_handle_theme_test 8 例，flutter analyze 0 error + 584 测试全过；详见"把手主题"小节 |
+| （2026-09-22 本次提交） | 息屏自动隐藏悬浮窗（AOD 防残留，用户反馈"录完音不管它，息屏后把手/竖线跟着息屏时钟一直杵在 AOD 上"）：复用锁屏即重锁的 ACTION_SCREEN_OFF receiver（IntentFilter 追加 ACTION_SCREEN_ON，同 receiver 兼管两态），SCREEN_OFF 时窗口 visibility=GONE、SCREEN_ON 恢复 VISIBLE + engine 手动 appIsResumed 兜底——ACTION_SCREEN_OFF 在息屏时刻即发出（AOD 属非交互态），「屏幕变黑」与「进入 AOD」都被覆盖，无需专门 AOD 检测 API；选 GONE 而非 hideOverlay 移窗：窗口/Dart engine/录音转写链路/自动隐藏计时全保留，亮屏各形态（把手/竖线/胶囊/面板）原样回归、Dart 全程无感知，且与 alpha（隐藏窗揭示期 0 / 认证让位 0.15）正交不泄露未揭示窗口；`overlayHiddenByScreenOff` 标志限定 SCREEN_ON 只撤销"因息屏而 GONE"的隐藏；录音中息屏录音不中断；Kotlin 单文件改动，Dart 零改动，compileDebugKotlin 通过 + flutter analyze 0 error + flutter test 全过；详见"息屏自动隐藏（AOD 防残留）"小节 |
+| （2026-09-22 本次提交） | 息屏收起到驻留终态（真机用后升级诉求"亮屏后把手/面板也不该恢复"→用户拍板语义「进 AOD 必须收」）：SCREEN_OFF 在 GONE 之外追加发 screenAutoHide（dartReady && !proHintActive 守卫）→ Dart OverlayHome._onScreenAutoHide 立即收起——竖线开关开 → _enterEdgeLine 缩成贴边竖线、关 → closeOverlay 彻底移除，此后亮屏/解锁只会看到竖线（或录音中的胶囊），把手/面板不复活；「永久」档息屏不生效（只管亮屏常驻）；跳终态不走 _collapse 推屏动画——息屏后窗口 GONE、vsync 停、AnimationController 不跑，等 dismissed 回调会卡到亮屏，黑屏下空白帧协议天然满足，_enterEdgeLine 的 awaitingResize 守卫照挂、亮屏后首个 build 由 _maybeAdvanceMetricsStage 解除竖线淡入；守卫：录音/转写中跳过（活动会话不打断）、编辑中先 _saveEdit（失败留编辑态不丢输入，同 _openDiaryPage 先例）、先作废挂起的自动隐藏 Timer；SCREEN_ON 恢复 VISIBLE 保留（竖线显示的前提）+ overlayHiddenByScreenOff 标志/appIsResumed 兜底不变；flutter analyze 0 error（142 info 含新增 2 处 print）+ 585 测试全过 + compileDebugKotlin 通过；详见"息屏自动隐藏（AOD 防残留，2026-09-22 两轮）"小节 |
+| （2026-09-22 本次提交） | 标注三色按钮上提时间行一级直出 + 时间格式改横杠（用户需求：标注在二级菜单操作太深，时间行右侧有空隙）：①展开卡时间文本后紧凑直出 ❗⭐💡 三按钮（`_buildInlineTagButton` 32×32 命中区相邻不加间距、选中白底圆 24+标注色图标 15，未选中白图标 17）——替代首版「底条标注入口 label_outline → 底行整行替换 ❗⭐💡✗」两步交互，二级菜单机制整体删除（`isTagPicking`/`onTagEntry`/`onTagPickCancel`/`_tagPickingIds` 及 6 处清理挂点，`_setDiaryTag` 去退出选择态分支）；②时间格式 `yyyy年M月d日 HH:mm` → `yyyy-MM-dd HH:mm`（省时间行横向空间给按钮组）；③时间行布局 Expanded(Text) → Text+按钮组+Spacer+chevron（按钮紧贴时间，空隙全给 chevron 前）；命中区 32=时间行高不撑高卡片（`_estimateExpandedHeight` timeRowH 条件补 onTagToggle）；Kotlin 零改动；flutter analyze 0 error + 585 测试全过（标注测试改写为时间行直出断言 + 新增横杠时间格式断言）；详见"卡片标注"小节 |
 
 ## 核心架构
 
@@ -100,7 +105,7 @@
 - 卡片（[overlay_diary_card.dart](../../lib/overlay/widgets/overlay_diary_card.dart)）：横向长纵向短胶囊，固定高 46dp 全圆角，白字单行左对齐（字号 15），间距 10dp，轻阴影；1dp 细白描边（`OverlayConstants.cardBorderWidth`，2026-09-04 对齐闪念原型"彩色胶囊+白描边+柔影"分层——原型采样的 3 层边缘像素是白边两侧抗锯齿混色非 3 条描边。⚠️ Border.all 计入 Container 有效内边距，宽度/高度估算三处已同步 ±2×border 补偿，收起态内层 minHeight 补偿维持总高=46 不变量）
 - **收起态内容纵向居中**（2026-09-02 贴顶回归修复）：靠收起分支 Row 外包 `ConstrainedBox(minHeight: cardHeight)` 撑满胶囊高度实现（Row 自身 crossAxisAlignment.center 居中）——外层 Switcher 的 Stack 锚点 topRight 只服务过渡动画的旧内容顶缘连续，不能让裸 Row 直接靠它定位（Row 比 Stack 矮会贴顶，a36800b 引入、真机反馈"胶囊变粗内容挤在顶部"）
 - **卡片宽度自适应**：`BoxConstraints(minWidth: 60, maxWidth: 面板宽-28)`——短内容短胶囊、超长省略号，左对齐排列
-- **固定默认色 + 标注换色**（2026-09-02 起，替代旧的 index % 6 轮换色板）：无标注活跃卡恒用 `OverlayConstants.defaultCardColor`（#6F9AF0）；标注后整卡换标注色（映射唯一真值在 [lib/utils/diary_tag.dart](../../lib/utils/diary_tag.dart) 的 `DiaryTag.colors`，主 App 日记页小色点共用）；已归档卡片不参与取色，固定灰 + 删除线（归档卡允许标注入库，恢复后显示标注色）。展开卡底部按钮条末尾为标注入口（`Icons.label_outline`），点击进入标注选择态后底行整行替换为「❗ ⭐ 💡 ✗返回」（对齐删除确认态的整行替换先例），详见"卡片标注"小节
+- **固定默认色 + 标注换色**（2026-09-02 起，替代旧的 index % 6 轮换色板）：无标注活跃卡恒用 `OverlayConstants.defaultCardColor`（#6F9AF0）；标注后整卡换标注色（映射唯一真值在 [lib/utils/diary_tag.dart](../../lib/utils/diary_tag.dart) 的 `DiaryTag.colors`，主 App 日记页小色点共用）；已归档卡片不参与取色，固定灰 + 删除线（归档卡允许标注入库，恢复后显示标注色）。标注三色按钮 2026-09-22 起一级直出展开卡时间行（时间文本后紧凑排列；首版底条入口→二级选择态的两步交互已删除），详见"卡片标注"小节
 - 头部按钮条（无标题，深色半透明工具条，见下）：新增笔记（+，插占位行进编辑态）/ 全部展开·收起（空列表不渲染）/ **打开随手记**（2026-09-13 起，`Icons.book` 与主 App 底部导航「随手记」同图标，见「跳回主 App 日记页」小节）/ 收起 chevron（指向停靠边缘）
 - **深色半透明工具条**（2026-09-13，[overlay_panel_header.dart](../../lib/overlay/widgets/overlay_panel_header.dart)）：此前四个按钮裸放透明面板上、图标色跟主题（ext.textHint），垫在白色背景的应用上看不清（用户实测反馈）。改为黑 72% 半透明底 + 白图标 + 朝屏内侧柔影——与录音胶囊/停止提示胶囊同视觉家族（白图标对黑 72% 底，垫纯白背景等效底 ≈#4a4a4a，对比度 ≈8:1，跨背景都可读），也是闪念原型「黑色半透明工具条」设计的正式落地。组件纯渲染：回调上抛、停靠侧镜像（贴停靠缘 Align / chevron 朝向 / 阴影方向）与条件渲染（空列表）由参数驱动；渲染契约锁在 `overlay_panel_header_test`（按钮渲染条件/回调接线/家族配色/两侧镜像 6 用例）
 - 日记列表区域限高约 10 张卡高度（`OverlayConstants.panelListMaxHeight`），超出部分区域内滚动查看全部记录（2026-09-02 起；原为 `maxVisibleDiaryCards` 条数硬截断只显示最新 10 条）
@@ -157,6 +162,20 @@
 - 时长 key `overlay_auto_hide_seconds`（默认 10，设置页 5/10/30s + 「永久」ChoiceChip，同音量键手势选择器的样式；「永久」写哨兵值 `OverlayConstants.autoHideNeverSeconds`（-1）进同一 key，`_scheduleAutoHide` 读到即 return 不起 Timer——收起态把手常驻，改回限时档后下次收起自然恢复计时）。**每次收起时 `await prefs.reload()` 再读**——主 engine 写、overlay engine 读，两个 isolate 的 prefs 内存缓存隔离，不 reload 读到旧值
 - 竞态防护：`_hideScheduleGeneration` 计数——reload 的 await 期间用户又展开/收起，generation 不一致则本次排定作废，避免"展开的面板被误关"
 
+### 息屏自动隐藏（AOD 防残留，2026-09-22 两轮）
+
+用户场景：录完音不管悬浮窗，手机息屏后把手/贴边竖线（竖线驻留开关默认开）仍显示在 **AOD 息屏时钟**画面上——`TYPE_ACCESSIBILITY_OVERLAY` 特权层在 AOD 上继续参与合成。
+
+**第一轮（GONE 暂藏）**：SCREEN_OFF 时窗口 `visibility=GONE`、SCREEN_ON 恢复。真机使用后用户升级诉求：亮屏后悬浮窗"恢复"出把手/面板也不想要——**第二轮定版语义「进 AOD 必须收」**：息屏瞬间即推进到驻留终态，此后亮屏/解锁都只会看到贴边竖线（开关开）或什么都没有（开关关），把手/面板不复活。
+
+- **检测 = `ACTION_SCREEN_OFF` 广播**，复用笔记锁定「锁屏即重锁」的同一个 receiver（`onServiceConnected` 注册，IntentFilter 追加 `ACTION_SCREEN_ON`；两 action 均为受保护系统广播，仅系统可发，registerReceiver 无需 export flag）——ACTION_SCREEN_OFF 在息屏时刻即发出，AOD 属非交互态，「屏幕变黑」与「进入 AOD」都被它覆盖，无需专门的 AOD/DOZE 检测 API（各 ROM 的 doze 监听不统一，也不必用）
+- **息屏动作两步**：①`visibility=GONE`（Kotlin `setOverlayGoneForScreen`，AOD 立即干净，录音/转写链路与自动隐藏计时不受影响——录音中息屏录音不中断）；②发 `screenAutoHide` 消息（`dartReady && !proHintActive` 守卫）→ Dart `OverlayHome._onScreenAutoHide` 立即收起到驻留终态——「隐藏后保留贴边竖线」开关开 → `_enterEdgeLine()`（缩成 20×64 线态驻留）、关 → `closeOverlay()` 彻底移除。**「永久」档（overlay_auto_hide_seconds=-1）在息屏场景不生效**——它只管亮屏期间常驻，息屏推进无条件（AOD 防残留是硬需求）
+- **为什么跳终态而不走 `_collapse` 推屏动画**：息屏后窗口 GONE、vsync 停、AnimationController 不跑，等 dismissed 边界回调会卡到亮屏才缩窗；黑屏期间无人在看，空白帧协议（防旧纹理重投影被用户看见）在 GONE 下天然满足。`_enterEdgeLine` 的 `awaitingResize` 守卫照挂——息屏期间 viewport metrics 可能不回调，亮屏后首个 build 由 `_maybeAdvanceMetricsStage` 解除，竖线淡入
+- **守卫**：录音/转写中跳过推进（活动会话不打断；黑屏期间窗口 GONE 不可见，录音结束后自然走既有自动隐藏链，亮屏恢复看到的是录音现场）；Pro 提示窗跳过（3 秒自收窗）；编辑中先 `_saveEdit()`（失败留在编辑态放弃收起，不丢输入，同 `_openDiaryPage` 先例）；息屏推进先作废挂起的自动隐藏 Timer（防遗留计时到期空转/串扰）
+- **亮屏 = `ACTION_SCREEN_ON` 恢复 VISIBLE**（`overlayHiddenByScreenOff` 标志只撤销"因息屏而 GONE"的隐藏 + engine 手动 `appIsResumed()` 同 `getOrCreateOverlayEngine` 复用分支先例防画面冻结）——恢复的只是竖线/录音现场，把手/面板在息屏瞬间已被收掉，不存在"复活"。悬浮窗在锁屏上可见是产品既有行为（「笔记锁定」小节威胁模型，有打码兜底）
+- **正交性**：visibility 与 alpha（隐藏窗揭示期 0 / 认证让位 0.15）是两个维度，恢复 VISIBLE 不会泄露 alpha=0 的未揭示窗口；窗口已移除（overlayView 空 = 悬浮窗本就彻底隐藏）时 no-op
+- 回归点：录完音不管 → 息屏（AOD 无残留）→ 亮屏锁屏页只有竖线 → 解锁主屏也只有竖线；展开面板态息屏同此；录音中息屏 → 亮屏录音/转写链路完整；竖线态息屏 → 亮屏竖线原样；贴边竖线开关关的用户息屏 → 亮屏什么都没有（音量键可重新召唤）
+
 ### 把手长按拖动（2026-09-09，收起态纵向位置调整）
 
 **分工**：手势识别全在 Dart（[overlay_handle.dart](../../lib/overlay/widgets/overlay_handle.dart)，从 overlay_home._buildHandle 抽出的 StatefulWidget），移动真值在原生窗口 LayoutParams——收起态窗口只有 28×88，Dart 拿不到也不该管窗口位置。
@@ -169,6 +188,43 @@
 - **交互细节**：拖动开始暂停自动隐藏计时（`_hideScheduleGeneration++`，否则计时到期会在指下缩成竖线）+ tick 震感；松手/取消恢复计时（`_scheduleAutoHide` 内部守卫挡掉录音/转写场景）；拖动态视觉 = 满不透明（静置态 0.93）+ 白描边加粗 1.5（静置态已常驻 1dp 卡片同款白描边，2026-09-13 起，拖动反馈改为"透明度回满 + 描边加粗"的差量；刻意不用放大——放大超出 28×88 窗口会被窗口边缘硬裁剪，同"无 boxShadow"决策）；点按展开与长按拖动由 Flutter 手势竞技场自然分流，互不影响
 - **⚠️ 框架坑：组件在手势中旬被移出树不回调 onLongPressCancel**（识别器随 GestureDetector 直接销毁，无 cancel 指针事件可达）——`_OverlayHandleState.dispose` 检查 `_dragging` 补发 onDragCancel（对应语音速记打断把手切胶囊 UI 的路径），父层走与松手对称的收尾
 - **⚠️ 框架坑：横向拖动竞技场接纳事件本身不产生 update 回调**——首个超 slop 的 move 只完成接纳，位移要等接纳之后的 move 事件才逐帧上报，"单事件超阈值"判定（左滑展开）只在接纳后的后续事件上生效（widget 测试探针验证；既有逻辑，迁移时保持行为不变，测试按多帧真实滑动编写）
+
+### 把手大小档位（2026-09-22，三档视觉缩放）
+
+用户反馈"把手胶囊有点大"可调。设置页悬浮窗二级页「把手大小」三档 ChoiceChip：**标准（100%，历史视觉）/ 小（75%）/ 迷你（50%）**，prefs `overlay_handle_size_percent`（int 百分比，非法值兜底 100，`parseHandleSizePercent` 唯一出口）。
+
+- **方案 A「只缩视觉不缩窗口」**：窗口恒 28×88，胶囊本体 = 基准 24×80 × 档位（100% → 24×80 / 75% → 18×60 / 50% → 12×40），内缩按（窗口−视觉）/2 派生。**为什么不真缩窗口**：原生 HANDLE_WIDTH_DP 硬编码副本（dragHandle 宽守卫）、语音胶囊 84<88 不变量（`overlay_home` build 按「窗口高 < 把手高」判 idle 帧渲染空白，把手窗高缩到 44 后判定反转、冷启动把手闪现复发）、Kotlin `EDGE_LINE_WIDTH_THRESHOLD_DP=24` 宽度分流（真缩到一半宽 14 < 24 与竖线态撞车，且竖线窗口宽 20 与最小把手宽 14 之间无分离区间）——三者联动，动窗口任一都破。触控面积不变反而是优点（把手越小越难点，命中区保住窗口整面积，同"视觉小命中大"哲学）
+- **文字显示规则（2026-09-22 两轮定夺）**：首版仅迷你档（50%，12×40 放不下文字）隐藏文字只渲染图标（`isMiniHandleSize` 判定，图标缩为 `handleIconSizeMini=9`）；真机复验「小」档（75%，18×60）竖排文字也太挤，收窄为**仅标准档显示文字**——`handleShowsLabel(percent, theme)` = 标准档（≥100）且非拟物主题。不显示文字的档位下半区留空、三段结构与中缝位置保持不变（视觉语言连续）
+- **竖线跟随缩高**：把手变小后竖线 64 高会反超把手（视觉层级颠倒），用户定夺同步缩、**只缩高不缩宽**——视觉高 = 64 × 档位（64/48/32），窗口 20×64 触摸缓冲区与宽 4dp（可见性下限，2026-09-14 渐变对比度专项基于此）都不动，视觉线在窗口内垂直居中
+- **生效时机**：同停靠侧——跨 engine 无推送通道，`_refreshOverlayConfig`（原 `_refreshSide`，现管停靠侧+大小+主题三项）/ `_scheduleAutoHide`（reload prefs）顺带读配置，悬浮窗下一次展开/收起状态转换生效，已显示中的把手不瞬变
+- **⚠️ 命中环坑（2026-09-22 真机反馈"缩小后点空隙唤不出"）**：GestureDetector 默认 `deferToChild`，命中区=有 decoration 的胶囊本体而非整窗——档位越小透明内缩环越宽（75% 档纵向空隙 14dp），用户点视觉胶囊附近的透明区全部落空，感知为"触发区变小/有空隙"（窗口 28×88 本身没变、Kotlin 零关系）。修复 `behavior: HitTestBehavior.opaque` 整窗命中（同 _buildEdgeLine 竖线窗口 20×64 整窗可点中的既有做法），兑现"触控面积不随档位缩"；历史 tap 测试点胶囊中心测不出此坑，回归用例改用胶囊外偏移 tapAt（overlay_handle_size_test）
+- **纯函数派生集中在 OverlayConstants**（`handleCapsuleWidth/Height`、`handleInsetXxxOf`、`edgeLineVisualHeight`、`isMiniHandleSize`、`handleShowsLabel`、`parseHandleSizePercent`、`parseHandleTheme`）：设置页与 overlay engine 共用唯一真值，不变量「视觉 + 2×内缩 = 窗口」有测试钉住
+
+### 把手主题（2026-09-22，三套皮肤）
+
+设置页悬浮窗二级页「把手主题」三选一，prefs `overlay_handle_theme`（string = enum name，坏串兜底 duo，`parseHandleTheme` 唯一出口）。大小档位与主题正交，渲染属性（色值/显隐）集中在 `HandleThemeVisuals` extension：
+
+- **双色药丸（duo，默认）**：历史视觉——上暖白 / 下绿，闪电图标取下半色落白半区呼应成对
+- **蓝紫（bluePurple）**：与悬浮窗笔记卡片色系一致——上 = 卡片默认蓝 `defaultCardColor`(#6F9AF0)、下 = 灵感标注紫(#AE82E4)；上下皆饱和彩色，图标文字用白色
+- **拟物胶囊💊（pill3d）**：白 + 珊瑚红(#E0524E) 立体药丸，纯造型**无图标无文字**（任何档位）——中缝分界 + 左侧高光条（白 0.65→0 竖渐变，`capsuleWidth×0.2` 宽）+ 下半暗部渐变（50% 起加深、上半白不受影响）三层叠出立体感
+- **色系一致的钉子**：bluePurple 色值测试直接断言 `defaultCardColor`——卡片默认色将来改动此处会红，提示同步决策把手是否跟随
+
+### 笔记锁定（2026-09-22，悬浮窗/锁屏防偷看）
+
+悬浮窗在锁屏上可见（`TYPE_ACCESSIBILITY_OVERLAY` 系统放行），锁屏页亮着时旁人不解锁手机就能看到笔记内容——笔记锁定功能的威胁模型即此。diary 加 `is_locked` 列（v15，用户手动锁定，免费功能无 Pro 门禁），主 App 与悬浮窗全链路打码 + 设备凭据认证后可看；完整数据层/主 App 侧设计见 @docs/architecture/database.md v15 行。
+
+**认证双路径**（`NoteUnlockCoordinator` + `NoteUnlockActivity`，主 App 与悬浮窗共用一条链路）：
+
+- **锁屏中**（`KeyguardManager.isKeyguardLocked`）：指纹/面部传感器由系统 Keyguard 持有，App 内 BiometricPrompt 会与锁屏抢传感器（秒失败/对话框被压在锁屏后）——改走 `requestDismissKeyguard` 弹系统解锁界面，用户指纹解锁手机即视为通过。副作用：看锁定笔记 = 顺手解锁手机，符合直觉可接受
+- **未锁屏**：androidx.biometric 标准对话框，`BIOMETRIC_WEAK | DEVICE_CREDENTIAL`（指纹/面部优先、锁屏密码兜底；无自设密码故无忘密码丢数据问题）。⚠️ androidx.biometric 1.1.0 的常量类是 `BiometricManager.Authenticators`（嵌套在 BiometricManager，**不是** `BiometricPrompt.Authenticators` 也不是独立 `androidx.biometric.auth` 包——后两者是 1.2.0+ 的 API，写成它们编译期 unresolved）
+- 承载 Activity 必须是 `FragmentActivity`（androidx.biometric 要求；MainActivity 是 FlutterActivity 不动它）+ AppCompat 透明主题（API<28 兼容对话框要求）。悬浮窗发起：overlay 通道 `requestUnlockAuth` → 服务 startActivity（NEW_TASK）；结果异步经 `notifyNoteUnlockResult` 回发对应 engine
+- **认证让位（2026-09-22 用户反馈）**：指纹弹窗是系统窗口（`TYPE_BIOMETRIC_PROMPT`），层级低于无障碍悬浮窗（特权层压在绝大多数窗口之上，第三方无法把系统弹窗提到悬浮窗之上）——`requestUnlockAuth` 拉起认证前把窗口整体降到 `OVERLAY_AUTH_DIM_ALPHA`=0.15 让位（用户定夺整体降透明而非只透下半；留 0.15 保隐约在场感，恢复无闪现），结果回发恢复 1f（先恢复透明度再回发，Dart 收到结果即 setState 展开卡片，窗口必须已可见）。拉起失败立即恢复；恢复分支跳过语音速记隐藏窗揭示期（alpha 归揭示机制管，提前置 1 会闪把手帧）；窗口已移除时 no-op（重建窗口 alpha 恒 1 不残留）
+
+**锁屏即重锁**：`onServiceConnected` 注册 ACTION_SCREEN_OFF receiver（服务常驻，MainActivity 的 receiver 在主 App 未启动时不存在；2026-09-22 起同一 receiver 兼管息屏自动隐藏悬浮窗，见「息屏自动隐藏（AOD 防残留）」小节）——直接清零 `flutter.notes_unlock_until_ms`（Flutter prefs putLong，⚠️ Dart setInt 落盘即 Long，Kotlin 读必须 getLong）+ `relockNotes` 事件通知悬浮窗 Dart 收起已展开的锁定卡。
+
+**解锁会话**（[note_unlock_session.dart](../../lib/utils/note_unlock_session.dart)）：认证成功后续期 5 分钟，主/悬浮窗两 engine 共享同一 prefs key（读写前 reload，DiarySyncBridge 同款纪律）。会话 ≠ 解除锁定：会话过期卡片重新打码但 is_locked 不动。两条入口语义不同（2026-09-22 用户反馈两步语义反直觉后定版）——**点锁按钮（解除锁定）→ 认证成功后直接解除该卡锁定**（意图 pendingUnlockReleaseId 异步消费，主/悬浮窗一致）；**点卡片本体查看 → 只开临时会话**，锁定标志不动、锁图标保持（与 Apple 备忘录「解锁查看后列表仍带锁图标」一致）。
+
+**悬浮窗打码范围**：收起态单行文本、展开态正文（`OverlayDiaryCard.lockedHidden`，明文一帧不进组件树）、播放行隐藏；宽度估算用打码文本（不泄露笔记长度）。门禁入口（`OverlayHome._ensureNoteUnlocked`）：展开/编辑/复制/AI 对话/播放/删除/闹钟（闹钟会读正文做时间解析）；划走归档放行、已归档划走（=删除）门禁；锁定/解锁按钮在卡片底条（`onLockToggle`）。认证前点开的卡记住意图，认证成功自动展开。
 
 ### 滑动展开的两档触感反馈（2026-09-13 首版，2026-09-14 真机对调）
 
@@ -492,15 +548,14 @@ overlay engine 是独立 isolate，持有**自己的** `RecognizerSingleton` 实
 | [lib/overlay/overlay_home.dart](../../lib/overlay/overlay_home.dart) | `_toggleAudioPlay` / `_stopAudioPlayback` + 三处停播挂点 + onPlayerComplete 订阅 + dispose 清理 |
 | [lib/overlay/overlay_constants.dart](../../lib/overlay/overlay_constants.dart) | `cardPlayButtonSize 30` / `cardPlayIconSize 20` / `cardPlayButtonHitSize 40` |
 
-## 卡片标注（标签换色，2026-09-02）
+## 卡片标注（标签换色，2026-09-02；2026-09-22 上提时间行一级直出）
 
-展开卡的底部按钮条末尾新增标注入口（`Icons.label_outline`），点击后底行整行替换为标注行「❗紧急 ⭐收藏 💡灵感 ✗返回」（对齐删除确认态「确认删除？✓✗」的整行替换先例；优先级：编辑态 > 删除确认态 > 标注选择态 > 查看态）。标注持久化到 diary 表 `tag` 列（TEXT 可空，DB v9→v10 新增），悬浮窗与主 App 共用同一数据库。
+展开卡**时间行**直出标注三色按钮（❗urgent / ⭐star / 💡idea，时间文本后紧凑排列，32×32 命中区相邻不加间距），点按即换色/取消，无二级菜单。首版（2026-09-02）为两步交互——底部按钮条标注入口（`Icons.label_outline`）→ 底行整行替换标注选择态「❗ ⭐ 💡 ✗返回」，2026-09-22 用户要求上提一级（时间行右侧原有空隙 + 时间格式改横杠省出的空间刚好放下），二级菜单机制（`isTagPicking`/`onTagEntry`/`onTagPickCancel`/`_tagPickingIds`）整体删除。标注持久化到 diary 表 `tag` 列（TEXT 可空，DB v9→v10 新增），悬浮窗与主 App 共用同一数据库。
 
 ### 交互与状态
 
-- **标注行**：❗=urgent / ⭐=star / 💡=idea + ✗返回；当前已标注的按钮加视觉强调（白底圆 + 图标换标注色，对齐 `_buildCheckbox` 勾选态视觉语言）；**点击已选中的 tag = 取消标注**（toggle 回默认色）
-- **父层状态**：`_tagPickingIds`（Set<int> 按 diary id 管理，与 `_deleteConfirmIds` 同生命周期模式）——进入编辑态 / 删除确认态 / 收起卡片 / 面板滑出完成 / reset 复位时顺带清理，防状态残留
-- **写库**：`OverlayHome._setDiaryTag(id, tag)` → `DbHelper.updateDiaryTag` → 内存列表按 id 局部更新（⚠️ sqflite 查询结果是只读 QueryRow，须 `{...row, 'tag': tag}` 物化替换）→ 退出选择态；不整表 reload
+- **时间行标注按钮**（`_buildInlineTagButton`）：当前已标注的按钮加视觉强调（白底圆 24 + 图标换标注色 15，未选中白图标 17，对齐 `_buildCheckbox` 勾选态视觉语言的缩小版）；**点击已选中的 tag = 取消标注**（toggle 回默认色）；命中区 32×32 = 时间行高（与收起 chevron 命中区 32 同高，不撑高时间行，`_estimateExpandedHeight` 的 timeRowH 分母不变）
+- **写库**：`OverlayHome._setDiaryTag(id, tag)` → `DbHelper.updateDiaryTag` → 内存列表按 id 局部更新（⚠️ sqflite 查询结果是只读 QueryRow，须 `{...row, 'tag': tag}` 物化替换）；不整表 reload
 - **归档卡**：允许标注（tag 正常入库），视觉仍固定灰色，恢复后显示标注色
 
 ### 取色规则（替代旧的 index % 6 轮换色板）
@@ -518,8 +573,8 @@ tag→颜色映射唯一真值在 [lib/utils/diary_tag.dart](../../lib/utils/dia
 | 文件 | 说明 |
 |---|---|
 | [lib/utils/diary_tag.dart](../../lib/utils/diary_tag.dart) | tag 常量 + `colors` 色映射 + `isValid` 校验（双 engine 共用） |
-| [lib/overlay/widgets/overlay_diary_card.dart](../../lib/overlay/widgets/overlay_diary_card.dart) | 取色逻辑 + `isTagPicking`/`onTagEntry`/`onTagToggle`/`onTagPickCancel` 参数 + `_buildTagPickRow` |
-| [lib/overlay/overlay_home.dart](../../lib/overlay/overlay_home.dart) | `_tagPickingIds` + `_setDiaryTag` + 各状态清理挂点 |
+| [lib/overlay/widgets/overlay_diary_card.dart](../../lib/overlay/widgets/overlay_diary_card.dart) | 取色逻辑 + `onTagToggle` 参数 + 时间行 `_buildInlineTagButton` |
+| [lib/overlay/overlay_home.dart](../../lib/overlay/overlay_home.dart) | `_setDiaryTag` |
 | [lib/db_helper.dart](../../lib/db_helper.dart) | diary.tag 列（v9→v10 迁移）+ `updateDiaryTag` |
 | [lib/diary_tab.dart](../../lib/diary_tab.dart) | 主 App 卡片 8dp 标注小色点（`_buildNormalCard` 时间行） |
 

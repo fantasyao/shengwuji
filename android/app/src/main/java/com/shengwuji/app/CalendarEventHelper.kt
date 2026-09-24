@@ -21,8 +21,22 @@ import java.util.TimeZone
  * - 必须查询有效 CALENDAR_ID（优先同步账户，其次本地账户）
  * - EVENT_TIMEZONE 必填；事件默认 30 分钟时长、非全天
  * - 不插 Reminders 表——响铃由 AlarmReceiver 控制，避免日历 App 弹自己的通知
+ *
+ * addCalendarEvent 返回 String 结果码而非 Boolean（2026-09-23）：摩托罗拉用户
+ * 反馈"添加提醒后日历里没有"，根因是系统日历 app 被卸载/停用后手机上没有任何
+ * 日历账户（本地"手机日历"账户由系统日历创建，Calendar Provider 无账户则写入
+ * 必失败），旧 Boolean 只能统一回"请检查日历权限"误导用户。码值与 Dart 侧
+ * lib/diary_tab.dart / lib/overlay/accessibility_overlay.dart 的字面量互为
+ * 硬编码副本，改动必须三处同步。
  */
 object CalendarEventHelper {
+
+    // 结果码（⚠️ 跨端副本：Dart 侧 diary_tab.dart 与 accessibility_overlay.dart 同名字面量）
+    const val RESULT_OK = "ok"
+    const val RESULT_INVALID_TIME = "invalid_time"
+    const val RESULT_NO_CALENDAR_ACCOUNT = "no_calendar_account"
+    const val RESULT_PERMISSION_DENIED = "permission_denied"
+    const val RESULT_WRITE_FAILED = "write_failed"
 
     /** 日历写权限是否已授予（读+写都需 granted；悬浮窗/主 App 通用检查） */
     fun hasCalendarPermission(context: Context): Boolean {
@@ -41,7 +55,7 @@ object CalendarEventHelper {
 
     /**
      * 写入系统日历事件，enableAlarm 时同时用 AlarmManager 设置精确闹钟
-     * （持续响铃，不依赖日历通知）
+     * （持续响铃，不依赖日历通知）。返回结果码（见 RESULT_* 常量）。
      *
      * 注意事项：
      * 1. 必须获取有效的 CALENDAR_ID（不能硬编码 1）
@@ -53,10 +67,10 @@ object CalendarEventHelper {
         timestamp: Long,
         title: String,
         enableAlarm: Boolean
-    ): Boolean {
+    ): String {
         if (timestamp <= 0L) {
             println("❌ [Calendar] 无效的时间戳: $timestamp")
-            return false
+            return RESULT_INVALID_TIME
         }
 
         try {
@@ -64,7 +78,7 @@ object CalendarEventHelper {
             val calendarId = getAvailableCalendarId(context)
             if (calendarId == null) {
                 println("❌ [Calendar] 未找到可用的日历账户")
-                return false
+                return RESULT_NO_CALENDAR_ACCOUNT
             }
             println("📅 [Calendar] 使用日历账户 ID: $calendarId")
 
@@ -87,14 +101,14 @@ object CalendarEventHelper {
             val eventUri = context.contentResolver.insert(CalendarContract.Events.CONTENT_URI, values)
             if (eventUri == null) {
                 println("❌ [Calendar] 插入日历事件失败（返回 null）")
-                return false
+                return RESULT_WRITE_FAILED
             }
 
             // 3. 从返回的 URI 中提取事件 ID
             val eventId = eventUri.lastPathSegment?.toLongOrNull()
             if (eventId == null) {
                 println("⚠️ [Calendar] 无法解析事件 ID，事件已创建但无法添加提醒")
-                return true // 事件已创建，只是无法添加提醒
+                return RESULT_OK // 事件已创建，只是无法添加提醒
             }
             println("📅 [Calendar] 事件创建成功, ID: $eventId")
 
@@ -107,14 +121,14 @@ object CalendarEventHelper {
                 println("📅 [Calendar] 响铃闹钟已跳过 (enableAlarm=false)")
             }
 
-            return true
+            return RESULT_OK
 
         } catch (e: SecurityException) {
             println("❌ [Calendar] 权限不足: ${e.message}")
-            return false
+            return RESULT_PERMISSION_DENIED
         } catch (e: Exception) {
             println("❌ [Calendar] 写入失败: ${e.message}")
-            return false
+            return RESULT_WRITE_FAILED
         }
     }
 

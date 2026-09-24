@@ -23,10 +23,10 @@
 | 方法与路径 | 说明 |
 |---|---|
 | `GET /` | 管理页（列表 / 播放 / 复制 / 编辑 / 删除 / SSE 实时刷新） |
-| `GET /api/notes` | 全量日记 JSON（活跃在前；**不暴露文件系统绝对路径**，录音只给 `audioUrl: /audio/{id}`） |
-| `PUT /api/notes/{id}` | 编辑内容，body `{"content": "..."}` |
-| `DELETE /api/notes/{id}` | 删除（连带删录音文件，与日记页删除语义一致） |
-| `GET /audio/{id}` | 录音流（支持 Range 206，进度条可拖动） |
+| `GET /api/notes` | 全量日记 JSON（活跃在前；**不暴露文件系统绝对路径**，录音只给 `audioUrl: /audio/{id}`；**锁定笔记 content 脱敏为固定星号、audioUrl 为 null**，带 `isLocked` 标记） |
+| `PUT /api/notes/{id}` | 编辑内容，body `{"content": "..."}`（**锁定笔记 403 拒绝**） |
+| `DELETE /api/notes/{id}` | 删除（连带删录音文件，与日记页删除语义一致；**锁定笔记 403 拒绝**） |
+| `GET /audio/{id}` | 录音流（支持 Range 206，进度条可拖动；**锁定笔记 403 拒绝**——录音内容与正文同属锁定范围） |
 | `GET /api/events` | SSE 事件流，数据变化推 `data: changed`，浏览器收到重拉列表 |
 | `GET /__identity` | 自家服务身份标记（端口接管探测用） |
 | `POST /__shutdown` | 关停服务（**仅接受 127.0.0.1 回环请求**，局域网设备调不通） |
@@ -123,3 +123,7 @@ sqflite；widget 测试也无法起 sqflite）。socket 走回环地址 + 临时
   `http://<手机IP>:9527` 访问不是安全上下文，`navigator.clipboard` 不存在，
   降级 `document.execCommand('copy')`（须在用户手势同步栈内执行，分支内不
   经 await）；localhost / HTTPS 下走标准 Clipboard API。
+- 2026-09-22：笔记锁定全链路脱敏（diary.is_locked v15）。锁定行 content
+  出网即脱敏为固定星号、audioUrl 置 null，PUT/DELETE 回 403，`/audio/{id}`
+  直构 URL 也 403（录音内容=笔记内容）——局域网是悬浮窗/锁屏之外的第三个
+  泄露面，锁定即三面同防；电脑端要编辑/收听先在手机上解除锁定。

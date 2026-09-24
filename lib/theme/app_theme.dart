@@ -117,7 +117,13 @@ class AppThemes {
       dangerAccent: Color(0xFFE57373),
       timeHighlight: Color(0xFF1976D2),
       timeHighlightBg: Color(0xFFBBDEFB),
-      splashBackground: Color(0xFF2C3E50),
+      // 2026-09-24 启动页重设计走方案 B「深海极光」（用户从配色预览中选定）：
+      // 深海三段渐变 #0D1B2E→#13253C→#16304A + 图标冷蓝辉光 rgba(94,158,220,0.35)，
+      // 搭配藏青版启动页图标（原薄荷绿渐变图标与藏青背景撞色）。
+      // splashBackground 降级为兜底纯色（渐变层之下/系统导航栏区域）+ 授权按钮文字色
+      splashBackground: Color(0xFF13253C),
+      splashGradient: [Color(0xFF0D1B2E), Color(0xFF13253C), Color(0xFF16304A)],
+      splashGlow: Color(0x5A5E9EDC),
       goldAccent: Color(0xFFD4A437),
       goldLight: Color(0xFFFFF8E7),
       goldBorder: Color(0xFFE6C158),

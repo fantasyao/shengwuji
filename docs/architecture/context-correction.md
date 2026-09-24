@@ -110,6 +110,11 @@ ContextLearner.split(...) 按"是否同音组"分流：
 隔离的目的：修正对是盲 `replaceAll`，若收录「质朴→智谱」会把
 "这个人很质朴"也改掉；上下文纠错按语境裁决，两者不能打架。
 
+管理页（`lib/widgets/correction_pairs_page.dart`）AppBar 有排序菜单：
+默认（错误片段长在前，与替换链路一致）/ 按命中次数 / 按最近命中时间
+（`compareCorrectionPairs` 纯内存重排，行内附最近命中时间；数据来自
+`getAllCorrectionPairs` 顺带映射的 created_at/last_used_at 列）。
+
 ## 修正对学习的取词：分词补全到完整词（2026-09-14 起）
 
 单字改错是高频操作（点光标改一个字就保存），学习钥匙取「错误字 ± 固定

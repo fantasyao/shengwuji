@@ -1,39 +1,124 @@
 import 'app_logger.dart';
+import 'dart:async';
 import 'dart:convert';
 import 'package:package_info_plus/package_info_plus.dart'; // 读取 build number 判断版本化说明卡片
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
+import 'package:uuid/uuid.dart';
 import 'package:path/path.dart';
 import 'correction/context_learner.dart';
 import 'correction/pair_context.dart';
+import 'utils/cloud_sync_data_version.dart'; // 云同步待同步检测：用户侧写库 bump 数据版本
 import 'utils/correction_learner.dart';
 
 class DbHelper {
   static Database? _db;
 
+  /// 库文件名。仅供测试改用独立文件名（多 isolate 并行跑 flutter test 时，
+  /// 各测试文件共用 items.db 会互相 deleteDatabase 打架——三个 db_*_test
+  /// 同跑时的偶发失败即此因）；生产代码不得读写此字段
+  static String dbFileName = 'items.db';
+
+  // 单飞打开：并发首开时共享同一个 Future，保证每个 isolate 只 openDatabase
+  // 一次。旧写法 `if (_db != null) return _db!` 拦不住并发（await initDb()
+  // 期间第二个调用方也会看到 _db == null 而再次 open，两条连接在升级窗口
+  // 打架）——真机 2026-09-21 覆盖安装后首启 database_closed 复现的根因之一
+  static Future<Database>? _opening;
+
   // 获取数据库实例
-  Future<Database> get db async {
-    if (_db != null) return _db!;
-    _db = await initDb();
-    return _db!;
+  Future<Database> get db {
+    final cached = _db;
+    if (cached != null) return Future.value(cached);
+    return _opening ??= _openDbOnce();
+  }
+
+  /// 首开（带瞬态重试）+ 打开成功后的数据修补。
+  /// 失败时清空 _opening，允许后续调用重新走一遍打开流程
+  Future<Database> _openDbOnce() async {
+    try {
+      final dbClient = await _openWithRetry();
+      _db = dbClient;
+      // v14 自愈：先核 schema 再回填。版本号不可信的原因见 _ensureSyncSchema
+      try {
+        await _ensureSyncSchema(dbClient);
+      } catch (e) {
+        log("[DbHelper] ⚠️ sync 表结构自愈失败（写入将不可用，重启重试）：$e");
+      }
+      // sync_uuid 回填在连接建立后做（幂等）：onCreate/onUpgrade 事务里只做
+      // DDL，把逐行生成 UUID 的 Dart 循环挪出升级事务——升级窗口缩到毫秒级，
+      // 回填失败也不阻塞使用（同步前 ensureSyncUuids / 下次启动会重试）
+      try {
+        final backfilled = await _backfillSyncUuids(dbClient);
+        if (backfilled > 0) {
+          log("[DbHelper] 首开后补生成 $backfilled 条 sync_uuid");
+        }
+      } catch (e) {
+        log("[DbHelper] sync_uuid 回填失败（下次启动/同步前重试）：$e");
+      }
+      return dbClient;
+    } catch (e) {
+      _opening = null;
+      rethrow;
+    }
+  }
+
+  /// v14 表结构自愈（幂等，正常库两次 PRAGMA 零开销）：
+  /// sqflite 原生侧的 user_version 写入发生在升级事务【之外】——升级中途
+  /// 被瞬态错误（覆盖安装撞旧进程文件锁）打断时，DDL 随事务回滚，但版本号
+  /// 已经写成 14，产出「user_version=14 但 sync_uuid 列缺失」的坏库。此后
+  /// onUpgrade 永远不再触发，所有带 sync_uuid 的写入全部失败（真机
+  /// 2026-09-21 复现：回填报 no such column、录音落库全丢）。版本号不可信，
+  /// 以实际表结构为准：缺列就地补齐
+  Future<void> _ensureSyncSchema(Database dbClient) async {
+    for (final table in const ['items', 'diary']) {
+      final cols = await dbClient.rawQuery('PRAGMA table_info($table)');
+      final hasUuid = cols.any((c) => c['name'] == 'sync_uuid');
+      if (!hasUuid) {
+        await dbClient.execute(
+          "ALTER TABLE $table ADD COLUMN sync_uuid TEXT",
+        );
+        log("[DbHelper] 🔧 自愈：$table 缺 sync_uuid 列（版本号被中断的升级污染），已补列");
+      }
+    }
+    await dbClient.execute(
+      "CREATE TABLE IF NOT EXISTS sync_deleted(uuid TEXT PRIMARY KEY, kind TEXT NOT NULL, deleted_at TEXT NOT NULL)",
+    );
+  }
+
+  /// 打开重试：覆盖安装后第一次启动，旧进程被杀到 SQLite 文件锁彻底释放
+  /// 有个短暂窗口，新进程立即 open 可能撞瞬态锁失败——首次打开失败的
+  /// 连接对象后续使用全是 database_closed（真机 2026-09-21 复现，杀后台
+  /// 重启即愈）。瞬态错误重试即愈：最多 3 次、间隔递增
+  Future<Database> _openWithRetry() async {
+    for (var attempt = 1;; attempt++) {
+      try {
+        return await initDb();
+      } catch (e) {
+        if (attempt >= 3) rethrow;
+        log("[DbHelper] 数据库打开失败（第 $attempt 次）：$e，${300 * attempt}ms 后重试");
+        await Future<void>.delayed(Duration(milliseconds: 300 * attempt));
+      }
+    }
   }
 
   // 初始化数据库
   initDb() async {
-    String path = join(await getDatabasesPath(), 'items.db');
-    // 版本升级：3->4 时长, 4->5 归档, 5->6 导出标记, 6->7 lists 表, 7->8 清单合并到日记, 8->9 dismissed_splits 表, 9->10 diary.tag 标注列, 10->11 correction_pairs 错误-修正表, 11->12 上下文纠错统计表, 12->13 修正对语境档案表
+    String path = join(await getDatabasesPath(), dbFileName);
+    // 版本升级：3->4 时长, 4->5 归档, 5->6 导出标记, 6->7 lists 表, 7->8 清单合并到日记, 8->9 dismissed_splits 表, 9->10 diary.tag 标注列, 10->11 correction_pairs 错误-修正表, 11->12 上下文纠错统计表, 12->13 修正对语境档案表, 13->14 云同步列（sync_uuid + 墓碑表）, 14->15 diary.is_locked 笔记锁定列
     return await openDatabase(
       path,
-      version: 13,
+      version: 15,
       onCreate: (db, version) async {
         // 创建物品表：id, name (物品), location (位置)
+        // sync_uuid：云同步全局唯一身份（本地自增 id 两台设备会撞，合并键必须用它）
         await db.execute(
-          "CREATE TABLE items(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, location TEXT)",
+          "CREATE TABLE items(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, location TEXT, sync_uuid TEXT)",
         );
         // 创建日记表，包含音频时长字段；tag = 标注（悬浮窗标注功能，
-        // 'urgent'/'star'/'idea'，NULL=无标注）
+        // 'urgent'/'star'/'idea'，NULL=无标注）；is_locked = 用户手动锁定的
+        // 笔记（防锁屏悬浮窗偷看：全链路打码 + 设备凭据认证后可看）
         await db.execute(
-          "CREATE TABLE diary(id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT, created_at TEXT, audio_path TEXT, duration INTEGER, is_archived INTEGER DEFAULT 0, exported_at TEXT, tag TEXT)",
+          "CREATE TABLE diary(id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT, created_at TEXT, audio_path TEXT, duration INTEGER, is_archived INTEGER DEFAULT 0, exported_at TEXT, tag TEXT, sync_uuid TEXT, is_locked INTEGER DEFAULT 0)",
         );
         // dismissed_splits 表：用户在日记页 ✕ 掉的物品转存内容（V9 新增）
         // 同一 content UNIQUE，避免重复入库
@@ -68,8 +153,17 @@ class DbHelper {
         await db.execute(
           "CREATE TABLE correction_pair_contexts(error_text TEXT NOT NULL, corrected_text TEXT NOT NULL, left_context TEXT NOT NULL DEFAULT '', right_context TEXT NOT NULL DEFAULT '', hit_count INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(error_text, corrected_text, left_context, right_context))",
         );
+        // sync_deleted 表：云同步删除墓碑（V14 新增）。
+        // 本地删除日记/物品时记下其 sync_uuid，云同步下载合并时 uuid 命中
+        // 墓碑的远端条目不再插回本地（防复活）。P1 删除不跨端传播，
+        // 墓碑只在本地生效
+        await db.execute(
+          "CREATE TABLE sync_deleted(uuid TEXT PRIMARY KEY, kind TEXT NOT NULL, deleted_at TEXT NOT NULL)",
+        );
         // 首次创建数据库时内置说明卡片（点击复制、长按编辑等 8 条功能引导）
         await _seedTutorialDiaries(db);
+        // 说明卡的 sync_uuid 不在这里补：升级事务里只做 DDL，
+        // 逐行回填统一在首开成功后执行（见 _openDbOnce）
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 4) {
@@ -198,8 +292,97 @@ class DbHelper {
             log("数据库迁移 v12→v13 失败（不阻止升级）：$e");
           }
         }
+        // 数据库升级：从版本13升级到版本14，云同步基础列——
+        // diary/items 加 sync_uuid（全局唯一身份，跨端合并键）+
+        // sync_deleted 墓碑表。⚠️ 事务里只做 DDL 不做逐行回填：回填的
+        // Dart 循环会拉长升级事务窗口（覆盖安装后首启撞锁 database_closed
+        // 的事故，见 _openWithRetry 注释），回填统一在首开成功后执行
+        if (oldVersion < 14) {
+          try {
+            await db.execute("ALTER TABLE items ADD COLUMN sync_uuid TEXT");
+            await db.execute("ALTER TABLE diary ADD COLUMN sync_uuid TEXT");
+            await db.execute(
+              "CREATE TABLE IF NOT EXISTS sync_deleted(uuid TEXT PRIMARY KEY, kind TEXT NOT NULL, deleted_at TEXT NOT NULL)",
+            );
+            log("数据库迁移 v13→v14：sync_uuid 列 + 墓碑表就绪（回填在首开后执行）");
+          } catch (e) {
+            log("数据库迁移 v13→v14 失败（不阻止升级）：$e");
+          }
+        }
+        // 数据库升级：从版本14升级到版本15，diary 表新增 is_locked 锁定列
+        //（笔记锁定功能：1=用户手动锁定，主 App/悬浮窗/局域网服务全链路
+        // 打码展示，设备凭据认证后才显示内容；存量行默认 0 无需回填）
+        if (oldVersion < 15) {
+          try {
+            await db.execute(
+              "ALTER TABLE diary ADD COLUMN is_locked INTEGER DEFAULT 0",
+            );
+            log("数据库迁移 v14→v15：diary 表已添加 is_locked 锁定列");
+          } catch (e) {
+            log("数据库迁移 v14→v15 失败（不阻止升级）：$e");
+          }
+        }
       },
     );
+  }
+
+  /// 为 sync_uuid 为 NULL 的行批量生成 UUID v4。
+  /// 迁移（v14）与云同步前（ensureSyncUuids）共用：说明卡等 batch.insert
+  /// 直插的行不带 uuid，靠这里兜底
+  Future<int> _backfillSyncUuids(Database db) async {
+    const uuidGen = Uuid();
+    int count = 0;
+    final batch = db.batch();
+    for (final table in const ['items', 'diary']) {
+      final rows = await db.query(
+        table,
+        columns: ['id'],
+        where: 'sync_uuid IS NULL',
+      );
+      for (final r in rows) {
+        batch.update(
+          table,
+          {'sync_uuid': uuidGen.v4()},
+          where: 'id = ?',
+          whereArgs: [r['id']],
+        );
+        count++;
+      }
+    }
+    await batch.commit(noResult: true);
+    return count;
+  }
+
+  /// 云同步开始前调用：补齐所有缺失的 sync_uuid，保证全量导出时每行都有
+  /// 合并身份
+  Future<void> ensureSyncUuids() async {
+    final dbClient = await db;
+    final n = await _backfillSyncUuids(dbClient);
+    if (n > 0) log("[DbHelper] 云同步前补生成 $n 条 sync_uuid");
+  }
+
+  /// 记录删除墓碑（uuid 已存在则刷新 deleted_at）
+  Future<void> _recordSyncTombstone(
+    DatabaseExecutor dbClient,
+    String uuid,
+    String kind,
+  ) async {
+    await dbClient.insert(
+      'sync_deleted',
+      {
+        'uuid': uuid,
+        'kind': kind,
+        'deleted_at': DateTime.now().toIso8601String(),
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  /// 全量墓碑 uuid 集合（云同步下载合并时过滤「本地删过的远端条目」）
+  Future<Set<String>> loadSyncTombstones() async {
+    final dbClient = await db;
+    final rows = await dbClient.query('sync_deleted', columns: ['uuid']);
+    return rows.map((r) => r['uuid'] as String).toSet();
   }
 
   // 内置说明卡片：首次创建数据库时调用，写入 8 条功能引导作为普通日记
@@ -342,7 +525,12 @@ class DbHelper {
   // 插入数据
   Future<void> insertItem(String name, String location) async {
     final dbClient = await db;
-    await dbClient.insert('items', {'name': name, 'location': location});
+    await dbClient.insert('items', {
+      'name': name,
+      'location': location,
+      'sync_uuid': const Uuid().v4(),
+    });
+    unawaited(CloudSyncDataVersion.bump()); // 本地有变更未上云，入口行提示用
     log("已保存: $name 在 $location");
   }
 
@@ -354,15 +542,30 @@ class DbHelper {
     final id = await dbClient.insert('items', {
       'name': name,
       'location': location,
+      'sync_uuid': const Uuid().v4(),
     });
+    unawaited(CloudSyncDataVersion.bump());
     log("📦 [DB] 已保存(id=$id): $name 在 $location");
     return id;
   }
 
-  /// 按 id 删除物品（搬家模式撤销用）
+  /// 按 id 删除物品（搬家模式撤销用）。
+  /// 删除前记墓碑：云同步时该 uuid 的远端条目不再拉回本地（防复活）
   Future<void> deleteItemById(int id) async {
     final dbClient = await db;
+    final rows = await dbClient.query(
+      'items',
+      columns: ['sync_uuid'],
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    final uuid = rows.isEmpty ? null : rows.first['sync_uuid'] as String?;
     await dbClient.delete('items', where: 'id = ?', whereArgs: [id]);
+    if (uuid != null) {
+      await _recordSyncTombstone(dbClient, uuid, 'items');
+    }
+    unawaited(CloudSyncDataVersion.bump());
     log("🗑️ [DB] 已撤销(id=$id)");
   }
 
@@ -419,8 +622,10 @@ class DbHelper {
       'created_at': now,
       'audio_path': audioPath,
       'duration': duration,
+      'sync_uuid': const Uuid().v4(),
     };
     final id = await dbClient.insert('diary', map);
+    unawaited(CloudSyncDataVersion.bump()); // 本地有变更未上云，入口行提示用
     log("日记已保存: $content, audio: $audioPath, duration: ${duration}秒");
     return id;
   }
@@ -461,43 +666,64 @@ class DbHelper {
     return rows.isEmpty ? null : rows.first;
   }
 
-  // 3. 删除某条日记
+  // 3. 删除某条日记。
+  // 删除前记墓碑：云同步时该 uuid 的远端条目不再拉回本地（防复活）。
+  // 所有删除入口（日记页左滑 / 悬浮窗 / 电脑访问服务 DELETE）都汇聚到这里
   Future<int> deleteDiary(int id) async {
     final dbClient = await db;
-    return await dbClient.delete('diary', where: 'id = ?', whereArgs: [id]);
+    final rows = await dbClient.query(
+      'diary',
+      columns: ['sync_uuid'],
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    final uuid = rows.isEmpty ? null : rows.first['sync_uuid'] as String?;
+    final count = await dbClient.delete('diary', where: 'id = ?', whereArgs: [id]);
+    if (uuid != null) {
+      await _recordSyncTombstone(dbClient, uuid, 'diary');
+    }
+    unawaited(CloudSyncDataVersion.bump()); // 本地有变更未上云，入口行提示用
+    return count;
   }
 
   // 归档日记（删除音频文件，标记归档状态）
   Future<int> archiveDiary(int id) async {
     final dbClient = await db;
-    return await dbClient.update(
+    final count = await dbClient.update(
       'diary',
       {'is_archived': 1},
       where: 'id = ?',
       whereArgs: [id],
     );
+    unawaited(CloudSyncDataVersion.bump()); // 归档位随同步载荷上云，算变更
+    return count;
   }
 
   // 恢复日记（将 is_archived 标记为 0）
   Future<int> restoreDiary(int id) async {
     final dbClient = await db;
-    return await dbClient.update(
+    final count = await dbClient.update(
       'diary',
       {'is_archived': 0},
       where: 'id = ?',
       whereArgs: [id],
     );
+    unawaited(CloudSyncDataVersion.bump());
+    return count;
   }
 
   // 4. 更新日记内容
   Future<int> updateDiary(int id, String content) async {
     final dbClient = await db;
-    return await dbClient.update(
+    final count = await dbClient.update(
       'diary',
       {'content': content},
       where: 'id = ?',
       whereArgs: [id],
     );
+    unawaited(CloudSyncDataVersion.bump());
+    return count;
   }
 
   // 5. 更新日记标注（悬浮窗标注功能）：tag 取值见 DiaryTag 常量
@@ -505,12 +731,30 @@ class DbHelper {
   // 调用方：OverlayHome._setDiaryTag（悬浮窗展开卡标注行）
   Future<int> updateDiaryTag(int id, String? tag) async {
     final dbClient = await db;
-    return await dbClient.update(
+    final count = await dbClient.update(
       'diary',
       {'tag': tag},
       where: 'id = ?',
       whereArgs: [id],
     );
+    unawaited(CloudSyncDataVersion.bump());
+    return count;
+  }
+
+  // 6. 设置/解除笔记锁定（is_locked 列）：主 App 与悬浮窗共用（两个 engine
+  // 直连同一库）。锁定后全链路打码 + 设备凭据认证可看（解锁「会话」与锁定
+  // 标志是两回事：会话过期卡片重新打码，但 is_locked 标志不动）。
+  // 调用方：DiaryTab._toggleDiaryLock / OverlayHome._toggleDiaryLock
+  Future<int> setDiaryLocked(int id, bool locked) async {
+    final dbClient = await db;
+    final count = await dbClient.update(
+      'diary',
+      {'is_locked': locked ? 1 : 0},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    unawaited(CloudSyncDataVersion.bump()); // 锁定位随同步载荷上云，算变更
+    return count;
   }
 
   // --- 批量操作方法（用于导入导出） ---
@@ -557,9 +801,12 @@ class DbHelper {
       batch.insert('items', {
         'name': item['name'],
         'location': item['location'],
+        // 备份 CSV 不带 uuid，导入行生成新身份（内容级去重在导入方做）
+        'sync_uuid': const Uuid().v4(),
       });
     }
     await batch.commit(noResult: true);
+    unawaited(CloudSyncDataVersion.bump()); // 导入=本地数据变更，入口行提示用
     log("批量插入 ${items.length} 条物品数据");
   }
 
@@ -575,18 +822,45 @@ class DbHelper {
         'duration': diary['duration'],
         // 标注列（v10 新增）：旧备份导入时解析结果为 null，落库即无标注
         'tag': diary['tag'],
+        // 归档位随备份走（2026-09 修复：此前 CSV 不含归档列，导入行走 DDL
+        // 默认 0，归档笔记恢复后全部复活成活跃）
+        'is_archived': diary['is_archived'] ?? 0,
+        // 备份 CSV 不带 uuid，导入行生成新身份（内容级去重在导入方做）
+        'sync_uuid': const Uuid().v4(),
       });
     }
     await batch.commit(noResult: true);
+    unawaited(CloudSyncDataVersion.bump());
     log("批量插入 ${diaries.length} 条日记数据");
   }
 
-  // 清空所有数据（用于导入前）
+  // 清空所有数据（用于导入前）。
+  // 清空前全量记墓碑：导入是"替换本地"语义，被清掉的行若曾云同步过，
+  // 下次同步不能从远端复活（备份导入的新行有自己的新 uuid，不受影响）
   Future<void> clearAllData() async {
     final dbClient = await db;
-    await dbClient.delete('items');
-    await dbClient.delete('diary');
-    log("已清空所有数据");
+    await dbClient.transaction((txn) async {
+      for (final kind in const ['items', 'diary']) {
+        final rows = await txn.query(
+          kind,
+          columns: ['sync_uuid'],
+          where: 'sync_uuid IS NOT NULL',
+        );
+        final now = DateTime.now().toIso8601String();
+        final batch = txn.batch();
+        for (final r in rows) {
+          batch.insert(
+            'sync_deleted',
+            {'uuid': r['sync_uuid'], 'kind': kind, 'deleted_at': now},
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        }
+        await batch.commit(noResult: true);
+        await txn.delete(kind);
+      }
+    });
+    unawaited(CloudSyncDataVersion.bump());
+    log("已清空所有数据（含同步墓碑记录）");
   }
 
   // ==================== dismissed_splits（日记页 ✕ 学习）====================
@@ -684,6 +958,7 @@ class DbHelper {
         [_kCorrectionPairsCap],
       );
     });
+    unawaited(CloudSyncDataVersion.bump()); // 修正对随同步上云，算变更
     log("[DbHelper] 已学习 ${deduped.length} 条修正对");
   }
 
@@ -696,7 +971,8 @@ class DbHelper {
   }
 
   /// 全量修正对（按错误片段长度降序、命中次数降序）。
-  /// 录入页物品/位置两个字段分别匹配时复用一次查询
+  /// 录入页物品/位置两个字段分别匹配时复用一次查询；
+  /// 顺带映射 created_at/last_used_at（query 本就取全列，管理页排序零额外 IO）
   Future<List<CorrectionPair>> getAllCorrectionPairs() async {
     final dbClient = await db;
     final rows = await dbClient.query(
@@ -709,6 +985,8 @@ class DbHelper {
             error: (r['error_text'] as String?) ?? '',
             correct: (r['corrected_text'] as String?) ?? '',
             hitCount: (r['hit_count'] as int?) ?? 1,
+            createdAt: r['created_at'] as String?,
+            lastUsedAt: r['last_used_at'] as String?,
           ),
         )
         .where((p) => p.error.isNotEmpty && p.error != p.correct)
@@ -721,6 +999,7 @@ class DbHelper {
     final dbClient = await db;
     await dbClient.delete('correction_pairs');
     await dbClient.delete('correction_pair_contexts');
+    unawaited(CloudSyncDataVersion.bump());
     log("[DbHelper] 已清空所有错误-修正对");
   }
 
@@ -739,6 +1018,7 @@ class DbHelper {
       where: 'error_text = ? AND corrected_text = ?',
       whereArgs: [error, correct],
     );
+    unawaited(CloudSyncDataVersion.bump());
     log("[DbHelper] 已删除修正对: $error → $correct");
     return count;
   }
@@ -923,5 +1203,149 @@ class DbHelper {
         if (((r['word'] as String?) ?? '').isNotEmpty)
           r['word'] as String: (r['frequency'] as int?) ?? 0,
     };
+  }
+
+  // ==================== 云同步（WebDAV，V14 新增）====================
+  // 合并策略与调用方见 docs/architecture/cloud-sync.md：
+  // 日记/物品按 sync_uuid 增量并集（编辑/删除 P1 不跨端），修正对按
+  // (error, corrected) 行级合并（hit_count 取大、last_used_at 取新）
+
+  /// 插入远端日记（云同步下载合并用）：sync_uuid 保留远端值保证跨端同一
+  /// 身份；去重（uuid / content+created_at / 墓碑）由同步服务层算好后只传
+  /// 待插行，这里 ConflictAlgorithm.ignore 兜底 uuid 撞车
+  Future<int> insertRemoteDiaries(List<Map<String, dynamic>> diaries) async {
+    if (diaries.isEmpty) return 0;
+    final dbClient = await db;
+    final batch = dbClient.batch();
+    for (final d in diaries) {
+      batch.insert('diary', {
+        'content': d['content'],
+        'created_at': d['created_at'],
+        // P1 不同步音频本体，远端落库 audio_path 置空（文件名留在云端
+        // JSON 里，P2 音频同步启用时回填）
+        'audio_path': null,
+        'duration': d['duration'],
+        'is_archived': d['is_archived'] ?? 0,
+        'is_locked': d['is_locked'] ?? 0,
+        'tag': d['tag'],
+        'sync_uuid': d['sync_uuid'],
+      }, conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+    await batch.commit(noResult: true);
+    log("[DbHelper] 云同步插入 ${diaries.length} 条远端日记");
+    return diaries.length;
+  }
+
+  /// 插入远端物品（云同步下载合并用，语义同 insertRemoteDiaries）
+  Future<int> insertRemoteItems(List<Map<String, dynamic>> items) async {
+    if (items.isEmpty) return 0;
+    final dbClient = await db;
+    final batch = dbClient.batch();
+    for (final i in items) {
+      batch.insert(
+        'items',
+        {
+          'name': i['name'],
+          'location': i['location'],
+          'sync_uuid': i['sync_uuid'],
+        },
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+    }
+    await batch.commit(noResult: true);
+    log("[DbHelper] 云同步插入 ${items.length} 条远端物品");
+    return items.length;
+  }
+
+  /// 云同步下载录音成功后按 sync_uuid 回填 audio_path（插入远端日记时
+  /// audio_path 置空，音频补齐后恢复可播放）。同步的附属恢复而非用户侧
+  /// 变更（audio basename 与云端 JSON 本就一致），不 bump 数据版本；
+  /// 行不存在（uuid 撞车没插进来的兜底失败）返回 0，调用方忽略即可
+  Future<int> updateDiaryAudioPathByUuid(String uuid, String audioPath) async {
+    if (uuid.isEmpty || audioPath.isEmpty) return 0;
+    final dbClient = await db;
+    return await dbClient.update(
+      'diary',
+      {'audio_path': audioPath},
+      where: 'sync_uuid = ?',
+      whereArgs: [uuid],
+    );
+  }
+
+  /// 修正对全量原始行（含 created_at/last_used_at，云同步合并裁决用；
+  /// getAllCorrectionPairs 只返回业务字段不够用）
+  Future<List<Map<String, dynamic>>> getAllCorrectionPairRows() async {
+    final dbClient = await db;
+    return await dbClient.query('correction_pairs');
+  }
+
+  /// 云同步修正对行级合并：按 (error_text, corrected_text) 对齐，
+  /// 已存在 → hit_count 取双方较大值、last_used_at 取较新（ISO 字符串
+  /// 字典序即时间序），任一字段变化才写库；不存在 → 整行插入。
+  /// 事务收尾沿用 500 条容量上限按 last_used_at 淘汰（同 learnCorrectionPairs）。
+  /// 返回发生写入的行数（新增+更新）
+  Future<int> mergeRemoteCorrectionPairs(
+    List<Map<String, dynamic>> remoteEntries,
+  ) async {
+    if (remoteEntries.isEmpty) return 0;
+    final dbClient = await db;
+    int changed = 0;
+    await dbClient.transaction((txn) async {
+      for (final e in remoteEntries) {
+        final error = (e['error_text'] as String?) ?? '';
+        final correct = (e['corrected_text'] as String?) ?? '';
+        if (error.isEmpty || error == correct) continue;
+        final remoteHit = (e['hit_count'] as int?) ?? 1;
+        final remoteLast = e['last_used_at'] as String?;
+        final rows = await txn.query(
+          'correction_pairs',
+          columns: ['id', 'hit_count', 'last_used_at'],
+          where: 'error_text = ? AND corrected_text = ?',
+          whereArgs: [error, correct],
+          limit: 1,
+        );
+        if (rows.isEmpty) {
+          await txn.insert('correction_pairs', {
+            'error_text': error,
+            'corrected_text': correct,
+            'hit_count': remoteHit,
+            'created_at': e['created_at'],
+            'last_used_at': remoteLast,
+          });
+          changed++;
+        } else {
+          final localHit = (rows.first['hit_count'] as int?) ?? 1;
+          final localLast = rows.first['last_used_at'] as String?;
+          final mergedHit = remoteHit > localHit ? remoteHit : localHit;
+          final mergedLast = _newerIso(remoteLast, localLast);
+          if (mergedHit != localHit || mergedLast != localLast) {
+            await txn.update(
+              'correction_pairs',
+              {'hit_count': mergedHit, 'last_used_at': mergedLast},
+              where: 'id = ?',
+              whereArgs: [rows.first['id']],
+            );
+            changed++;
+          }
+        }
+      }
+      // 容量控制：超出上限时淘汰最久未命中的行（与 learnCorrectionPairs 一致）
+      await txn.rawDelete(
+        'DELETE FROM correction_pairs WHERE id IN ('
+        'SELECT id FROM correction_pairs ORDER BY last_used_at DESC LIMIT -1 OFFSET ?)',
+        [_kCorrectionPairsCap],
+      );
+    });
+    if (changed > 0) {
+      log("[DbHelper] 云同步修正对合并写入 $changed 行");
+    }
+    return changed;
+  }
+
+  /// 两个 ISO8601 字符串取较新者（同格式字典序=时间序；null 视为最旧）
+  static String? _newerIso(String? a, String? b) {
+    if (a == null) return b;
+    if (b == null) return a;
+    return a.compareTo(b) >= 0 ? a : b;
   }
 }

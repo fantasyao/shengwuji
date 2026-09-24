@@ -20,6 +20,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:audioplayers/audioplayers.dart';
 import '../recognizer_singleton.dart';
 import '../widgets/blur_loading_overlay.dart';
+import '../widgets/hotword_promotion.dart'; // 反复命中的修正对追问升级热词
 import '../widgets/swipe_dismiss_card.dart';
 import '../widgets/checklist_widget.dart';
 import '../widgets/neu_widgets.dart';
@@ -43,6 +44,8 @@ import 'correction/context_corrector.dart';
 import 'correction/pair_context.dart';
 import '../utils/diary_tag.dart';
 import '../utils/diary_sync_bridge.dart';
+import '../utils/note_lock_auth.dart';
+import '../utils/note_unlock_session.dart';
 import '../utils/quick_record_exit_policy.dart';
 import '../utils/waveform_extractor.dart';
 import '../widgets/item_transfer_widget.dart';
@@ -297,6 +300,21 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
   bool _queryAnswerEnabled = true; // 日记智能查询"XX在哪儿" → 显示答案区
   bool _swapTapLongPress = false; // 日记卡片单击/长按交换开关（默认关闭=单击复制/长按编辑）
 
+  // ── 笔记锁定（diary.is_locked）──
+  // 解锁会话快照（NoteUnlockSession 的本页缓存）：true 时锁定卡显示明文。
+  // 刷新时机：refreshList（所有列表变更入口）/ App 恢复前台（锁屏重锁与
+  // 5 分钟过期都要在回前台时反映到打码）。写方还有 onNoteUnlockResult
+  //（认证成功）与 _toggleDiaryLock（主动锁定 = 结束会话立即打码）
+  bool _notesUnlocked = false;
+  // 认证请求在途（防连点重复拉起；Kotlin 侧 coordinator 也有同款防重兜底）
+  bool _unlockAuthInFlight = false;
+  // 用户点锁按钮（解除锁定）时的待执行意图：会话外先认证，认证成功后直接
+  // 解除该卡锁定（按钮 tooltip 承诺的就是"解除锁定"，一步到位——2026-09-22
+  // 用户反馈两步语义反直觉后改定）。点卡片本体查看不走此意图（只开临时
+  // 会话，锁定标志不动，与 Apple 备忘录"解锁查看后列表仍带锁图标"一致）。
+  // 清方：认证结果消费 / 认证失败 / 息屏重锁（resumed 时作废）
+  int? _pendingUnlockReleaseId;
+
   // SAF 持久化目录导出
   final PersistentUserDirAccessAndroid _safDir =
       PersistentUserDirAccessAndroid();
@@ -449,6 +467,11 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
     // 独立于 isReady：模型未就绪时也要刷新（键盘重试同款独立块模式）
     if (_wasInBackground && state == AppLifecycleState.resumed) {
       _syncDiaryChangesFromOverlay();
+      // 笔记锁定：回前台重读解锁会话（原生 SCREEN_OFF 已清零会话或 5 分钟
+      // 时效已过），锁定卡必须重新打码；跨息屏的"解除锁定"意图一并作废
+      //（重锁后旧意图不该在下次认证时误触发）
+      _pendingUnlockReleaseId = null;
+      _refreshUnlockSnapshot();
     }
 
     // 只在从后台恢复到前台时才预热（真正的后台恢复，而非通知栏操作）
@@ -823,6 +846,86 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
     }
   }
 
+  /// 重读解锁会话快照（与缓存量不一致才 setState，打码/明文随之切换）。
+  /// 调用方：didChangeAppLifecycleState.resumed / refreshList 之外的入口
+  Future<void> _refreshUnlockSnapshot() async {
+    final unlocked = await NoteUnlockSession.isUnlocked();
+    if (mounted && unlocked != _notesUnlocked) {
+      _updateState(() => _notesUnlocked = unlocked);
+    }
+  }
+
+  /// 该卡片当前是否应打码展示：用户手动锁定（is_locked=1）+ 会话外 + 非空内容
+  ///（占位行/空行无内容可锁，绝不被打码）。会话内（认证通过后 5 分钟内）
+  /// 全部锁定卡显示明文
+  bool _isLockedHidden(Map<String, dynamic> item) {
+    if (item['is_locked'] != 1) return false;
+    if (((item['content'] as String?) ?? '').trim().isEmpty) return false;
+    return !_notesUnlocked;
+  }
+
+  /// 锁定卡片的内容级操作门禁（查看/编辑/复制/AI/播放/删除共用）：
+  /// 会话内放行；会话外发起系统认证并返回 false——认证结果经
+  /// noteUnlockResult 异步回发（成功后 _notesUnlocked 翻 true，UI 自然放行）
+  Future<bool> _ensureNoteUnlocked() async {
+    if (_notesUnlocked) return true;
+    if (_unlockAuthInFlight) return false;
+    _unlockAuthInFlight = true;
+    try {
+      await NoteLockAuth.requestFromApp();
+    } finally {
+      _unlockAuthInFlight = false;
+    }
+    return false;
+  }
+
+  /// 原生认证结果回调（main.dart 转发 MainActivity noteUnlockResult 事件）。
+  /// 成功：续期会话 + 若有"解除锁定"意图则直接解除该卡锁定（点锁按钮发起的
+  /// 认证一步到位）；失败：无凭据场景原生已 Toast，其余（用户取消）静默
+  Future<void> onNoteUnlockResult(bool success, String reason) async {
+    if (!mounted) return;
+    log('🔒 [Diary] 笔记认证结果: success=$success reason=$reason');
+    if (!success) {
+      _pendingUnlockReleaseId = null;
+      return;
+    }
+    await NoteUnlockSession.extend();
+    final releaseId = _pendingUnlockReleaseId;
+    _pendingUnlockReleaseId = null;
+    if (releaseId != null) {
+      await widget.dbHelper.setDiaryLocked(releaseId, false);
+      DiarySyncBridge.bump();
+    }
+    // refreshList 会重读解锁会话（已 extend → true）+ 查库，打码与锁图标
+    // 一并刷新
+    await refreshList();
+  }
+
+  /// 锁定/解除锁定（卡片锁按钮）。锁定 = 结束当前解锁会话（立即整体打码）；
+  /// 解除锁定是内容级操作：会话外先认证，**认证成功后直接解除该卡锁定**
+  /// （按钮 tooltip 承诺"解除锁定"，一步到位；意图记 [_pendingUnlockReleaseId]，
+  /// 结果在 onNoteUnlockResult 消费）。会话内直接解除。
+  /// 点卡片本体查看是另一条路：只开临时会话不动锁定标志
+  Future<void> _toggleDiaryLock(Map<String, dynamic> item) async {
+    final id = item['id'] as int;
+    final locked = item['is_locked'] == 1;
+    _haptic('tick');
+    if (locked) {
+      if (!_notesUnlocked) {
+        _pendingUnlockReleaseId = id;
+        await _ensureNoteUnlocked();
+        return;
+      }
+      await widget.dbHelper.setDiaryLocked(id, false);
+    } else {
+      await widget.dbHelper.setDiaryLocked(id, true);
+      await NoteUnlockSession.revoke();
+      _notesUnlocked = false;
+    }
+    DiarySyncBridge.bump(); // 悬浮窗感知锁定标志变化（跨 engine 计数桥）
+    refreshList();
+  }
+
   /// 重新查库并刷新列表。
   ///
   /// [clearParseCaches]：是否清空四个懒加载解析缓存（时间实体/查询答案/
@@ -831,6 +934,9 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
   /// - 数据增删改后的刷新（录音完成/编辑/删除/悬浮窗同步等）→ true（默认）
   /// - 纯过滤性刷新（搜索）→ false：清了只会让所有可见卡片重新解析 + 重读音频
   Future<void> refreshList({bool clearParseCaches = true}) async {
+    // 笔记锁定：每次列表刷新同步重读解锁会话（认证成功/会话过期/锁屏重锁
+    // 后的刷新都经此入口，打码分支随快照切换）
+    _notesUnlocked = await NoteUnlockSession.isUnlocked();
     final data = await widget.dbHelper.getDiaries(
       keyword: _searchController.text,
     );
@@ -1354,21 +1460,30 @@ $content
 
       final channel = const MethodChannel('com.shengwuji.app/app');
       try {
-        final success = await channel.invokeMethod('addCalendarEvent', {
+        // 返回结果码字符串（与 android CalendarEventHelper.kt 的 RESULT_*
+        // 常量互为跨端副本）：ok / no_calendar_account / permission_denied /
+        // write_failed / invalid_time。no_calendar_account 常见于系统日历
+        // app 被卸载/停用（本地日历账户由系统日历创建）——摩托罗拉用户实测场景
+        final code = await channel.invokeMethod('addCalendarEvent', {
           'timestamp': targetTime.millisecondsSinceEpoch,
           'title': actionContent,
           'enableAlarm': enableAlarm,
         });
+        final ok = code == 'ok';
 
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text(
-                success == true
+                ok
                     ? (enableAlarm ? '日程已成功添加到系统日历' : '日程已添加到系统日历（无响铃）')
-                    : '添加日历事件失败，请检查日历权限',
+                    : code == 'no_calendar_account'
+                        ? '手机上没有可用的日历，请检查系统日历应用是否被卸载或停用'
+                        : code == 'permission_denied'
+                            ? '添加日历事件失败，请检查日历权限'
+                            : '添加日历事件失败',
               ),
-              backgroundColor: success == true
+              backgroundColor: ok
                   ? AppThemeExtension.of(context).positiveText
                   : AppThemeExtension.of(context).dangerAccent,
               duration: Duration(seconds: 3),
@@ -2101,8 +2216,10 @@ $content
           DiarySyncBridge.bump();
         }
       }
-      // 「错误-修正」命中检测：识别文本里有学过的错误片段 → 提示一键修正
-      await _offerCorrectionFix(savedId, text);
+      // 「错误-修正」命中检测：识别文本里有学过的错误片段 → 提示一键修正；
+      // 修正对没提示时，音素热词相似命中兜底提示
+      final offered = await _offerCorrectionFix(savedId, text);
+      if (!offered) await _offerPhonemeSimilarFix(savedId, text);
       // 震动移到外部处理，避免阻塞动画
     }
   }
@@ -2123,15 +2240,16 @@ $content
   /// 询问是否一键修正（提示制不动原文，用户点「一键修正」才替换）。
   /// 采纳时顺带把命中对 hit_count+1，强化学习计数。
   /// 语境门控：有语境档案的对只在邻接字符吻合的语境下提示，
-  /// 无档案的对照旧字面命中就提示
-  Future<void> _offerCorrectionFix(int diaryId, String text) async {
+  /// 无档案的对照旧字面命中就提示。
+  /// 返回是否弹了提示（音素相似提示只在它没弹时兜底，避免互相顶掉）
+  Future<bool> _offerCorrectionFix(int diaryId, String text) async {
     try {
       // 同音组内的修正对（质朴→智谱）不提示：交给上下文纠错按语境处理，
       // 盲替换提示会把「这个人很质朴」也建议改成「智谱」
       final allMatches = (await widget.dbHelper.matchCorrectionPairs(text))
           .where((p) => !ContextCorrector.instance.isHomophonePair(p))
           .toList();
-      if (allMatches.isEmpty || !mounted) return;
+      if (allMatches.isEmpty || !mounted) return false;
       final contexts = PairContextGate.groupByPair(
         await widget.dbHelper.getAllPairContexts(),
       );
@@ -2144,11 +2262,11 @@ $content
             ),
           )
           .toList();
-      if (matches.isEmpty || !mounted) return;
+      if (matches.isEmpty || !mounted) return false;
       // 替换用全集（长钥匙先应用，短核兜底残余位置）；
       // 文案展示折叠短核后的长钥匙，"等 N 处"计数不虚高
       final fixed = CorrectionLearner.applyCorrections(text, matches);
-      if (fixed == text || !mounted) return;
+      if (fixed == text || !mounted) return false;
       final visible = CorrectionLearner.dedupeSubsumed(matches);
       final first = visible.first;
       final extraCount = visible.length - 1;
@@ -2169,8 +2287,17 @@ $content
               DiarySyncBridge.bump();
               await refreshList();
               AppLogger.appLog('✅ [Diary] 一键修正已应用: ${matches.join('、')}');
+              // 反复命中的修正对提议升级为音素热词（发音近似也自动替换）
+              if (mounted) {
+                await maybePromptHotwordPromotion(
+                  context,
+                  matches: matches,
+                  processor: widget.processor,
+                );
+              }
             },
           ),
+          persist: false, // ⚠️ Flutter 的 SnackBar 带 action 时 persist 默认 true=永不超时消失，必须显式关
           duration: const Duration(seconds: 6),
           behavior: SnackBarBehavior.floating,
           backgroundColor: ext.primaryDark,
@@ -2179,10 +2306,50 @@ $content
           ),
         ),
       );
+      return true;
     } catch (e) {
       // 命中检测失败不影响识别保存主流程
       log('修正提示失败: $e');
+      return false;
     }
+  }
+
+  /// 音素热词相似命中提示：识别文本里有发音接近热词的片段（未达替换阈值，
+  /// 或单字短热词被保险丝拦下）→ 弹一键替换。修正对没提示时才兜底弹出，
+  /// 避免两条 SnackBar 互相顶掉。
+  Future<void> _offerPhonemeSimilarFix(int diaryId, String text) async {
+    final similars = widget.processor.lastPhonemeSimilars;
+    if (similars.isEmpty || !mounted) return;
+    final first = similars.first;
+    final fixed = text.replaceAll(first.original, first.hotword);
+    if (fixed == text || !mounted) return;
+    final ext = AppThemeExtension.of(context);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          '「${first.original}」听起来像热词「${first.hotword}」'
+          '（相似 ${(first.score * 100).toStringAsFixed(0)}%），要替换吗？',
+        ),
+        action: SnackBarAction(
+          label: '一键替换',
+          onPressed: () async {
+            await widget.dbHelper.updateDiary(diaryId, fixed);
+            DiarySyncBridge.bump();
+            await refreshList();
+            AppLogger.appLog(
+              '✅ [Diary] 音素相似替换已应用: $first',
+            );
+          },
+        ),
+        persist: false, // ⚠️ Flutter 的 SnackBar 带 action 时 persist 默认 true=永不超时消失，必须显式关
+        duration: const Duration(seconds: 3), // 用户要求：相似提示 3 秒即消失（原 6 秒）
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: ext.primaryDark,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10),
+        ),
+      ),
+    );
   }
 
   // --- 辅助工具 ---
@@ -2544,10 +2711,12 @@ $content
     // 2. 震动反馈（中等强度）
     _haptic('tick');
 
-    // 3. 读取用户选择的 AI 应用
+    // 3. 读取用户选择的 AI 应用（内置优先，未命中查自定义列表——
+    //    二级页 + 号添加的任意应用；查无（被移除/脏 prefs）回落默认）
     final prefs = await SharedPreferences.getInstance();
     final appId = prefs.getString('selected_ai_app') ?? 'chatgpt';
-    final selectedApp = AIApp.findById(appId) ?? AIApp.defaultApp;
+    final selectedApp =
+        await AIApp.resolveAppById(appId) ?? AIApp.defaultApp;
 
     // 4. 根据平台和应用类型使用不同的启动方式
     if (Platform.isAndroid) {
@@ -2574,8 +2743,8 @@ $content
             _showLaunchErrorHint(selectedApp.name);
           }
         }
-      } else {
-        // 其他应用：使用包名直接启动
+      } else if (selectedApp.packageName.isNotEmpty) {
+        // 有包名（内置 AI 与自定义应用）：使用包名直接启动
         try {
           await LaunchApp.openApp(
             androidPackageName: selectedApp.packageName,
@@ -2590,14 +2759,29 @@ $content
             _showLaunchErrorHint(selectedApp.name);
           }
         }
+      } else {
+        // 防御分支：无包名（不应出现），走 scheme → web URL
+        await _launchBySchemeOrWeb(selectedApp);
       }
     } else {
-      // iOS 或其他平台: 使用 URL scheme 或 web URL
-      bool launched = false;
+      // iOS 或其他平台: 使用 URL scheme 或 web URL（自定义应用无 scheme/url，提示失败）
+      if (selectedApp.scheme.isEmpty && selectedApp.url.isEmpty) {
+        if (mounted) {
+          _showLaunchErrorHint(selectedApp.name);
+        }
+        return;
+      }
+      await _launchBySchemeOrWeb(selectedApp);
+    }
+  }
 
-      // 先尝试 scheme
+  /// scheme 优先、web URL 兜底的外部启动（iOS 平台 / 无包名的防御分支共用）；
+  /// 空串会令 Uri.parse 抛 FormatException，逐段空守卫
+  Future<void> _launchBySchemeOrWeb(AIApp app) async {
+    bool launched = false;
+    if (app.scheme.isNotEmpty) {
       try {
-        final schemeUri = Uri.parse(selectedApp.scheme);
+        final schemeUri = Uri.parse(app.scheme);
         if (await canLaunchUrl(schemeUri)) {
           final success = await launchUrl(
             schemeUri,
@@ -2605,35 +2789,35 @@ $content
           );
           if (success) {
             launched = true;
-            log("✅ 成功启动 ${selectedApp.name} (scheme): ${selectedApp.scheme}");
+            log("✅ 成功启动 ${app.name} (scheme): ${app.scheme}");
           }
         }
       } catch (e) {
         log("⚠️ Scheme 启动失败: $e");
       }
-
-      // 失败则尝试 web URL
-      if (!launched) {
-        try {
-          final webUri = Uri.parse(selectedApp.url);
-          final success = await launchUrl(
-            webUri,
-            mode: LaunchMode.externalApplication,
-          );
-          if (success) {
-            log("✅ 成功启动 ${selectedApp.name} (web): ${selectedApp.url}");
-          } else {
-            if (mounted) {
-              _showLaunchErrorHint(selectedApp.name);
-            }
-          }
-        } catch (e) {
-          log("⚠️ Web URL 启动失败: $e");
+    }
+    if (!launched && app.url.isNotEmpty) {
+      try {
+        final webUri = Uri.parse(app.url);
+        final success = await launchUrl(
+          webUri,
+          mode: LaunchMode.externalApplication,
+        );
+        if (success) {
+          log("✅ 成功启动 ${app.name} (web): ${app.url}");
+        } else {
           if (mounted) {
-            _showLaunchErrorHint(selectedApp.name);
+            _showLaunchErrorHint(app.name);
           }
         }
+      } catch (e) {
+        log("⚠️ Web URL 启动失败: $e");
+        if (mounted) {
+          _showLaunchErrorHint(app.name);
+        }
       }
+    } else if (!launched && app.url.isEmpty && mounted) {
+      _showLaunchErrorHint(app.name);
     }
   }
 
@@ -2905,12 +3089,18 @@ $content
     // 获取日记ID和内容
     final diaryId = item['id'] as int;
     final content = item['content'] as String;
+    // 笔记锁定：锁定且会话外 → 正文打码、解析触发跳过（时间实体/查询答案/
+    // 物品转存的命中结果会显示内容片段，打码状态下绝不能触发）；
+    // 波纹提取顺带跳过（音频同属锁定内容，播放入口已隐藏）
+    final lockedHidden = _isLockedHidden(item);
     // 标注小色点（悬浮窗标注的 tag 落库在 diary.tag 列；主 App 只显示
     // 8dp 色点标记不改卡片背景，色映射与悬浮窗共用 DiaryTag.colors）
     final tagColor = DiaryTag.colorOf(item['tag'] as String?);
 
-    // 首次显示时触发时间实体解析
-    if (!_timeEntitiesCache.containsKey(diaryId) &&
+    // 首次显示时触发时间实体解析（打码卡跳过：解析缓存里的时间实体会在
+    // 解锁后渲染高亮，且解析本身会把内容片段带进缓存）
+    if (!lockedHidden &&
+        !_timeEntitiesCache.containsKey(diaryId) &&
         !_parsingDiaryIds.contains(diaryId)) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _parseTimeEntities(diaryId, content);
@@ -2919,7 +3109,8 @@ $content
 
     // 首次显示时触发查询答案解析（与时间实体同模式：懒加载 + 防重复）
     // 开关关闭时跳过调度（_parseQueryAnswer 入口也有守卫，这里省一次 addPostFrameCallback）
-    if (_queryAnswerEnabled &&
+    if (!lockedHidden &&
+        _queryAnswerEnabled &&
         !_queryAnswerCache.containsKey(diaryId) &&
         !_queryingDiaryIds.contains(diaryId)) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -2928,7 +3119,8 @@ $content
     }
     // 物品转存检测（与查询答案检测并列触发）
     // 开关关闭时跳过调度（_parseItemSplit 入口也有守卫，这里省一次 addPostFrameCallback）
-    if (_itemTransferEnabled &&
+    if (!lockedHidden &&
+        _itemTransferEnabled &&
         !_itemSplitCache.containsKey(diaryId) &&
         !_parsingItemSplitIds.contains(diaryId)) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -2937,7 +3129,8 @@ $content
     }
     // 响度波纹提取（与上述缓存并列触发，仅对有 audio_path 的卡片有意义）
     final audioPathForPeaks = item['audio_path'] as String?;
-    if (audioPathForPeaks != null &&
+    if (!lockedHidden &&
+        audioPathForPeaks != null &&
         audioPathForPeaks.isNotEmpty &&
         !_peaksCache.containsKey(diaryId) &&
         !_parsingPeaksIds.contains(diaryId)) {
@@ -2987,9 +3180,29 @@ $content
             ],
           ),
         ),
+        // 笔记锁定打码（优先级最高：锁定内容绝不进清单/时间高亮/普通文本分支）
+        if (lockedHidden)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Row(
+              children: [
+                Icon(Icons.lock, size: 15, color: ext.textHint),
+                const SizedBox(width: 8),
+                Text(
+                  kLockedMaskText,
+                  style: TextStyle(
+                    fontSize: 16,
+                    height: 1.6,
+                    color: ext.textHint,
+                    letterSpacing: 2,
+                  ),
+                ),
+              ],
+            ),
+          )
         // 占位日记（content='' && audio_path 文件存在）：转写未完成状态
         // 优先级高于清单/文本渲染，避免空 content 走 Text 分支显示空文本
-        if (_isPlaceholder(item))
+        else if (_isPlaceholder(item))
           Padding(
             padding: const EdgeInsets.only(bottom: 4),
             child: Row(
@@ -3075,7 +3288,8 @@ $content
           children: [
             // 左侧：播放/暂停 + 进度条 + 响度波纹（取代原圆形大按钮）
             // 仅对有 audio_path 且未归档的卡片渲染；否则用 Spacer 占位保持右对齐
-            if (item['audio_path'] != null && !isArchived)
+            // 锁定打码卡不渲染（录音内容与正文同属锁定范围，入口一并隐藏）
+            if (item['audio_path'] != null && !isArchived && !lockedHidden)
               Expanded(
                 child: ValueListenableBuilder<PlaybackState>(
                   valueListenable: _playbackNotifier,
@@ -3103,9 +3317,10 @@ $content
             else
               const Spacer(),
             // 重试按钮：任何有 audio_path 且文件存在的日记都显示
-            // （占位日记 + 已识别/识别失败的日记都可重新转写，覆盖当前 content）
+            // （占位日记 + 已识别/识别失败的日记都可重新转写，覆盖当前内容）
             // 转写中变灰禁用（文字区已有"正在转写…"提示，按钮不再转圈，保持 40×40 占位）
-            if (_hasAudioFile(item)) ...[
+            // 锁定打码卡不渲染（重试会读录音重写正文，属内容级操作）
+            if (_hasAudioFile(item) && !lockedHidden) ...[
               const SizedBox(width: 8),
               SizedBox(
                 width: 40,
@@ -3136,7 +3351,10 @@ $content
               ),
             ],
             // AI 应用分享按钮：占位（空 content）和已归档不渲染（避免分享空文本到 AI）
-            if ((item['content'] as String).isNotEmpty && !isArchived) ...[
+            // 锁定打码卡不渲染（AI 分享即内容出网）
+            if ((item['content'] as String).isNotEmpty &&
+                !isArchived &&
+                !lockedHidden) ...[
               const SizedBox(width: 8),
               SizedBox(
                 width: 40,
@@ -3165,6 +3383,28 @@ $content
                   icon: Icon(Icons.unarchive, color: ext.primary),
                   tooltip: "恢复日记",
                   onPressed: () => _restoreItem(item['id']),
+                ),
+              ),
+            ],
+            // 锁定开关：非空内容卡都显示（占位行不可锁）。锁定态高亮锁图标；
+            // 解除锁定是内容级操作（会话外点击先认证），锁定 = 结束解锁会话
+            // 立即整体打码。会话内锁定卡可正常查看，锁图标提示该卡已锁定
+            if ((item['content'] as String).isNotEmpty) ...[
+              const SizedBox(width: 8),
+              SizedBox(
+                width: 40,
+                height: 40,
+                child: IconButton(
+                  iconSize: 18,
+                  padding: EdgeInsets.zero,
+                  icon: Icon(
+                    item['is_locked'] == 1 ? Icons.lock : Icons.lock_outline,
+                    color: item['is_locked'] == 1 ? ext.primary : ext.textHint,
+                  ),
+                  tooltip: item['is_locked'] == 1
+                      ? "解除锁定"
+                      : "锁定笔记（防锁屏偷看）",
+                  onPressed: () => _toggleDiaryLock(item),
                 ),
               ),
             ],
@@ -3472,7 +3712,12 @@ $content
                                 child: GestureDetector(
                                   // 占位日记 content=''：复制路径不处理空文本（编辑空笔记合法）
                                   // _swapTapLongPress=true 时交换：单击=编辑、长按=复制
+                                  // 锁定打码卡三手势全部先过认证（内容级操作门禁）
                                   onTap: () {
+                                    if (_isLockedHidden(item)) {
+                                      _ensureNoteUnlocked();
+                                      return;
+                                    }
                                     if (_swapTapLongPress) {
                                       _startEditing(
                                         item['id'],
@@ -3486,12 +3731,20 @@ $content
                                     }
                                   },
                                   onDoubleTap: () {
+                                    if (_isLockedHidden(item)) {
+                                      _ensureNoteUnlocked();
+                                      return;
+                                    }
                                     final c = item['content'] as String;
                                     if (c.trim().isNotEmpty) {
                                       _shareToAI(c); // 新增：双击分享（不受交换开关影响）
                                     }
                                   },
                                   onLongPress: () {
+                                    if (_isLockedHidden(item)) {
+                                      _ensureNoteUnlocked();
+                                      return;
+                                    }
                                     if (_swapTapLongPress) {
                                       final c = item['content'] as String;
                                       if (c.trim().isNotEmpty) {

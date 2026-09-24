@@ -20,12 +20,13 @@ import 'package:package_info_plus/package_info_plus.dart';
 import '../widgets/pro_unlock_dialog.dart';
 import '../theme/app_theme_extension.dart';
 import '../theme/app_theme.dart'; // AppThemes / AppThemeDefinition（Phase 3 主题选择）
+import '../theme/custom_theme.dart'; // 自定义主题（配置存取 + 色系派生）
 import '../main.dart'; // AppRoot.themeNotifier（Phase 3 主题切换）
 import '../utils/icon_pack_switcher.dart'; // Phase 4 图标包切换
 import '../utils/pro_gate.dart'; // Pro 门禁（永久解锁 + 7 天试用）
 import '../utils/tab_visibility.dart'; // 功能页面隐藏开关 key（main.dart main() 预读同一组 key，重启生效）
 import '../overlay/overlay_constants.dart'; // OverlayConstants.autoHide*（自动隐藏档位唯一真值，与 overlay engine 共用；主页悬浮窗入口行摘要读）
-import '../utils/diary_tag.dart'; // 日记标注 tag 常量（CSV 导入校验）
+import '../utils/backup_csv.dart'; // 全量备份 CSV 编解码（导出/导入共用：生成、解析、时间归一化、去重键）
 import '../utils/correction_learner.dart'; // 错误-修正学习表（编解码 + 备份内容）
 import '../web_server/diary_server_controller.dart'; // 电脑访问服务开关编排
 import '../web_server/web_server_settings_card.dart'; // 电脑访问服务设置卡片
@@ -34,11 +35,15 @@ import '../web_server/web_server_settings_card.dart'; // 电脑访问服务设�
 import 'settings/about_page.dart';
 import 'settings/accessibility_check.dart';
 import 'settings/ai_app_page.dart';
+import 'settings/cloud_sync_page.dart';
+import 'settings/custom_theme_page.dart'; // 自定义主题编辑页（选色盘 + 推荐色系）
 import 'settings/overlay_settings_page.dart';
 import 'settings/recognition_correction_page.dart';
 import 'settings/settings_widgets.dart';
 import 'widgets/neu_widgets.dart';
 import 'settings/volume_key_settings_page.dart';
+import 'sync/cloud_sync_service.dart'; // 云端同步入口行摘要（CloudSyncConfig.lastSyncInfo）
+import 'utils/cloud_sync_data_version.dart'; // 待同步检测：本地数据版本 vs 已同步快照
 
 class SettingsTab extends StatefulWidget {
   final TextProcessor processor;
@@ -50,19 +55,25 @@ class SettingsTab extends StatefulWidget {
   });
 
   @override
-  State<SettingsTab> createState() => _SettingsTabState();
+  State<SettingsTab> createState() => SettingsTabState();
 }
 
-class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
+/// State 类公开：main.dart 持 GlobalKey 在切 tab 时调 refreshCloudSyncSummary
+/// （IndexedStack 保活，initState 不会重跑，切回设置页需主动刷新入口行摘要）
+class SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
   // zcode: 2026-09 下沉后主页保留的 state 缩减为「入口行摘要」所需最小集；
   // 各配置项的完整状态在 lib/settings/ 对应二级页内自管（prefs key 不变）
   String _modelPathInfo = "内置模型就绪";
-  String? _selectedAIAppId; // 「AI 应用分享」入口行摘要：当前选中的 AI 应用 ID
+  // 「AI 应用分享」入口行摘要：当前选中的应用（内置或二级页 + 号添加的自定义）；
+  // 异步解析（resolveAppById），加载完成前显示默认项
+  AIApp _selectedAIApp = AIApp.defaultApp;
   // 无障碍服务是否已开启（null=检测失败：与「未开启」区分，UI 显式提示而非误导用户去开无障碍——服务可能明明开着）
   bool? _isAccessibilityEnabled = false;
   int _hotwordCount = 0; // 「识别与修正」入口行摘要：热词条数
   // 「识别与修正」入口行摘要：错误-修正学习表条数（从二级页返回后刷新）
   int _correctionPairCount = 0;
+  // 「云端同步」入口行摘要：未配置提示或上次同步时间+结果
+  String? _cloudSyncSubtitle;
   String _appVersion = ''; // 版本号，来自 package_info_plus（关于入口行）
   bool _isExportingStartupLog = false; // 启动日志导出中（同上）
   bool _isProActive =
@@ -97,6 +108,7 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
     _loadOverlaySummary(); // 加载悬浮窗入口行摘要（停靠侧 + 自动隐藏）
     _loadFontScale(); // 加载全局字号缩放档位
     _loadCorrectionPairCount(); // 加载错误-修正学习表条数（入口行摘要）
+    _loadCloudSyncSummary(); // 加载云端同步入口行摘要（是否配置 + 上次同步）
     WidgetsBinding.instance.addObserver(this);
     _checkAccessibilityStatus();
   }
@@ -129,6 +141,8 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
       // 从系统设置返回时刷新无障碍服务状态（音量键入口行状态点；
       // 手势/静音等配置详情在二级页，该页自身也有 resume 重查）
       _checkAccessibilityStatus();
+      // 数据可能在后台/其他入口变更（悬浮窗速记等），云端同步待同步态一并重算
+      _loadCloudSyncSummary();
     }
   }
 
@@ -249,12 +263,11 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
 
   void _loadAIAppPreference() async {
     final prefs = await SharedPreferences.getInstance();
-    final appId = prefs.getString('selected_ai_app');
-    if (appId != null) {
-      setState(() => _selectedAIAppId = appId);
-    } else {
-      // 默认选择 ChatGPT
-      setState(() => _selectedAIAppId = 'chatgpt');
+    // 自定义应用（+ 号添加）也要能解析出来——findById 只查内置列表
+    final appId = prefs.getString('selected_ai_app') ?? 'chatgpt';
+    final app = await AIApp.resolveAppById(appId);
+    if (mounted) {
+      setState(() => _selectedAIApp = app ?? AIApp.defaultApp);
     }
   }
 
@@ -282,6 +295,47 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
     );
     _loadHotwordCount(); // 热词可能在二级页编辑保存
     _loadCorrectionPairCount(); // 修正对可能在管理页有增删
+  }
+
+  // --- 云端同步（WebDAV 手动同步：日记/物品/热词/修正对，见 sync/ 模块）---
+  Future<void> _openCloudSyncPage() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => CloudSyncPage(
+          processor: widget.processor,
+          dbHelper: widget.dbHelper,
+        ),
+      ),
+    );
+    _loadCloudSyncSummary(); // 可能在二级页刚同步过或改了配置
+  }
+
+  /// main 切到本 tab 时调用：数据可能在其他 tab 变更（记日记/存物品/
+  /// 悬浮窗速记），云端同步入口行的待同步态需要重算
+  void refreshCloudSyncSummary() => _loadCloudSyncSummary();
+
+  /// 加载「云端同步」入口行副标题：本地数据版本 > 已同步快照时优先显示
+  /// 「有新数据待同步」（P1 无自动同步，只显示上次结果会让用户误以为一致）
+  Future<void> _loadCloudSyncSummary() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload(); // 悬浮窗 engine 可能刚 bump，防读到旧值
+    final configured =
+        (prefs.getString(CloudSyncConfig.kServerUrl) ?? '').isNotEmpty;
+    final info = await CloudSyncConfig.lastSyncInfo();
+    final hasPending = CloudSyncDataVersion.hasPending(
+      hasLastSync: info != null,
+      syncedVersion: prefs.getInt(CloudSyncDataVersion.syncedVersionKey),
+      currentVersion: CloudSyncDataVersion.current(prefs),
+    );
+    if (!mounted) return;
+    setState(() {
+      _cloudSyncSubtitle = CloudSyncConfig.buildEntrySubtitle(
+        configured: configured,
+        hasPending: hasPending,
+        lastSync: info,
+      );
+    });
   }
 
   Future<void> _openAIAppPage() async {
@@ -322,7 +376,7 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
       // 回退：使用 pubspec.yaml 中的硬编码版本号
       if (mounted) {
         setState(() {
-          _appVersion = '1.2.0'; // 来自 pubspec.yaml version: 1.2.0+23
+          _appVersion = '1.4.0'; // 来自 pubspec.yaml version: 1.4.0+25
         });
       }
     }
@@ -480,8 +534,8 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
       }
 
       // 2. CSV / README / 热词内容（字符串传给 worker，拷贝成本远低于音频字节）
-      final itemsCsv = _generateItemsCsv(items);
-      final diaryCsv = _generateDiaryCsv(diaries);
+      final itemsCsv = generateItemsCsv(items);
+      final diaryCsv = generateDiaryCsv(diaries);
       final readme = _generateReadme();
       final hotwordsContent = await widget.processor.getLocalContent();
       // 错误-修正学习表：编码成「错误 = 修正」文本随备份走
@@ -570,62 +624,6 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
     }
   }
 
-  // 生成物品CSV
-  String _generateItemsCsv(List<Map<String, dynamic>> items) {
-    final rows = [
-      ['物品', '位置'],
-    ];
-    for (var item in items) {
-      rows.add([
-        _escapeCsvField(item['name']?.toString() ?? ''),
-        _escapeCsvField(item['location']?.toString() ?? ''),
-      ]);
-    }
-    return rows.map((row) => row.join(',')).join('\n');
-  }
-
-  // 生成日记CSV
-  String _generateDiaryCsv(List<Map<String, dynamic>> diaries) {
-    final rows = [
-      // 标注列放最后（v10 新增）：旧版本 App 解析时只读前 5 列，天然兼容
-      ['ID', '内容', '创建时间', '音频文件', '时长(秒)', '标注'],
-    ];
-    for (var diary in diaries) {
-      // 格式化创建时间，精确到秒
-      String formattedTime = '';
-      if (diary['created_at'] != null) {
-        try {
-          final dateTime = DateTime.parse(diary['created_at'].toString());
-          formattedTime = DateFormat('yyyy-MM-dd HH:mm:ss').format(dateTime);
-        } catch (e) {
-          formattedTime = diary['created_at'].toString();
-        }
-      }
-
-      rows.add([
-        diary['id']?.toString() ?? '',
-        _escapeCsvField(diary['content']?.toString() ?? ''),
-        formattedTime,
-        diary['audio_path'] != null ? p.basename(diary['audio_path']) : '',
-        diary['duration']?.toString() ?? '',
-        // 标注（'urgent'/'star'/'idea'），无标注导出为空串
-        diary['tag']?.toString() ?? '',
-      ]);
-    }
-    return rows.map((row) => row.join(',')).join('\n');
-  }
-
-  // CSV字段转义
-  String _escapeCsvField(String value) {
-    if (value.contains(',') ||
-        value.contains('"') ||
-        value.contains('\n') ||
-        value.contains('\r')) {
-      return '"${value.replaceAll('"', '""')}"';
-    }
-    return value;
-  }
-
   // 生成README内容
   String _generateReadme() {
     final timestamp = DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now());
@@ -712,10 +710,10 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
       );
 
       // 2. 解析items.csv
-      final items = _parseItemsCsv(extracted.itemsCsv);
+      final items = parseItemsCsv(extracted.itemsCsv);
 
       // 3. 解析diary.csv
-      final diaries = _parseDiaryCsv(extracted.diaryCsv);
+      final diaries = parseDiaryCsv(extracted.diaryCsv);
       log(
         '[备份导入][诊断] 步骤2-3完成 解析CSV: items=${items.length}, diaries=${diaries.length}',
       );
@@ -734,11 +732,16 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
         itemIndex.add(key);
       }
 
-      // 构建日记索引：格式 "content|createdAt"
+      // 构建日记索引：自然键 content+创建时间（秒级对齐，见 backup_csv.diaryDedupeKey）。
+      // 曾逐字比对 created_at，导出侧被格式化改写 → 原封导入整包判新（2026-09 修复）
       final diaryIndex = <String>{};
       for (var diary in existingDiaries) {
-        final key = '${diary['content']}|${diary['created_at']}';
-        diaryIndex.add(key);
+        diaryIndex.add(
+          diaryDedupeKey(
+            diary['content']?.toString() ?? '',
+            diary['created_at']?.toString() ?? '',
+          ),
+        );
       }
 
       // 6. 过滤并插入物品数据
@@ -765,7 +768,10 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
       int skippedDiaries = 0;
 
       for (var diary in diaries) {
-        final key = '${diary['content']}|${diary['created_at']}';
+        final key = diaryDedupeKey(
+          diary['content']?.toString() ?? '',
+          diary['created_at']?.toString() ?? '',
+        );
         if (diaryIndex.contains(key)) {
           skippedDiaries++;
         } else {
@@ -887,86 +893,13 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
     }
   }
 
-  // 解析items.csv
-  List<Map<String, String>> _parseItemsCsv(String csvContent) {
-    final lines = csvContent.split('\n');
-    final items = <Map<String, String>>[];
-
-    for (var i = 1; i < lines.length; i++) {
-      // 跳过表头
-      final line = lines[i].trim();
-      if (line.isEmpty) continue;
-
-      final parts = _parseCsvLine(line);
-      if (parts.length >= 2) {
-        items.add({'name': parts[0], 'location': parts[1]});
-      }
-    }
-    return items;
-  }
-
-  // 解析diary.csv
-  List<Map<String, dynamic>> _parseDiaryCsv(String csvContent) {
-    final lines = csvContent.split('\n');
-    final diaries = <Map<String, dynamic>>[];
-
-    for (var i = 1; i < lines.length; i++) {
-      // 跳过表头
-      final line = lines[i].trim();
-      if (line.isEmpty) continue;
-
-      final parts = _parseCsvLine(line);
-      if (parts.length >= 5) {
-        final audioPath = parts[3].isNotEmpty ? parts[3] : null;
-        diaries.add({
-          'id': int.tryParse(parts[0]),
-          'content': parts[1],
-          'created_at': parts[2],
-          'audio_path': audioPath,
-          'duration': parts[4].isNotEmpty ? int.tryParse(parts[4]) : null,
-          // 标注列（v10 新增，放最后）：旧备份没有第 6 列 → 容忍缺列置 null；
-          // 有列但值非法（非 urgent/star/idea）同样按无标注处理
-          'tag': parts.length > 5 && DiaryTag.isValid(parts[5])
-              ? parts[5]
-              : null,
-        });
-      }
-    }
-    return diaries;
-  }
-
-  // 解析CSV行（支持引号转义）
-  List<String> _parseCsvLine(String line) {
-    final result = <String>[];
-    String current = '';
-    bool inQuotes = false;
-
-    for (int i = 0; i < line.length; i++) {
-      final char = line[i];
-
-      if (char == '"') {
-        if (inQuotes && i + 1 < line.length && line[i + 1] == '"') {
-          current += '"';
-          i++; // 跳过下一个引号
-        } else {
-          inQuotes = !inQuotes;
-        }
-      } else if (char == ',' && !inQuotes) {
-        result.add(current);
-        current = '';
-      } else {
-        current += char;
-      }
-    }
-    result.add(current);
-    return result;
-  }
 
   @override
   Widget build(BuildContext context) {
     final ext = AppThemeExtension.of(context);
-    // AI 应用入口行摘要用（选择列表在二级页，这里只显示当前选中项）
-    final aiApp = AIApp.findById(_selectedAIAppId ?? AIApp.defaultApp.id);
+    // AI 应用入口行摘要用（选择列表在二级页，这里只显示当前选中项；
+    // _selectedAIApp 在 _loadAIAppPreference 异步解析，含自定义应用）
+    final aiApp = _selectedAIApp;
     return Scaffold(
       backgroundColor: ext.scaffoldBackground,
       appBar: AppBar(
@@ -1069,6 +1002,18 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
 
           const SizedBox(height: 12),
 
+          // --- 云端同步（WebDAV 手动同步，与上面的本地 ZIP 备份互补）---
+          SettingsCard(
+            padding: EdgeInsets.zero,
+            child: SettingsEntryRow(
+              icon: Icons.cloud_sync_outlined,
+              title: '云端同步',
+              subtitle: _cloudSyncSubtitle ?? '未配置 · 支持 WebDAV 网盘（坚果云等）',
+              onTap: _openCloudSyncPage,
+            ),
+          ),
+          const SizedBox(height: 12),
+
           // zcode: 2026-09-17 重排（settings_reorder_preview.html 拍板）——悬浮窗挪到
           // 音量键下面、电脑访问挪到顶部入口区末尾；外标题与卡内首行完全重复的五处
           // （识别与修正/AI 应用分享/音量键/悬浮窗/电脑访问）去掉 SettingsSectionTitle，
@@ -1091,9 +1036,7 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
             child: SettingsEntryRow(
               icon: Icons.smart_toy_outlined,
               title: 'AI 应用分享',
-              subtitle: aiApp != null
-                  ? '分享跳转：${aiApp.icon} ${aiApp.name}'
-                  : '分享跳转：未设置',
+              subtitle: '分享跳转：${aiApp.icon} ${aiApp.name}',
               onTap: _openAIAppPage,
             ),
           ),
@@ -1450,7 +1393,11 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
   ///
   /// 遍历 [AppThemes.all] 渲染所有预设主题，每个主题用自己的色槽预览，
   /// 让用户在切换前看到真实视觉效果。Pro 主题未解锁时点击触发 [ProUnlockDialog]。
-  void _showThemePicker() {
+  /// 网格末尾追加"自定义"卡：有保存的配置则用派生色槽预览，否则显示创建入口。
+  Future<void> _showThemePicker() async {
+    // 打开前先载自定义配置（决定自定义卡是"预览"还是"创建"样式）
+    final customConfig = await CustomThemeConfig.load();
+    if (!mounted) return;
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -1488,7 +1435,7 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
               ),
             ),
             const SizedBox(height: 16),
-            // 2×2 主题网格（顺序按 AppThemes.all 定义）
+            // 2 列主题网格：5 套预设 + 末尾"自定义"卡（第 3 行）
             GridView.count(
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
@@ -1496,9 +1443,12 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
               mainAxisSpacing: 12,
               crossAxisSpacing: 12,
               childAspectRatio: 1.1,
-              children: AppThemes.all
-                  .map((t) => _buildThemeCard(sheetCtx, t))
-                  .toList(),
+              children: [
+                ...AppThemes.all
+                    .map((t) => _buildThemeCard(sheetCtx, t))
+                    .toList(),
+                _buildCustomThemeCard(sheetCtx, customConfig),
+              ],
             ),
           ],
         ),
@@ -1506,18 +1456,23 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
     );
   }
 
-  /// 单个主题卡片（2×2 网格里的一格）
+  /// 单个主题卡片（2 列网格里的一格）
   ///
   /// 卡片背景/文字/边框全部使用 **该主题自己的色槽** [theme.extension]，
   /// 这样用户能直观看到切换后的视觉。当前选中主题加粗边框 + 右下角对勾。
   /// Pro 主题右上角显示金色 Pro 徽章。
-  Widget _buildThemeCard(BuildContext sheetCtx, AppThemeDefinition theme) {
+  /// [onTap] 缺省走 [_onThemeTap]；自定义主题卡传编辑页入口覆盖。
+  Widget _buildThemeCard(
+    BuildContext sheetCtx,
+    AppThemeDefinition theme, {
+    VoidCallback? onTap,
+  }) {
     final currentExt = AppThemeExtension.of(sheetCtx); // 弹窗当前主题色槽（用于非预览元素）
     final previewExt = theme.extension; // 被预览主题自己的色槽
     final isCurrent = AppRoot.themeNotifier.value.id == theme.id;
 
     return GestureDetector(
-      onTap: () => _onThemeTap(theme),
+      onTap: onTap ?? () => _onThemeTap(theme),
       child: Container(
         padding: const EdgeInsets.all(12),
         // 拟物主题预览卡用自己的色槽画双向凸起阴影（不能走 neuRaisedDecoration——
@@ -1633,6 +1588,82 @@ class _SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
             : null,
       ),
     );
+  }
+
+  /// 自定义主题卡片（主题网格末尾，第 6 格）
+  ///
+  /// 有保存的配置 → 复用 [_buildThemeCard] 用派生色槽预览（isPro=true 自动带
+  /// 金色徽章）；无配置 → 虚线边框"+ 创建自定义主题"入口样式。
+  /// 点击不直接切主题（应用动作统一在编辑页"使用此主题"完成，避免点击语义
+  /// 二义），先过 Pro 门禁再进编辑页；编辑页 pop(true)=已应用才关 sheet。
+  Widget _buildCustomThemeCard(
+    BuildContext sheetCtx,
+    CustomThemeConfig? config,
+  ) {
+    if (config != null) {
+      final customTheme = generateCustomTheme(config);
+      return _buildThemeCard(
+        sheetCtx,
+        customTheme,
+        onTap: () => _onCustomThemeTap(),
+      );
+    }
+    final currentExt = AppThemeExtension.of(sheetCtx);
+    final isCurrent = AppRoot.themeNotifier.value.id == kCustomThemeId;
+    return GestureDetector(
+      onTap: () => _onCustomThemeTap(),
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: currentExt.cardBackground,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: isCurrent ? currentExt.primary : currentExt.divider,
+            width: isCurrent ? 2 : 1,
+          ),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.add_circle_outline,
+                color: currentExt.primary, size: 30),
+            const SizedBox(height: 8),
+            Text(
+              '创建自定义主题',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.bold,
+                color: currentExt.textPrimary,
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              'Pro · 选色盘搭配',
+              style: TextStyle(
+                fontSize: 11,
+                color: currentExt.textSecondary,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 自定义主题卡点击：Pro 门禁（与 [_onThemeTap] 同链路，未解锁弹解锁引导
+  /// 并留在 sheet）→ 进编辑页；pop(true)=已应用主题 → 关 sheet，否则留下
+  /// 继续挑预设
+  Future<void> _onCustomThemeTap() async {
+    final active = await ProGate.tryAccess(context);
+    if (!active) return;
+    if (!mounted) return;
+    final applied = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (_) => const CustomThemePage()),
+    );
+    if (applied == true && mounted) {
+      Navigator.of(context).pop(); // 关闭主题选择 sheet
+    }
   }
 
   /// 主题点击逻辑：Pro 门禁 + 写 prefs + 切 notifier

@@ -22,4 +22,14 @@
         <item name="android:windowAnimationStyle">@null</item>
         <item name="android:backgroundDimEnabled">false</item>
     </style>
+    <!-- 笔记解锁透明认证层（NoteUnlockActivity）：透明无 UI，只承载系统认证
+         对话框（androidx.biometric 或锁屏解锁界面）。⚠️ 父主题必须 AppCompat 系
+         ——androidx.biometric 的 API<28 兼容对话框要求 Theme.AppCompat 后代
+         （FragmentActivity + 非兼容主题会崩 inflate） -->
+    <style name="NoteUnlockTheme" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:backgroundDimEnabled">false</item>
+    </style>
 </resources>

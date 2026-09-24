@@ -407,17 +407,15 @@ void main() {
   });
 
   // ── 标注（标签换色）──
-  // 查看态底条末尾新增标注入口（label_outline）；标注选择态底行整行替换为
-  //「❗ ⭐ 💡 ✗返回」（对齐删除确认态先例）；取色：无标注=固定默认色
-  // #6F9AF0，标注=整卡换标注色，归档恒灰
+  // 标注三色按钮一级直出展开卡时间行（2026-09-22 用户要求从二级标注选择态
+  // 上提，二级菜单机制已删除）：时间文本后紧凑排列 32×32 命中区按钮，点按即
+  // 回调换色/取消；取色：无标注=固定默认色 #6F9AF0，标注=整卡换标注色，
+  // 归档恒灰
 
   Widget wrapTag({
     String? tag,
     bool isArchived = false,
-    bool isTagPicking = false,
-    VoidCallback? onTagEntry,
     ValueChanged<String?>? onTagToggle,
-    VoidCallback? onTagPickCancel,
   }) => MaterialApp(
     home: Scaffold(
       body: SizedBox(
@@ -434,10 +432,7 @@ void main() {
               maxWidth: 268,
               expanded: true,
               onCheckChanged: (_) {},
-              isTagPicking: isTagPicking,
-              onTagEntry: onTagEntry ?? () {},
               onTagToggle: onTagToggle ?? (_) {},
-              onTagPickCancel: onTagPickCancel ?? () {},
             ),
           ],
         ),
@@ -474,34 +469,17 @@ void main() {
     expect(cardBgColor(tester, const Color(0xFFFF6B6B)), isNull);
   });
 
-  testWidgets('查看态底条含标注入口，点击进入标注选择态回调', (tester) async {
-    var entryCount = 0;
-    await tester.pumpWidget(wrapTag(onTagEntry: () => entryCount++));
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.byIcon(Icons.label_outline));
-    await tester.pump();
-    expect(entryCount, 1);
-  });
-
-  testWidgets('标注选择态：底行整行替换，点 tag / 点已选 tag / 点 ✗ 三分支', (tester) async {
+  testWidgets('时间行一级直出三色标注按钮：点 tag / 点已选 tag 取消', (tester) async {
     final toggled = <String?>[];
-    var cancelCount = 0;
-    await tester.pumpWidget(
-      wrapTag(
-        isTagPicking: true,
-        onTagToggle: toggled.add,
-        onTagPickCancel: () => cancelCount++,
-      ),
-    );
+    await tester.pumpWidget(wrapTag(onTagToggle: toggled.add));
     await tester.pumpAndSettle();
 
-    // 整行替换：标注行 4 图标出现，查看态的复制/标注入口不再渲染
+    // 三个标注按钮常驻时间行（无需先点入口进选择态）
     expect(find.byIcon(Icons.priority_high), findsOneWidget);
     expect(find.byIcon(Icons.star_rounded), findsOneWidget);
     expect(find.byIcon(Icons.lightbulb_outline), findsOneWidget);
+    // 二级菜单机制已删除：底条不再有标注入口与 ✗ 返回
     expect(find.byIcon(Icons.label_outline), findsNothing);
-    expect(find.byIcon(Icons.copy), findsNothing);
 
     // 点收藏 → 回调 'star'
     await tester.tap(find.byIcon(Icons.star_rounded));
@@ -509,23 +487,42 @@ void main() {
     expect(toggled, ['star']);
 
     // 已选中 star 时再点 = 取消标注（回调 null）
-    await tester.pumpWidget(
-      wrapTag(
-        tag: 'star',
-        isTagPicking: true,
-        onTagToggle: toggled.add,
-        onTagPickCancel: () => cancelCount++,
-      ),
-    );
+    await tester.pumpWidget(wrapTag(tag: 'star', onTagToggle: toggled.add));
     await tester.pumpAndSettle();
     await tester.tap(find.byIcon(Icons.star_rounded));
     await tester.pump();
     expect(toggled, ['star', null]);
+  });
 
-    // 点 ✗ → 退出标注选择态
-    await tester.tap(find.byIcon(Icons.close));
-    await tester.pump();
-    expect(cancelCount, 1);
+  testWidgets('时间格式为横杠 yyyy-MM-dd HH:mm（替代「年月日」省时间行横向空间）', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 296,
+            child: ListView(
+              children: [
+                OverlayDiaryCard(
+                  diary: {
+                    'id': 1,
+                    'content': '时间格式测试',
+                    'is_archived': 0,
+                    'created_at': '2026-09-22 08:45:00.000',
+                  },
+                  maxWidth: 268,
+                  expanded: true,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('2026-09-22 08:45'), findsOneWidget);
   });
 
   // 系统字体放大时展开态勾选框变大根治（2026-09-05，真机截图实测两态直径比

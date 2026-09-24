@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="ic_launcher_background">#2C3E50</color>
+    <!-- 2026-09-24 启动页方案 B「深海极光」：Android 12+ 系统启动画面背景色
+         （values-v31 NormalTheme 的 windowSplashScreenBackground 引用），
+         与 Flutter 启动页深海渐变的起始色一致，避免系统启动画面 → Flutter 页面跳色 -->
+    <color name="splash_screen_background">#0D1B2E</color>
     <!-- Phase 4：图标包切换背景色 -->
     <color name="ic_launcher_background_warm">#E65100</color>
     <color name="ic_launcher_background_festive">#C62828</color>

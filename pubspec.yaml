@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.3.0+24
+version: 1.4.0+25
 
 environment:
   sdk: ^3.10.3
@@ -62,6 +62,11 @@ dependencies:
   gal: ^2.3.1  # 保存付款码图片到相册（Pro 解锁弹窗）
   flutter_overlay_window: ^0.5.0  # 系统级悬浮窗（闪念胶囊）
   dart_jieba: ^1.0.1  # 中文分词（修正对学习取词：错误片段补全到完整词，见 docs/architecture/context-correction.md）
+  webdav_client: ^1.2.2
+  flutter_secure_storage: ^10.3.4
+  uuid: ^4.6.0
+  dio: 5.11.1
+  flutter_colorpicker: ^1.1.0  # 自定义主题选色盘（HSV 色轮 + HEX 输入）
 
 dev_dependencies:
   flutter_test:
@@ -77,6 +82,7 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+  sqflite_common_ffi: ^2.4.0+3
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
@@ -93,6 +99,7 @@ flutter:
   assets:
     - assets/rules.txt
     - assets/hotwords.txt
+    - assets/pinyin_dict.txt  # 汉字→tone3 拼音字典（音素热词用，pypinyin 生成，见 tools/pinyin/）
     - assets/homophones.json   # 同音词候选组（上下文纠错：词库只出候选，上下文定答案）
     - assets/domain_words.json # 专有名词 related/conflict 上下文词表（上下文纠错评分用）
     - assets/jieba_dict.dgz    # jieba 二进制词典（修正对学习取词补全用，运行时拷到文档目录供 dart:io 读取）
@@ -110,6 +117,7 @@ flutter:
     - assets/weixinpay.png  # Pro 解锁弹窗：微信付款码
     - assets/alipay.png     # Pro 解锁弹窗：支付宝付款码
     - assets/licenses/OFL-LXGWWenKai.txt  # 霞鹜文楷字体 OFL 协议全文（设置→关于→开源字体许可证）
+    - assets/licenses/LICENSE-pinyin-data.txt  # 拼音字典数据 MIT 协议全文（pypinyin/pinyin-data）
 
 
   #   - images/a_dot_burr.jpeg

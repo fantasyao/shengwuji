@@ -416,6 +416,28 @@ void main() {
     );
   });
 
+  testWidgets('停止提示：按住说话会话 → 文案切「松开音量键」（松手即停，优先级高于单击停录）', (tester) async {
+    final c = OverlayVoiceMemoController()
+      ..setStateForTest(OverlayVoiceMemoState.recording)
+      ..setShowStopHintForTest(true)
+      ..isPttSession = true
+      // 故意同时开单击停录：PTT 的主停录路径是松手，文案必须以松手为准
+      ..singleClickStopEnabled = true;
+    await pumpBar(tester, c);
+    await tester.pump();
+
+    expect(
+      find.descendant(of: bar, matching: find.text('松开音量键，停止并转写')),
+      findsOneWidget,
+      reason: 'PTT 会话松手即停，提示与实际交互一致',
+    );
+    expect(
+      find.descendant(of: bar, matching: find.text('单击音量键，停止并转写')),
+      findsNothing,
+      reason: '松手才是 PTT 主停录路径，单击文案会让用户照错的操作做',
+    );
+  });
+
   testWidgets('停止提示：showStopHint=false 不渲染（展示满 2 次后回归纯胶囊）', (tester) async {
     final c = OverlayVoiceMemoController()
       ..setStateForTest(OverlayVoiceMemoState.recording);

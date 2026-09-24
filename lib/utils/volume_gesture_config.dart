@@ -37,6 +37,12 @@ class VolumeGestureAction {
   /// 悬浮窗新增笔记（展开面板 + 插入占位行进入编辑态）
   static const String overlayNewNote = 'overlay_new_note';
 
+  /// 按住说话（实验分支）：长按槽位专属动作——按住达阈值即开录，松开同一键
+  /// 立即停录转写。Kotlin 侧复用悬浮窗语音速记链路（ACTION_PTT_RECORD，跨端
+  /// 硬编码副本须双侧同步），仅触发与收尾时机不同。双击槽位无「按住中态」
+  ///（触发即抬手），没有松手停录语义，设置页只在长按两行提供此选项
+  static const String pttRecord = 'ptt_record';
+
   /// 全部合法动作值（合法性校验 + 设置页选项列表共用）
   static const List<String> all = [
     none,
@@ -45,6 +51,7 @@ class VolumeGestureAction {
     quickRecord,
     quickTextNote,
     overlayNewNote,
+    pttRecord,
   ];
 
   /// 值是否为合法动作（防 prefs 里存了历史遗留/损坏值）
@@ -78,28 +85,49 @@ class VolumeGestureSlot {
   ];
 }
 
-/// 长按触发阈值（毫秒）：配置 key + 档位 + 校验。
+/// 长按触发阈值（毫秒）：配置 key + 预设档位 + 自定义范围 + 校验。
 ///
 /// 与 4 槽位同模式：设置页 ChoiceChip 写入，Kotlin 无障碍服务每次按键 DOWN
 /// 时读落盘 prefs 启动长按计时（无需 MethodChannel，App 未打开也生效）。
-/// 档位集合与 Kotlin 侧 LONG_PRESS_MS_CHOICES 严格一致，改档位必须双侧同步。
+/// 2026-09-23 新增「自定义」档（点 chip 弹输入框，50–2000ms 任意值）后，
+/// 合法域从预设集合放开为闭区间——预设集合只管设置页 chip 展示，Kotlin 侧
+/// 校验同步从集合白名单改为范围校验：⚠️ minMs/maxMs 是新的跨端硬编码副本对
+///（Kotlin LONG_PRESS_MS_MIN/MAX），改边界必须双侧同步。
 class VolumeLongPressMs {
   VolumeLongPressMs._(); // 纯常量类，禁止实例化
 
   /// prefs key（Kotlin 侧读取时加 "flutter." 前缀）
   static const String prefKey = 'volume_long_press_ms';
 
-  /// 可选档位（毫秒）。下限 400：刻意单击音量键的按压时长约 100~300ms，
-  /// 低于它会把手感偏重的单击误判成长按（误触录音/悬浮窗且松手无法反悔）；
-  /// 上限 1200：再长手感明显发钝
-  static const List<int> choices = [400, 500, 800, 1200];
+  /// 预设档位（毫秒），设置页 ChoiceChip 展示用。2026-09-21 按用户实测反馈
+  /// 从 400/500/800/1200 下调为 200/300/400/700（旧最短档 400 体感仍偏钝，
+  /// 重度使用者宁愿改用双击）；2026-09-23 起最短不再受预设限制，用户可经
+  /// 「自定义」档输入 50–2000 任意值
+  static const List<int> choices = [200, 300, 400, 700];
 
-  /// 默认档位（历史硬编码值，未设置/脏值时回落）
-  static const int defaultMs = 500;
+  /// 自定义档允许的范围边界（毫秒，闭区间）。⚠️ 与 Kotlin 侧
+  /// LONG_PRESS_MS_MIN / LONG_PRESS_MS_MAX 严格一致（跨端硬编码副本，改值
+  /// 必须双侧同步）。下限 50：刻意单击的按压时长约 100~300ms，低于 100 的
+  /// 档位不再只是「误判偏重单击」，而是把该键上的单击调音量/双击手势整体
+  /// 挤掉（每次按下都先到长按阈值，UP 被 wasLongPress 短路）——设置页在
+  /// 值 <100 时显示警示文案；上限 2000 再长已无「按住」手感
+  static const int minMs = 50;
+  static const int maxMs = 2000;
 
-  /// 档位合法性校验（缺失/脏值回落默认，防 prefs 残留越界值）
+  /// 默认档位（未设置/脏值时回落）
+  static const int defaultMs = 400;
+
+  /// 合法性校验：[minMs, maxMs] 内的值（含预设档与自定义档）原样生效，
+  /// 缺失/脏值/越界回落默认。2026-09-21 版曾把「不在预设集合内」一律回落
+  /// 400（旧默认 500 就近迁移）；自定义档放开后范围取代集合成为合法域，
+  /// 旧档位 500/800/1200 都在范围内，老用户升级后按原值继续生效（设置页
+  /// 显示为「自定义」档，属刻意选择：尊重其当年显式选的档位，不再二次改写）
   static int normalize(int? value) =>
-      (value != null && choices.contains(value)) ? value : defaultMs;
+      (value != null && value >= minMs && value <= maxMs) ? value : defaultMs;
+
+  /// 值是否为自定义档（不在预设集合内；入参应是 normalize 后的合法值）。
+  /// 设置页据此决定选中「自定义」chip 还是某个预设 chip
+  static bool isCustom(int value) => !choices.contains(value);
 }
 
 /// 「录音中单击结束录音」开关 prefs key。

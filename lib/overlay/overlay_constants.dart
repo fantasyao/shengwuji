@@ -1,6 +1,54 @@
 import 'package:flutter/material.dart';
 
 /// 悬浮窗（闪念胶囊）通用常量
+
+/// 把手主题（皮肤）。三套（2026-09-22 用户定夺）：
+/// - [duo] 双色药丸（默认，历史视觉）：上暖白 / 下绿，图标取下半色呼应成对
+/// - [bluePurple] 蓝紫：与悬浮窗笔记卡片色系一致——上 = 卡片默认蓝
+///   [OverlayConstants.defaultCardColor] / 下 = 灵感标注紫（utils/diary_tag
+///   DiaryTag.colors），图标文字白色
+/// - [pill3d] 拟物胶囊💊：上白 / 下珊瑚红 + 左侧高光条 + 下半暗部渐变的
+///   立体药丸，纯造型无图标无文字（用户定夺"没有文字的风格"）
+enum HandleTheme {
+  duo,
+  bluePurple,
+  pill3d,
+}
+
+/// [HandleTheme] 的渲染属性（色值与内容显隐），OverlayHandle 与设置页
+/// 色板 avatar 共用唯一真值
+extension HandleThemeVisuals on HandleTheme {
+  /// 胶囊上半区色
+  Color get capsuleTopColor => switch (this) {
+    HandleTheme.duo => OverlayConstants.handleCapsuleTopColor,
+    HandleTheme.bluePurple => OverlayConstants.defaultCardColor,
+    HandleTheme.pill3d => const Color(0xFFF7F8F6),
+  };
+
+  /// 胶囊下半区色（拟物主题为基色，渲染时再叠受光/背光渐变）
+  Color get capsuleBottomColor => switch (this) {
+    HandleTheme.duo => OverlayConstants.handleCapsuleBottomColor,
+    HandleTheme.bluePurple => const Color(0xFFAE82E4), // 灵感标注紫
+    HandleTheme.pill3d => const Color(0xFFE0524E), // emoji💊 珊瑚红
+  };
+
+  /// 闪电图标色：双色药丸取下半色（落在白半区呼应成对，历史语言）；
+  /// 蓝紫上下皆饱和彩色，白图标落上半蓝对比最稳
+  Color get iconColor => switch (this) {
+    HandleTheme.duo => capsuleBottomColor,
+    _ => Colors.white,
+  };
+
+  /// 竖排「闪记」文字色（白字落在下半区）
+  Color get labelColor => Colors.white;
+
+  /// 是否渲染闪电图标：拟物纯造型无图标（无文字见 handleShowsLabel）
+  bool get showsIcon => this != HandleTheme.pill3d;
+
+  /// 拟物主题：叠高光条 + 下半暗部渐变（立体感三层）
+  bool get isPill3d => this == HandleTheme.pill3d;
+}
+
 class OverlayConstants {
   OverlayConstants._();
 
@@ -13,11 +61,72 @@ class OverlayConstants {
   /// idle 帧渲染空白
   static const int handleHeight = 88;
 
-  /// 把手胶囊相对窗口的视觉内缩（dp）：用户要求把手缩小一号，但窗口尺寸是
-  /// 原生硬编码副本 + 语音胶囊 84<88 不变量的联动值，动窗口须双侧同步——
-  /// 因此窗口保持 28×88（触控面积不变），胶囊本体向内收缩，视觉变小
-  static const double handleInsetHorizontal = 2.0;
-  static const double handleInsetVertical = 4.0;
+  /// ── 把手大小档位（2026-09-22，用户反馈把手胶囊有点大、可调）──
+  ///
+  /// 方案 A「只缩视觉不缩窗口」：窗口恒 28×88——原生硬编码副本 HANDLE_WIDTH_DP、
+  /// 语音胶囊 84<88 不变量、dragHandle「窗口宽 == 把手宽」守卫、Kotlin
+  /// EDGE_LINE_WIDTH_THRESHOLD_DP=24 宽度分流四者联动，动窗口任一都破（真缩到
+  /// 一半宽 14 < 24 阈值还会与竖线态撞车）；胶囊本体在窗口内按档位缩放，触控
+  /// 面积不变（把手越小越难点，命中区保住窗口整面积）
+  /// prefs key（int 百分比；写入方：设置页悬浮窗二级页；读取方：overlay engine
+  /// 的 _refreshSide/_scheduleAutoHide——跨 engine 各自读，无内存共享）
+  static const String handleSizePrefKey = 'overlay_handle_size_percent';
+  static const int handleSizeDefaultPercent = 100;
+
+  /// 合法档位集合（设置页 ChoiceChip 与解析兜底共用）
+  static const List<int> handleSizePercents = [100, 75, 50];
+
+  /// 解析 prefs 档位值：非合法档（null/旧版本值/坏值）一律兜底默认 100%
+  static int parseHandleSizePercent(int? raw) =>
+      raw != null && handleSizePercents.contains(raw)
+      ? raw
+      : handleSizeDefaultPercent;
+
+  /// 是否迷你档（最小档）：胶囊 12×40 放不下任何内容变体，图标缩为
+  /// handleIconSizeMini（2026-09-22 起小档（75%）也不显示文字——真机反馈
+  /// 18 宽胶囊竖排文字太挤，文字仅标准档保留，见 [handleShowsLabel]）
+  static bool isMiniHandleSize(int percent) =>
+      percent <= handleSizePercents.last;
+
+  /// 档位 + 主题 → 是否显示竖排「闪记」文字：仅标准档（100%）且非拟物主题
+  ///（拟物胶囊💊纯造型无文字，用户定夺 2026-09-22）
+  static bool handleShowsLabel(int percent, HandleTheme theme) =>
+      percent >= handleSizePercents.first && theme != HandleTheme.pill3d;
+
+  /// ── 把手主题（皮肤，2026-09-22）──
+  /// prefs key（string = enum name；写入方：设置页悬浮窗二级页；读取方：
+  /// overlay engine 的 _refreshSide/_scheduleAutoHide——跨 engine 各自读，
+  /// 无内存共享）
+  static const String handleThemePrefKey = 'overlay_handle_theme';
+
+  /// 解析 prefs 主题值：null/旧版本值/坏串一律兜底默认 [HandleTheme.duo]
+  static HandleTheme parseHandleTheme(String? raw) =>
+      raw != null && HandleTheme.values.asNameMap().containsKey(raw)
+      ? HandleTheme.values.byName(raw)
+      : HandleTheme.duo;
+
+  /// 胶囊基准尺寸（100% 档视觉，dp）= 窗口 28×88 减历史内缩（横 2 / 纵 4，
+  /// 2026-09-13「缩小一号」定下的值），各档视觉在此基准上等比缩放
+  static const double _handleCapsuleBaseWidth = 24.0;
+  static const double _handleCapsuleBaseHeight = 80.0;
+
+  /// 档位 → 胶囊本体视觉尺寸（dp）：100% → 24×80（历史值）/ 75% → 18×60 /
+  /// 50% → 12×40
+  static double handleCapsuleWidth(int percent) =>
+      _handleCapsuleBaseWidth * percent / 100;
+  static double handleCapsuleHeight(int percent) =>
+      _handleCapsuleBaseHeight * percent / 100;
+
+  /// 档位 → 胶囊相对窗口的单侧内缩（dp）=（窗口 − 视觉）/ 2：
+  /// 100% → (2, 4) / 75% → (5, 14) / 50% → (8, 24)
+  static double handleInsetHorizontalOf(int percent) =>
+      (handleWidth - handleCapsuleWidth(percent)) / 2;
+  static double handleInsetVerticalOf(int percent) =>
+      (handleHeight - handleCapsuleHeight(percent)) / 2;
+
+  /// 迷你档闪电图标尺寸（dp）：12 宽胶囊减两侧描边（2×cardBorderWidth）净宽
+  /// 10，标准档 13dp 超宽，缩到 9dp 安全
+  static const double handleIconSizeMini = 9.0;
 
   /// 收起态把手文字（中文逐字竖排）
   static const String handleLabel = '闪记';
@@ -372,6 +481,14 @@ class OverlayConstants {
   /// 竖线高度（dp）：比把手（88）短一截，与语音胶囊本体高度（44）的两倍
   /// 同档，贴边细线的视觉重心与把手一致（垂直居中）
   static const double edgeLineHeight = 64.0;
+
+  /// 档位 → 竖线视觉高度（dp）：跟随把手大小档位等比缩（用户定夺 2026-09-22：
+  /// 把手变小竖线同步缩、只缩高不缩宽——把手视觉缩到 40 高后竖线 64 会反超
+  /// 把手，视觉层级颠倒；宽 4dp ≈1mm 是可见性下限不缩，2026-09-14 渐变对比
+  /// 度专项基于此宽度）。窗口仍 20×64（触摸缓冲区不变），视觉线在窗口内垂直
+  /// 居中：100% → 64 / 75% → 48 / 50% → 32
+  static double edgeLineVisualHeight(int percent) =>
+      edgeLineHeight * percent / 100;
 
   /// 竖线渐变色（2026-09-14 起替代旧的单一半透明白 0x73FFFFFF）：屏内端深灰
   /// → 贴缘端浅灰的横向渐变（两端各 85% alpha），方向随停靠侧镜像（见

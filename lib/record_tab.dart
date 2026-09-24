@@ -13,6 +13,7 @@ import '../db_helper.dart';
 import '../text_processor.dart';
 import '../recognizer_singleton.dart';
 import '../widgets/blur_loading_overlay.dart';
+import '../widgets/hotword_promotion.dart'; // 反复命中的修正对追问升级热词
 import '../widgets/neu_widgets.dart';
 import '../app_logger.dart';
 import '../utils/item_splitter.dart';
@@ -561,8 +562,12 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
             _recognizedItemSnapshot = res['item']!;
             _recognizedLocationSnapshot = res['location']!;
           });
-          // 「错误-修正」命中检测：识别结果里有学过的错误片段 → 提示一键修正
-          await _offerCorrectionFix(res['item']!, res['location']!);
+          // 「错误-修正」命中检测：识别结果里有学过的错误片段 → 提示一键修正；
+          // 修正对没提示时，音素热词相似命中兜底提示
+          final offered = await _offerCorrectionFix(res['item']!, res['location']!);
+          if (!offered) {
+            await _offerPhonemeSimilarFix(res['item']!, res['location']!);
+          }
         }
       }
     } catch (e) {
@@ -660,15 +665,16 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
   /// 采纳时顺带把命中对 hit_count+1，强化学习计数。
   /// 语境门控：有语境档案的对只在邻接字符吻合的语境下提示——
   /// 「互联网影视可控」学到的「影视→隐私」不会打扰「今晚看的影视不错」；
-  /// 无档案的对照旧字面命中就提示
-  Future<void> _offerCorrectionFix(String item, String location) async {
+  /// 无档案的对照旧字面命中就提示。
+  /// 返回是否弹了提示（音素相似提示只在它没弹时兜底，避免互相顶掉）
+  Future<bool> _offerCorrectionFix(String item, String location) async {
     try {
       // 同音组内的修正对（质朴→智谱）不提示：交给上下文纠错按语境处理，
       // 盲替换提示会把「这个人很质朴」也建议改成「智谱」
       final pairs = (await widget.dbHelper.getAllCorrectionPairs())
           .where((p) => !ContextCorrector.instance.isHomophonePair(p))
           .toList();
-      if (!mounted) return;
+      if (!mounted) return false;
       final contexts = PairContextGate.groupByPair(
         await widget.dbHelper.getAllPairContexts(),
       );
@@ -684,7 +690,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
       final locMatches = pairs
           .where((p) => hitWithGate(location, p))
           .toList();
-      if (itemMatches.isEmpty && locMatches.isEmpty) return;
+      if (itemMatches.isEmpty && locMatches.isEmpty) return false;
       // 双钥匙对（整词+短核）同时命中时文案只展示长钥匙，计数不虚高；
       // 下方替换仍用全集：长钥匙先应用，短钥匙只兜底残余位置
       final visible = CorrectionLearner.dedupeSubsumed(
@@ -693,7 +699,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
       final first = visible.first;
       final hitCount = visible.length;
       final ext = AppThemeExtension.of(context);
-      if (!mounted) return;
+      if (!mounted) return false;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -702,7 +708,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
           ),
           action: SnackBarAction(
             label: '一键修正',
-            onPressed: () {
+            onPressed: () async {
               if (!mounted) return;
               final newItem = itemMatches.isNotEmpty
                   ? CorrectionLearner.applyCorrections(
@@ -726,8 +732,17 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
               ContextCorrector.instance.learnFromEdit(location, newLoc);
               _vibrate(duration: 30, amplitude: 40);
               AppLogger.appLog('✅ [Record] 一键修正已应用: $first');
+              // 反复命中的修正对提议升级为音素热词（发音近似也自动替换）
+              if (mounted) {
+                await maybePromptHotwordPromotion(
+                  context,
+                  matches: itemMatches + locMatches,
+                  processor: widget.processor,
+                );
+              }
             },
           ),
+          persist: false, // ⚠️ Flutter 的 SnackBar 带 action 时 persist 默认 true=永不超时消失，必须显式关
           duration: const Duration(seconds: 6),
           behavior: SnackBarBehavior.floating,
           backgroundColor: ext.primaryDark,
@@ -736,10 +751,57 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
           ),
         ),
       );
+      return true;
     } catch (e) {
       // 命中检测失败不影响识别填框主流程
       log('修正提示失败: $e');
+      return false;
     }
+  }
+
+  /// 音素热词相似命中提示：识别结果里有发音接近热词的片段（未达替换阈值，
+  /// 或单字短热词被保险丝拦下）→ 弹一键替换（改输入框）。
+  /// 修正对没提示时才兜底弹出，避免两条 SnackBar 互相顶掉。
+  Future<void> _offerPhonemeSimilarFix(String item, String location) async {
+    final similars = widget.processor.lastPhonemeSimilars;
+    if (similars.isEmpty || !mounted) return;
+    final first = similars.first;
+    final hitItem = item.contains(first.original);
+    final hitLoc = location.contains(first.original);
+    if (!hitItem && !hitLoc) return;
+    final ext = AppThemeExtension.of(context);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          '「${first.original}」听起来像热词「${first.hotword}」'
+          '（相似 ${(first.score * 100).toStringAsFixed(0)}%），要替换吗？',
+        ),
+        action: SnackBarAction(
+          label: '一键替换',
+          onPressed: () {
+            if (!mounted) return;
+            setState(() {
+              if (hitItem) {
+                _itemController.text = _itemController.text
+                    .replaceAll(first.original, first.hotword);
+              }
+              if (hitLoc) {
+                _locationController.text = _locationController.text
+                    .replaceAll(first.original, first.hotword);
+              }
+            });
+            AppLogger.appLog('✅ [Record] 音素相似替换已应用: $first');
+          },
+        ),
+        persist: false, // ⚠️ Flutter 的 SnackBar 带 action 时 persist 默认 true=永不超时消失，必须显式关
+        duration: const Duration(seconds: 3), // 用户要求：相似提示 3 秒即消失（原 6 秒）
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: ext.primaryDark,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10),
+        ),
+      ),
+    );
   }
 
   Float32List _convertBytesToFloat32(Uint8List bytes) {

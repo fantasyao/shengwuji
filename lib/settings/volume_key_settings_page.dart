@@ -32,7 +32,7 @@ class _VolumeKeySettingsPageState extends State<VolumeKeySettingsPage>
   // 音量键手势槽位 → 动作映射（key 为 VolumeGestureSlot.* 常量；
   // 写入方 _loadVolumeGestureActions/_saveGestureAction，读取方本页 4 行槽位选择器）
   Map<String, String> _gestureActions = {};
-  // 长按触发阈值（毫秒，400/500/800/1200 档）：两个「长按」手势共用；
+  // 长按触发阈值（毫秒，200/300/400/700 档）：两个「长按」手势共用；
   // Kotlin 无障碍服务每次按键 DOWN 读同一落盘 key，无需 MethodChannel
   int _longPressMs = VolumeLongPressMs.defaultMs;
 
@@ -104,7 +104,7 @@ class _VolumeKeySettingsPageState extends State<VolumeKeySettingsPage>
     print('🔧 [Settings] 手势动作 $slot=$action');
   }
 
-  // --- 长按触发阈值（400/500/800/1200 档）---
+  // --- 长按触发阈值（预设 200/300/400/700 档 + 自定义 50–2000 档）---
   Future<void> _loadLongPressMs() async {
     final prefs = await SharedPreferences.getInstance();
     if (!mounted) return;
@@ -120,6 +120,86 @@ class _VolumeKeySettingsPageState extends State<VolumeKeySettingsPage>
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt(VolumeLongPressMs.prefKey, ms);
     print('🔧 [Settings] volume_long_press_ms=$ms');
+  }
+
+  /// 毫秒 → 秒显示：整百一位小数（0.2/0.4 秒），其余两位（0.05/0.15 秒）——
+  /// 自定义档常出现非整百值，一位小数会显示成 0.1 造成误导
+  String _formatSeconds(int ms) => (ms % 100 == 0)
+      ? (ms / 1000).toStringAsFixed(1)
+      : (ms / 1000).toStringAsFixed(2);
+
+  /// 「自定义」档输入对话框：确认按钮在输入合法（[VolumeLongPressMs.minMs,
+  /// maxMs] 内整数）前禁用——「选中自定义 chip 就必须有值」由构造保证，
+  /// 不存在「选中了但没值」的落盘中间态；取消/清空不改任何状态，prefs 保持
+  /// 原值（自定义态保持、预设态跳回预设）。
+  /// 已是自定义档时预填当前值便于微调；对话框落库与 _saveLongPressMs 同一
+  /// key，Kotlin 每次 DOWN 实时读
+  Future<void> _showCustomLongPressDialog() async {
+    final ext = AppThemeExtension.of(context);
+    final controller = TextEditingController(
+      text: VolumeLongPressMs.isCustom(_longPressMs) ? '$_longPressMs' : '',
+    );
+    final saved = await showDialog<int>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            final value = int.tryParse(controller.text.trim());
+            final valid =
+                value != null &&
+                value >= VolumeLongPressMs.minMs &&
+                value <= VolumeLongPressMs.maxMs;
+            return AlertDialog(
+              title: const Text('自定义长按时长'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(
+                    controller: controller,
+                    autofocus: true,
+                    keyboardType: TextInputType.number,
+                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                    decoration: InputDecoration(
+                      hintText:
+                          '${VolumeLongPressMs.minMs}–${VolumeLongPressMs.maxMs}',
+                      suffixText: '毫秒',
+                    ),
+                    onChanged: (_) => setDialogState(() {}),
+                    onSubmitted: valid
+                        ? (_) => Navigator.of(dialogContext).pop(value)
+                        : null,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    controller.text.trim().isEmpty
+                        ? '两个「长按」手势共用的按住时长'
+                        : valid
+                        ? '设得过短（低于0.1秒）可能把单击误判为长按'
+                        : '请输入 ${VolumeLongPressMs.minMs}–${VolumeLongPressMs.maxMs} 之间的整数',
+                    style: TextStyle(fontSize: 11, color: ext.textHint),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const Text('取消'),
+                ),
+                TextButton(
+                  onPressed: valid
+                      ? () => Navigator.of(dialogContext).pop(value)
+                      : null,
+                  child: const Text('确定'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    if (!mounted || saved == null) return;
+    await _saveLongPressMs(saved);
   }
 
   // --- 按音量减保持静音开关 ---
@@ -278,14 +358,15 @@ class _VolumeKeySettingsPageState extends State<VolumeKeySettingsPage>
                 // 4 手势槽位动作选择（仅在服务开启时显示）
                 if (_isAccessibilityEnabled == true) ...[
                   const SizedBox(height: 12),
-                  // 长按行标题的时长随阈值档位动态显示（0.4/0.5/0.8/1.2 秒）
+                  // 长按行标题的时长随阈值动态显示（预设 0.2/0.3/0.4/0.7 秒，
+                  // 自定义档如 0.15 秒）
                   _buildGestureSelectorRow(
-                    '长按音量加（约${(_longPressMs / 1000).toStringAsFixed(1)}秒）',
+                    '长按音量加（约${_formatSeconds(_longPressMs)}秒）',
                     VolumeGestureSlot.longPressUp,
                   ),
                   const SizedBox(height: 14),
                   _buildGestureSelectorRow(
-                    '长按音量减（约${(_longPressMs / 1000).toStringAsFixed(1)}秒）',
+                    '长按音量减（约${_formatSeconds(_longPressMs)}秒）',
                     VolumeGestureSlot.longPressDown,
                   ),
                   const SizedBox(height: 14),
@@ -429,6 +510,11 @@ class _VolumeKeySettingsPageState extends State<VolumeKeySettingsPage>
   // 标题 Text + 6 间距 + Wrap ChoiceChip）---
   Widget _buildGestureSelectorRow(String title, String slot) {
     final ext = AppThemeExtension.of(context);
+    // 按住说话只在长按两行提供：松开停录的语义依附「按住中态」，双击槽位
+    // 触发即抬手、没有按住中态，绑了也无法停录（实验分支 ptt_record）
+    final isLongPressSlot =
+        slot == VolumeGestureSlot.longPressUp ||
+        slot == VolumeGestureSlot.longPressDown;
     final options = [
       (VolumeGestureAction.none, '无动作', Icons.block),
       (VolumeGestureAction.showOverlay, '显示悬浮窗', Icons.picture_in_picture_alt),
@@ -436,6 +522,8 @@ class _VolumeKeySettingsPageState extends State<VolumeKeySettingsPage>
       (VolumeGestureAction.quickRecord, 'APP内录音', Icons.fiber_manual_record),
       (VolumeGestureAction.quickTextNote, 'APP内笔记', Icons.edit_note),
       (VolumeGestureAction.overlayNewNote, '悬浮窗笔记', Icons.note_add_outlined),
+      if (isLongPressSlot)
+        (VolumeGestureAction.pttRecord, '按住说话', Icons.record_voice_over),
     ];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -452,11 +540,13 @@ class _VolumeKeySettingsPageState extends State<VolumeKeySettingsPage>
             final (action, label, icon) = opt;
             final selected =
                 (_gestureActions[slot] ?? VolumeGestureAction.none) == action;
-            // 悬浮窗系动作未解锁时展示 Pro 徽章（门禁在 onSelected 拦截，不写 prefs）
+            // 悬浮窗系动作未解锁时展示 Pro 徽章（门禁在 onSelected 拦截，不写 prefs）；
+            // 按住说话复用悬浮窗语音速记整条链路，同受 Pro 门禁
             final isOverlayAction =
                 action == VolumeGestureAction.showOverlay ||
                 action == VolumeGestureAction.overlayRecord ||
-                action == VolumeGestureAction.overlayNewNote;
+                action == VolumeGestureAction.overlayNewNote ||
+                action == VolumeGestureAction.pttRecord;
             return ChoiceChip(
               // ⚠️ ChoiceChip 的 avatar 槽位固定 24×24（M3 Container 定宽高居中），
               // 塞 Row 会溢出压到 label（防再犯：徽章必须放 label 侧）
@@ -492,17 +582,19 @@ class _VolumeKeySettingsPageState extends State<VolumeKeySettingsPage>
     );
   }
 
-  // --- 长按触发阈值档位选择器（两个「长按」手势共用；写 prefs 后 Kotlin 每次
-  // 按键 DOWN 实时读。档位下限 400ms 的误触权衡见 VolumeLongPressMs.choices 注释；
-  // 非悬浮窗 Pro 功能，无门禁，样式对齐下方说完自动停止秒数选择器）---
+  // --- 长按触发阈值选择器（两个「长按」手势共用；写 prefs 后 Kotlin 每次
+  // 按键 DOWN 实时读。预设 4 档 + 自定义档（点 chip 弹输入框，见
+  // _showCustomLongPressDialog）；非悬浮窗 Pro 功能，无门禁，样式对齐下方
+  // 说完自动停止秒数选择器）---
   Widget _buildLongPressMsSelector() {
     final ext = AppThemeExtension.of(context);
     const options = [
-      (400, '快 · 0.4秒'),
-      (500, '标准 · 0.5秒'),
-      (800, '慢 · 0.8秒'),
-      (1200, '很慢 · 1.2秒'),
+      (200, '很快 · 0.2秒'),
+      (300, '快 · 0.3秒'),
+      (400, '标准 · 0.4秒'),
+      (700, '慢 · 0.7秒'),
     ];
+    final isCustom = VolumeLongPressMs.isCustom(_longPressMs);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -514,31 +606,62 @@ class _VolumeKeySettingsPageState extends State<VolumeKeySettingsPage>
         Wrap(
           spacing: 8,
           runSpacing: 6,
-          children: options.map((opt) {
-            final (ms, label) = opt;
-            final selected = _longPressMs == ms;
-            return ChoiceChip(
+          children: [
+            ...options.map((opt) {
+              final (ms, label) = opt;
+              final selected = _longPressMs == ms;
+              return ChoiceChip(
+                avatar: Icon(
+                  Icons.timer_outlined,
+                  size: 16,
+                  color: selected ? ext.textOnPrimary : ext.primary,
+                ),
+                label: Text(label),
+                selected: selected,
+                selectedColor: ext.primary,
+                labelStyle: TextStyle(
+                  color: selected ? ext.textOnPrimary : ext.textPrimary,
+                  fontSize: 13,
+                ),
+                onSelected: (_) => _saveLongPressMs(ms),
+              );
+            }),
+            // 自定义档：未设置时显示占位「自定义…」；已设置显示当前值。
+            // 再点已选中的 chip 重新打开输入框微调（值等于某预设时 UI 归位
+            // 到该预设 chip，属预期）
+            ChoiceChip(
               avatar: Icon(
-                Icons.timer_outlined,
+                Icons.tune,
                 size: 16,
-                color: selected ? ext.textOnPrimary : ext.primary,
+                color: isCustom ? ext.textOnPrimary : ext.primary,
               ),
-              label: Text(label),
-              selected: selected,
+              label: Text(
+                isCustom ? '自定义 · ${_formatSeconds(_longPressMs)}秒' : '自定义…',
+              ),
+              selected: isCustom,
               selectedColor: ext.primary,
               labelStyle: TextStyle(
-                color: selected ? ext.textOnPrimary : ext.textPrimary,
+                color: isCustom ? ext.textOnPrimary : ext.textPrimary,
                 fontSize: 13,
               ),
-              onSelected: (_) => _saveLongPressMs(ms),
-            );
-          }).toList(),
+              onSelected: (_) => _showCustomLongPressDialog(),
+            ),
+          ],
         ),
         const SizedBox(height: 4),
         Text(
           '两个「长按」手势共用的按住时长。设得过短可能把按得偏重的单击误判为长按',
           style: TextStyle(color: ext.textHint, fontSize: 11),
         ),
+        // 自定义档低于 ~100ms（刻意单击的最短按压）时的强警示：不再只是
+        // 「误判偏重单击」，该键的单击/双击/保持静音手势会被整体挤掉
+        if (_longPressMs < 100) ...[
+          const SizedBox(height: 4),
+          Text(
+            '当前时长低于正常单击的按压时长（约0.1~0.3秒）：绑定动作的键上，单击调音量、双击手势与「按音量减保持静音」都将不再生效，每次按下会直接触发长按动作',
+            style: TextStyle(color: ext.warningText, fontSize: 11),
+          ),
+        ],
       ],
     );
   }

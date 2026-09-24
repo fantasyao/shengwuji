@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../correction/correction_config.dart'; // 同音词上下文纠错开关 key
 import '../db_helper.dart';
+import '../hotword/phoneme_corrector.dart'; // 音素热词配置（开关/阈值 prefs key）
 import '../text_processor.dart';
 import '../theme/app_theme_extension.dart';
 import '../widgets/correction_pairs_page.dart'; // 错误-修正学习表管理页
@@ -30,12 +31,16 @@ class RecognitionCorrectionPage extends StatefulWidget {
 class _RecognitionCorrectionPageState extends State<RecognitionCorrectionPage> {
   final TextEditingController _hotwordController = TextEditingController();
   int _correctionPairCount = 0;
+  // 音素热词开关/阈值（initState 一次读入，改动即写回并热更新 processor）
+  bool _phonemeEnabled = true;
+  double _phonemeThreshold = PhonemeHotwordConfig.defaultThreshold;
 
   @override
   void initState() {
     super.initState();
     _loadHotwords();
     _loadCorrectionPairCount();
+    _loadPhonemeConfig();
   }
 
   @override
@@ -52,6 +57,37 @@ class _RecognitionCorrectionPageState extends State<RecognitionCorrectionPage> {
   Future<void> _loadCorrectionPairCount() async {
     final pairs = await widget.dbHelper.getAllCorrectionPairs();
     if (mounted) setState(() => _correctionPairCount = pairs.length);
+  }
+
+  Future<void> _loadPhonemeConfig() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() {
+      _phonemeEnabled =
+          prefs.getBool(PhonemeHotwordConfig.enabledPrefKey) ?? true;
+      _phonemeThreshold = PhonemeHotwordConfig.normalizeThreshold(
+        prefs.getDouble(PhonemeHotwordConfig.thresholdPrefKey) ??
+            PhonemeHotwordConfig.defaultThreshold,
+      );
+    });
+  }
+
+  /// 开关/阈值变化：写 prefs + 热更新 processor（识别链路立即生效）
+  Future<void> _updatePhonemeConfig({
+    bool? enabled,
+    double? threshold,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (enabled != null) {
+      await prefs.setBool(PhonemeHotwordConfig.enabledPrefKey, enabled);
+      _phonemeEnabled = enabled;
+    }
+    if (threshold != null) {
+      await prefs.setDouble(PhonemeHotwordConfig.thresholdPrefKey, threshold);
+      _phonemeThreshold = threshold;
+    }
+    await widget.processor.reloadPhonemeConfig();
+    if (mounted) setState(() {});
   }
 
   @override
@@ -79,13 +115,68 @@ class _RecognitionCorrectionPageState extends State<RecognitionCorrectionPage> {
             padding: EdgeInsets.zero,
             child: Column(
               children: [
+                // 音素热词总开关（发音近似超过阈值才替换，见
+                // docs/architecture/phoneme-hotword.md）
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: buildSettingsSwitchTile(
+                    context,
+                    title: const Text(
+                      '音素匹配热词',
+                      style: TextStyle(fontSize: 15),
+                    ),
+                    subtitle: Text(
+                      '按发音匹配：识别结果与热词读音相似度超过阈值才替换，'
+                      '识别写法稍有出入也能命中；关闭后退回逐字精确替换',
+                      style: TextStyle(fontSize: 12, color: ext.textHint),
+                    ),
+                    value: _phonemeEnabled,
+                    onChanged: (v) => _updatePhonemeConfig(enabled: v),
+                  ),
+                ),
+                const Divider(height: 1, indent: 16, endIndent: 16),
+                // 替换阈值（数值越低越容易触发替换，越高越保守）
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                  child: Row(
+                    children: [
+                      Text(
+                        '替换阈值',
+                        style: TextStyle(fontSize: 15),
+                      ),
+                      const Spacer(),
+                      Text(
+                        _phonemeThreshold.toStringAsFixed(2),
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.bold,
+                          color: ext.primary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Slider(
+                  value: _phonemeThreshold,
+                  min: PhonemeHotwordConfig.minThreshold,
+                  max: PhonemeHotwordConfig.maxThreshold,
+                  divisions: ((PhonemeHotwordConfig.maxThreshold -
+                          PhonemeHotwordConfig.minThreshold) *
+                      100)
+                      .round(),
+                  label: _phonemeThreshold.toStringAsFixed(2),
+                  onChanged: (v) =>
+                      setState(() => _phonemeThreshold = v),
+                  onChangeEnd: (v) => _updatePhonemeConfig(threshold: v),
+                ),
+                const Divider(height: 1, indent: 16, endIndent: 16),
                 TextField(
                   controller: _hotwordController,
                   maxLines: 5,
                   decoration: InputDecoration(
                     filled: true,
                     fillColor: ext.cardBackground,
-                    hintText: "错词 = 正词 (每行一个)",
+                    hintText: "错词 = 正词 / 目标 | 别名 (每行一个)",
                     hintStyle: TextStyle(color: ext.textHint, fontSize: 13),
                     contentPadding: const EdgeInsets.all(16),
                     border: OutlineInputBorder(
@@ -121,6 +212,22 @@ class _RecognitionCorrectionPageState extends State<RecognitionCorrectionPage> {
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(10),
                       ),
+                    ),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+                  child: Text(
+                    '支持三种写法（每行一条，# 开头为注释）：\n'
+                    '「错词 = 正词」逐字精确替换，同时按发音匹配；\n'
+                    '「目标 | 别名 | 别名」多个别名写法都替换为第一个词，'
+                    '可用作语音快捷短语（说别名上屏目标）；\n'
+                    '「目标」单独一行，发音相似即替换。\n'
+                    '单字热词容易误替换，命中时只会提示、不会自动改。',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: ext.textHint,
+                      height: 1.5,
                     ),
                   ),
                 ),
@@ -203,7 +310,11 @@ class _RecognitionCorrectionPageState extends State<RecognitionCorrectionPage> {
       onTap: () async {
         await Navigator.push(
           context,
-          MaterialPageRoute(builder: (_) => const CorrectionPairsPage()),
+          MaterialPageRoute(
+            // 传主实例：管理页「加入热词」写盘后同步重建主实例词表立即生效
+            builder: (_) =>
+                CorrectionPairsPage(processor: widget.processor),
+          ),
         );
         _loadCorrectionPairCount(); // 管理页可能有增删，返回后刷新计数
       },

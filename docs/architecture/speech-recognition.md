@@ -322,17 +322,17 @@ DiaryTab 在卡片渲染时对内容做查询检测，与上面 RecordTab 的智
 main() → RecognizerSingleton.preloadModelPath()
        → SplashScreen(child: MainScaffold)
        → SplashScreen._doInit():
-           1. preloadModelPath()（确保内置模型已拷贝）
-           2. Permission.microphone.request()
-           3. RecognizerSingleton.instance.initialize()
-       → MainScaffold 显示
+           1. preloadModelPath()（仅确保内置模型已拷贝，不初始化引擎）
+           2. 已授权 → 直接完成；未授权 → 显示"授权并开始"按钮等待点击
+           3. （用户点击后）Permission.microphone.request()
+       → MainScaffold 显示（引擎延迟到首次录音时加载）
 ```
 
 ### 启动页（SplashScreen）
 - **文件**: lib/splash_screen.dart
 - 冷启动时显示，完成初始化后自动消失
-- 三阶段进度条：0% → 33% → 66% → 100%
-- 展示应用图标、名称和"完全离线 · 无需联网"标语
+- 进度条两段式：0% 预加载 → 50% 等待授权（未授权时）→ 100% 进主界面；引擎不在此加载（延迟加载，见 [postmortem-lazy-model-loading.md](../guides/postmortem-lazy-model-loading.md)）
+- 展示应用图标、名称和"一键记存，快捷好用。离线识别，隐私放心。"标语（视觉设计见 [ui-patterns.md](../guides/ui-patterns.md#启动页splashscreen)）
 
 ### 模型文件
 - `model.int8.onnx` - 模型权重（SenseVoice）

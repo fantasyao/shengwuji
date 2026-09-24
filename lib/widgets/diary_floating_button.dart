@@ -244,16 +244,22 @@ class _DiaryFloatingButtonState extends State<DiaryFloatingButton> {
                         shape: BoxShape.circle,
                         color: btnColor,
                         // 🎨 黏土拟态阴影：顶部高光 + 底部深色阴影
+                        // 2026-09-23 用户反馈（自定义主题下三页语音钮不一致）：
+                        // 高光原用 ext.textOnPrimary，自定义主题主色偏浅时该槽
+                        // 按 WCAG 自动落深色（L=0.13），「高光」变黑晕、整体显得
+                        // 阴影过重 → 高光固定白色；暗影 alpha 0.2→0.12 减淡。
+                        // ⚠️ 三处语音圆钮阴影保持一致（main.dart 查物品浮动钮/
+                        // 录入页钉底栏同款），改动必须三处同步
                         boxShadow: [
                           // 顶部高光阴影（模拟光源从上方）
                           BoxShadow(
-                            color: ext.textOnPrimary.withValues(alpha: 0.4),
+                            color: Colors.white.withValues(alpha: 0.4),
                             offset: const Offset(-4, -4),
                             blurRadius: 8,
                           ),
                           // 底部深色阴影（模拟凹陷感）
                           BoxShadow(
-                            color: Colors.black.withValues(alpha: 0.2),
+                            color: Colors.black.withValues(alpha: 0.12),
                             offset: const Offset(4, 4),
                             blurRadius: 10,
                           ),

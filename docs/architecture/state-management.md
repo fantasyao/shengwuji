@@ -13,7 +13,8 @@
 SplashScreen(child: MainScaffold())
 ```
 
-- 冷启动时执行三阶段初始化：模型预加载 → 权限请求 → 引擎初始化
+- 冷启动时初始化：模型路径预加载 → 权限检查（已授权直接过，未授权显示授权按钮等待点击）
+- 引擎不在此初始化（延迟加载策略，首次录音时由日记页/随手记页触发，见 [postmortem-lazy-model-loading.md](../guides/postmortem-lazy-model-loading.md)）
 - 初始化完成后显示 `MainScaffold`
 - 热启动跳过初始化（`hasEverInitialized` 判断）
 - **文件**: lib/splash_screen.dart

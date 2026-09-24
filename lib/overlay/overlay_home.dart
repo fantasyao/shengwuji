@@ -12,6 +12,7 @@ import '../db_helper.dart';
 import '../theme/app_theme_extension.dart';
 import '../utils/calendar_helper.dart';
 import '../utils/diary_sync_bridge.dart';
+import '../utils/note_unlock_session.dart';
 import '../widgets/calendar_confirm_sheet.dart';
 import '../widgets/swipe_dismiss_card.dart';
 import 'accessibility_overlay.dart';
@@ -75,9 +76,20 @@ class _OverlayHomeState extends State<OverlayHome>
   // false = 屏幕右缘（历史行为），true = 左缘。内存镜像驱动 build 的全部
   // 方向分支（把手/竖线对齐与滑入方向、面板锚点与推屏方向、滑动手势方向、
   // 卡片/胶囊 dockLeft 透传）；窗口真实位置由 Kotlin 同 key 直读 Gravity。
-  // 刷新时机见 [_refreshSide]——切换设置后下一次状态转换整体换侧，
+  // 刷新时机见 [_refreshOverlayConfig]——切换设置后下一次状态转换整体换侧，
   // 已显示中的收起把手不瞬移（跨 engine 无推送通道）
   bool _sideLeft = false;
+
+  // ── 把手大小档位（设置页 overlay_handle_size_percent，100/75/50）──
+  // 驱动把手胶囊视觉缩放与竖线视觉高度（窗口 28×88/20×64 与触控面积恒定，
+  // 方案 A「只缩视觉不缩窗口」）；75%/50% 档把手不显示竖排文字。
+  // 刷新时机同 [_refreshOverlayConfig]——下一次状态转换生效，已显示中的把手不瞬变
+  int _handleSizePercent = OverlayConstants.handleSizeDefaultPercent;
+
+  // ── 把手主题（设置页 overlay_handle_theme，duo/bluePurple/pill3d）──
+  // 驱动把手胶囊配色与内容形态（拟物💊纯造型无图标无文字），读取与生效
+  // 时机同把手大小档位
+  HandleTheme _handleTheme = HandleTheme.duo;
 
   // ── 卡片交互状态（复选框归档 + 展开全文）──
   // 展开态真值：diary id 驱动（父层管理，归档移位/列表刷新不错位；
@@ -87,11 +99,6 @@ class _OverlayHomeState extends State<OverlayHome>
   final Set<int> _archivingIds = {};
   // 删除二次确认进行中的 id（卡片底行变「确认删除？✓✗」）
   final Set<int> _deleteConfirmIds = {};
-  // 标注选择态进行中的 id（卡片底行变「❗ ⭐ 💡 ✗返回」；
-  // 读写方：itemBuilder 传卡片 / _onCardTagEntry / _onCardTagPickCancel /
-  // _setDiaryTag；清方：_enterEdit / _onCardDelete / _toggleExpand 收起分支 /
-  // _finishCollapse / _resetFromNative——与 _deleteConfirmIds 同生命周期模式）
-  final Set<int> _tagPickingIds = {};
   // 转写完成后默认展开第一条的待执行标记（写方：_onVoiceMemoChanged 转写完成
   // 分支置 true；读方/清方：_loadDiaries 成功后展开首条并清除；
   // _resetFromNative 防御性清除——浮窗被隐藏时转写完成的"展开首条"不该残留
@@ -117,6 +124,23 @@ class _OverlayHomeState extends State<OverlayHome>
   // diary_tab.dart:2587-2592）；写方：_startNewNote；清方/读方：
   // _saveEdit / _cancelEdit（id 匹配时删行并从 _diaries 移除）
   int? _pendingNewNoteId;
+
+  // ── 笔记锁定（diary.is_locked，与主 App 同一份库列）──
+  // 解锁会话快照（NoteUnlockSession 本页缓存）：true = 锁定卡显示明文。
+  // 刷新时机：_loadDiaries（所有列表变更入口）/ relockNotes（原生锁屏重锁）/
+  // noteUnlockResult（认证成功）。与主 App 共享同一 prefs key（跨 engine 会话：
+  // 一边认证两边免验）
+  bool _notesUnlocked = false;
+  // 认证请求在途（防连点重复拉起；Kotlin coordinator 另有防重兜底）
+  bool _unlockAuthInFlight = false;
+  // 认证前用户点开的锁定卡 id：认证成功后自动展开（免去二次点击）。
+  // 清方：_onNoteUnlockResult 消费 / relockNotes（重锁后意图作废）
+  int? _pendingUnlockExpandId;
+  // 用户点锁按钮（解除锁定）时的待执行意图：会话外先认证，认证成功后直接
+  // 解除该卡锁定（一步到位，2026-09-22 用户反馈两步语义反直觉后改定，
+  // 与主 App DiaryTab._pendingUnlockReleaseId 同语义）。点卡片本体查看
+  // 不走此意图（只开临时会话不动锁定标志）
+  int? _pendingUnlockReleaseId;
 
   // 收起后延时彻底隐藏的计时器（到期 closeOverlay → 原生 hideOverlay → 发 reset 复位）
   Timer? _autoHideTimer;
@@ -213,7 +237,7 @@ class _OverlayHomeState extends State<OverlayHome>
     _controller.addListener(_onStateChanged);
     _voiceMemo.addListener(_onVoiceMemoChanged);
     // 冷启动先按右缘（历史缺省）渲染首帧，停靠侧异步刷新后若为左缘再镜像
-    _refreshSide();
+    _refreshOverlayConfig();
     // 面板滑动动画控制器：初始 value 默认 0（dismissed）= 冷启动即收起态，
     // 无需显式设置；时长唯一真值在 OverlayConstants.panelSlideDuration
     _panelAnim = AnimationController(
@@ -250,10 +274,12 @@ class _OverlayHomeState extends State<OverlayHome>
         _expand();
       },
       onReset: _resetFromNative,
-      // Kotlin triggerVoiceMemoOverlay → 请求开始录音；成功/失败分别回执
-      // voiceMemoStarted / voiceMemoFailed（Kotlin toggle 状态机的复位依据）。
-      // hiddenReveal：Kotlin 负载，true = 当前是隐藏窗口（alpha=0 等揭示）
-      onStartVoiceMemo: (hiddenReveal) async {
+      // Kotlin triggerVoiceMemoOverlay / triggerPttVoiceMemo → 请求开始录音；
+      // 成功/失败分别回执 voiceMemoStarted / voiceMemoFailed（Kotlin toggle/
+      // PTT 状态机的复位依据）。
+      // hiddenReveal：Kotlin 负载，true = 当前是隐藏窗口（alpha=0 等揭示）；
+      // ptt：true = 按住说话会话（松手即停），透传给 controller 选停止提示文案
+      onStartVoiceMemo: (hiddenReveal, ptt) async {
         if (!mounted) return;
         if (hiddenReveal) {
           // 隐藏窗口模式：handler 顶部立即挂门——门挂上之前的 await 链
@@ -269,13 +295,13 @@ class _OverlayHomeState extends State<OverlayHome>
         }
         // 停靠侧刷新（await）：录音胶囊的揭示首帧就要按当前侧镜像渲染，
         // 不能等异步回来自纠正（首帧错侧在 312 宽窗口里是肉眼可见的偏移）
-        await _refreshSide();
+        await _refreshOverlayConfig();
         // 开录音前停止回放：扬声器声音会回采进麦克风污染识别（同主 App TTS
         // 回采三层防御的动机）。录音唯一入口在此 handler（controller.start
         // 仅此处调用），_onVoiceMemoChanged 不需要重复设防；必须在 start()
         // 之前停——start 内部有多个 await，期间麦克风已可能开流，事后停就晚了
         _stopAudioPlayback();
-        final ok = await _voiceMemo.start();
+        final ok = await _voiceMemo.start(ptt: ptt);
         if (!mounted) return;
         if (ok) {
           await AccessibilityOverlay.voiceMemoStarted();
@@ -307,6 +333,15 @@ class _OverlayHomeState extends State<OverlayHome>
         if (!mounted) return;
         setState(() => _proHintShown = true);
       },
+      // 原生 ACTION_SCREEN_OFF（锁屏即重锁）→ 收起已展开的锁定卡 + 打码。
+      // 会话本身由原生广播直接清零，这里只做 UI 收敛
+      onRelockNotes: _onRelockNotes,
+      // 认证结果回发（NoteUnlockCoordinator → 服务通道）：成功续期会话 +
+      // 展开认证前点开的锁定卡
+      onNoteUnlockResult: _onNoteUnlockResult,
+      // 原生 ACTION_SCREEN_OFF（息屏自动隐藏）→ 立即推进到驻留终态，
+      // 亮屏/解锁后把手/面板不复活（用户拍板「进 AOD 必须收」，见本方法注释）
+      onScreenAutoHide: _onScreenAutoHide,
     );
     // 握手：告知原生 Dart handler 已注册；若原生挂起 pendingAutoExpand 会立即补发 expand
     AccessibilityOverlay.notifyDartReady();
@@ -436,6 +471,9 @@ class _OverlayHomeState extends State<OverlayHome>
     }
     try {
       final data = await _dataClient.getDiaries();
+      // 笔记锁定：每次列表加载同步重读解锁会话（与主 App refreshList 同款，
+      // 认证成功/过期/锁屏重锁后的刷新都经此入口）
+      _notesUnlocked = await NoteUnlockSession.isUnlocked();
       if (mounted) {
         setState(() {
           _diaries = data;
@@ -482,17 +520,147 @@ class _OverlayHomeState extends State<OverlayHome>
     }
   }
 
-  /// 切换单卡展开/收起（卡片 onTap；展开态真值在 _expandedIds 按 diary id 管理）
+  /// 切换单卡展开/收起（卡片 onTap；展开态真值在 _expandedIds 按 diary id 管理）。
+  /// 锁定且会话外的卡不展开：发起系统认证并记住意图（成功后自动展开）
   void _toggleExpand(int id) {
+    final idx = _diaries.indexWhere((d) => d['id'] == id);
+    if (idx >= 0 && _isLockedHidden(_diaries[idx])) {
+      _pendingUnlockExpandId = id;
+      _ensureNoteUnlocked();
+      return;
+    }
     setState(() {
       if (_expandedIds.contains(id)) {
         _expandedIds.remove(id);
-        // 收起卡片顺带退出标注选择态（防状态残留到下次展开）
-        _tagPickingIds.remove(id);
       } else {
         _expandedIds.add(id);
       }
     });
+  }
+
+  // ── 笔记锁定：会话判定 / 认证门禁 / 锁定开关 / 原生事件 ──
+
+  /// 该卡片当前是否应打码展示：用户手动锁定（is_locked=1）+ 会话外 + 非空
+  /// 内容（占位行不可锁也不打码）。与主 App DiaryTab._isLockedHidden 同规则
+  bool _isLockedHidden(Map<String, dynamic> diary) {
+    if (diary['is_locked'] != 1) return false;
+    if (((diary['content'] as String?) ?? '').trim().isEmpty) return false;
+    return !_notesUnlocked;
+  }
+
+  /// 锁定卡片的内容级操作门禁（展开/复制/AI/编辑/播放/删除/闹钟共用）：
+  /// 会话内放行；会话外发起系统认证并返回 false——结果经 noteUnlockResult
+  /// 异步回发
+  Future<bool> _ensureNoteUnlocked() async {
+    if (_notesUnlocked) return true;
+    if (_unlockAuthInFlight) return false;
+    _unlockAuthInFlight = true;
+    try {
+      await AccessibilityOverlay.requestUnlockAuth();
+    } catch (e) {
+      print('❌ [OverlayHome] 发起笔记认证失败: $e');
+    } finally {
+      _unlockAuthInFlight = false;
+    }
+    return false;
+  }
+
+  /// 原生 ACTION_SCREEN_OFF（锁屏即重锁）回调：会话已被原生广播清零，
+  /// 这里收敛 UI——收起已展开的锁定卡（打码由卡片渲染分支自然接管）、
+  /// 作废未消费的认证展开意图
+  Future<void> _onRelockNotes() async {
+    await NoteUnlockSession.revoke();
+    if (!mounted) return;
+    setState(() {
+      _notesUnlocked = false;
+      _pendingUnlockExpandId = null;
+      _pendingUnlockReleaseId = null;
+      _expandedIds.removeWhere((id) {
+        final idx = _diaries.indexWhere((d) => d['id'] == id);
+        return idx >= 0 && _diaries[idx]['is_locked'] == 1;
+      });
+    });
+    print('🔒 [OverlayHome] 锁屏重锁：已收起展开中的锁定卡片');
+  }
+
+  /// 认证结果回调（NoteUnlockCoordinator → 服务通道）。成功：续期会话 +
+  /// 消费两个意图——点锁按钮发起的认证直接解除该卡锁定；点卡片发起的认证
+  /// 自动展开。失败静默（用户取消/原生已 Toast 无凭据提示），意图清空
+  Future<void> _onNoteUnlockResult(bool success) async {
+    if (!mounted) return;
+    print('🔒 [OverlayHome] 笔记认证结果: success=$success');
+    final releaseId = _pendingUnlockReleaseId;
+    final expandId = _pendingUnlockExpandId;
+    _pendingUnlockReleaseId = null;
+    _pendingUnlockExpandId = null;
+    if (!success) return;
+    await NoteUnlockSession.extend();
+    if (!mounted) return;
+    setState(() {
+      _notesUnlocked = true;
+      if (expandId != null) {
+        _expandedIds.add(expandId);
+      }
+    });
+    if (releaseId != null) {
+      try {
+        await DbHelper().setDiaryLocked(releaseId, false);
+        // 主 App 感知锁定标志变化（跨 engine 计数桥，见 DiarySyncBridge）
+        DiarySyncBridge.bump();
+        if (!mounted) return;
+        setState(() {
+          final idx = _diaries.indexWhere((d) => d['id'] == releaseId);
+          if (idx >= 0) {
+            _diaries[idx] = {..._diaries[idx], 'is_locked': 0};
+          }
+          // 解除锁定后收起卡，重展开显示明文（打码分支已不命中）
+          _expandedIds.remove(releaseId);
+        });
+        print('🔒 [OverlayHome] 认证成功，已解除锁定 id=$releaseId');
+      } catch (e) {
+        print('❌ [OverlayHome] 认证后解除锁定失败 id=$releaseId: $e');
+      }
+    }
+  }
+
+  /// 锁定/解除锁定（卡片底条锁按钮）。锁定 = 结束解锁会话（整体立即打码）；
+  /// 解除锁定是内容级操作：会话外先认证，**认证成功后直接解除该卡锁定**
+  ///（意图记 [_pendingUnlockReleaseId]，结果在 _onNoteUnlockResult 消费，
+  /// 与主 App DiaryTab._toggleDiaryLock 语义严格一致）。会话内直接解除。
+  /// 点卡片本体查看是另一条路：只开临时会话不动锁定标志
+  Future<void> _toggleDiaryLock(Map<String, dynamic> diary) async {
+    final id = diary['id'] as int;
+    final locked = diary['is_locked'] == 1;
+    if (locked && !_notesUnlocked) {
+      _pendingUnlockReleaseId = id;
+      await _ensureNoteUnlocked();
+      return;
+    }
+    AccessibilityOverlay.vibrateTick();
+    try {
+      await DbHelper().setDiaryLocked(id, !locked);
+      // 主 App 感知锁定标志变化（跨 engine 计数桥，见 DiarySyncBridge）
+      DiarySyncBridge.bump();
+      if (!mounted) return;
+      setState(() {
+        final idx = _diaries.indexWhere((d) => d['id'] == id);
+        if (idx >= 0) {
+          _diaries[idx] = {..._diaries[idx], 'is_locked': locked ? 0 : 1};
+        }
+        if (!locked) {
+          // 刚锁定 = 结束解锁会话（主 App 同步打码），本卡顺带收起
+          _notesUnlocked = false;
+          _expandedIds.remove(id);
+          NoteUnlockSession.revoke();
+        } else {
+          // 解除锁定后收起卡，重展开显示明文（打码分支已不命中）
+          _expandedIds.remove(id);
+        }
+      });
+      print('🔒 [OverlayHome] 笔记锁定状态已切换 id=$id locked=${!locked}');
+    } catch (e) {
+      print('❌ [OverlayHome] 锁定状态切换失败 id=$id: $e');
+    }
   }
 
   /// 复选框 toggle：勾上=归档、取消勾=恢复（乐观 UI + 落库 + 延时静默刷新移位）。
@@ -555,6 +723,11 @@ class _OverlayHomeState extends State<OverlayHome>
     final id = diary['id'] as int;
     final path = diary['audio_path'] as String?;
     if (path == null || path.isEmpty) return;
+    // 锁定打码卡：录音内容与正文同属锁定范围，先过认证
+    if (_isLockedHidden(diary)) {
+      await _ensureNoteUnlocked();
+      return;
+    }
     // 播放/暂停触感：heavy 档 = 把手侧滑展开同款（AccessibilityOverlay 通道，
     // 原生 VibrationEffect.createPredefined 线性马达，与主 App performHaptic 同映射）
     AccessibilityOverlay.performHaptic('heavy');
@@ -597,10 +770,12 @@ class _OverlayHomeState extends State<OverlayHome>
   /// 两次点击均 tick 震动（对齐复制按钮反馈）
   Future<void> _onCardDelete(Map<String, dynamic> diary) async {
     final id = diary['id'] as int;
+    // 锁定打码卡：删除是内容级操作，先过认证（两步确认都在门禁之后）
+    if (_isLockedHidden(diary)) {
+      await _ensureNoteUnlocked();
+      return;
+    }
     if (!_deleteConfirmIds.contains(id)) {
-      // 进入删除确认态顺带退出标注选择态（结构上两态互斥——底行整行替换，
-      // 标注态下删除按钮不可见；此处为防御性清理）
-      _tagPickingIds.remove(id);
       setState(() => _deleteConfirmIds.add(id));
       AccessibilityOverlay.vibrateTick();
       return;
@@ -652,6 +827,12 @@ class _OverlayHomeState extends State<OverlayHome>
   Future<void> _onCardSwipeDismissed(Map<String, dynamic> diary) async {
     final id = diary['id'] as int;
     final isArchived = (diary['is_archived'] as int? ?? 0) == 1;
+    // 锁定打码卡：未归档卡划走 = 归档（不涉内容，放行）；已归档卡划走 =
+    // 彻底删除（内容级操作），先过认证
+    if (isArchived && _isLockedHidden(diary)) {
+      await _ensureNoteUnlocked();
+      return;
+    }
     // 写库进行中忽略（防抖，同复选框归档/删除按钮入口检查）
     final debouncing = isArchived ? _deletingIds : _archivingIds;
     if (debouncing.contains(id)) return;
@@ -669,7 +850,6 @@ class _OverlayHomeState extends State<OverlayHome>
         _diaries.removeWhere((d) => d['id'] == id);
         _expandedIds.remove(id);
         _deleteConfirmIds.remove(id);
-        _tagPickingIds.remove(id);
       });
       if (isArchived) {
         // 已归档 → 删除（tick 震动/停播/删行删音频/bump/刷新都在共用体内）
@@ -700,20 +880,10 @@ class _OverlayHomeState extends State<OverlayHome>
     setState(() => _deleteConfirmIds.remove(id));
   }
 
-  /// 标注入口按钮（底条 Icons.label_outline）：进入标注选择态，
-  /// 底行整行替换为「❗ ⭐ 💡 ✗返回」
-  void _onCardTagEntry(int id) {
-    setState(() => _tagPickingIds.add(id));
-  }
-
-  /// 标注选择态 ✗ 返回：退出选择态，底行还原为查看态按钮条
-  void _onCardTagPickCancel(int id) {
-    setState(() => _tagPickingIds.remove(id));
-  }
-
-  /// 标注写入（标注行 tag 按钮点击）：tag='urgent'/'star'/'idea' 或
-  /// null（点已选中的 tag = 取消标注）。写库成功后按 id 局部更新内存列表
-  /// + 退出标注选择态（照 _toggleArchive 的局部更新模式，不整表 reload）。
+  /// 标注写入（展开卡时间行标注三色按钮点击，一级直出无选择态）：
+  /// tag='urgent'/'star'/'idea' 或 null（点已选中的 tag = 取消标注）。
+  /// 写库成功后按 id 局部更新内存列表（照 _toggleArchive 的局部更新模式，
+  /// 不整表 reload）。
   /// ⚠️ sqflite 查询返回的行是只读 QueryRow，必须拷贝新 Map 整体替换
   Future<void> _setDiaryTag(int id, String? tag) async {
     try {
@@ -726,8 +896,6 @@ class _OverlayHomeState extends State<OverlayHome>
         if (idx >= 0) {
           _diaries[idx] = {..._diaries[idx], 'tag': tag};
         }
-        // 标注完成即退出选择态（底行还原，卡片原地换色）
-        _tagPickingIds.remove(id);
       });
       // 轻震动确认（20ms/amplitude 50，对齐归档反馈）
       _vibrate();
@@ -741,8 +909,14 @@ class _OverlayHomeState extends State<OverlayHome>
 
   /// 卡片复制按钮：原生写剪贴板 + tick 震动（原生侧完成，对齐日记页反馈），
   /// 成功后自动收起面板回把手（用户复制完即走，与分享后收起同语义）。
-  /// 入口日志区分"tap 未触发"与"通道/写入失败"两类问题
-  Future<void> _onCardCopy(String content) async {
+  /// 入口日志区分"tap 未触发"与"通道/写入失败"两类问题。
+  /// 锁定打码卡：复制即内容出机，先过认证
+  Future<void> _onCardCopy(Map<String, dynamic> diary) async {
+    if (_isLockedHidden(diary)) {
+      await _ensureNoteUnlocked();
+      return;
+    }
+    final content = (diary['content'] as String?) ?? '';
     print('📋 [OverlayHome] 复制按钮点击 (len=${content.length})');
     try {
       final ok = await AccessibilityOverlay.copyText(content);
@@ -767,7 +941,13 @@ class _OverlayHomeState extends State<OverlayHome>
   /// 剪贴板写入失败即中止跳转——留在原地让用户改走复制按钮，避免跳过去
   /// 粘出剪贴板里的旧内容；拉起成功后收起面板回把手（用户已跳去 AI 应用，
   /// 与原分享后收起同语义；_collapse 幂等守卫兜底）
-  Future<void> _onCardShareToAI(String content) async {
+  Future<void> _onCardShareToAI(Map<String, dynamic> diary) async {
+    // 锁定打码卡：AI 对话 = 复制内容并跳转外部应用，先过认证
+    if (_isLockedHidden(diary)) {
+      await _ensureNoteUnlocked();
+      return;
+    }
+    final content = (diary['content'] as String?) ?? '';
     try {
       // 跨 engine 读主 App 设置页写入的选择（各 engine prefs 内存缓存隔离，
       // 必须 reload，项目惯例见 overlay_voice_memo/_maybeRefreshDiaries）
@@ -818,6 +998,11 @@ class _OverlayHomeState extends State<OverlayHome>
   Future<void> _onCardAlarm(Map<String, dynamic> diary) async {
     final content = (diary['content'] as String?) ?? '';
     print('⏰ [OverlayHome] 闹钟按钮点击 (len=${content.length})');
+    // 锁定打码卡：闹钟识别会读取正文内容（时间实体解析），先过认证
+    if (_isLockedHidden(diary)) {
+      await _ensureNoteUnlocked();
+      return;
+    }
     try {
       // 1. 权限预检（原生 checkSelfPermission，通道异常返回 null 按最严处理）
       final perms = await AccessibilityOverlay.checkAlarmPermissions();
@@ -858,14 +1043,14 @@ class _OverlayHomeState extends State<OverlayHome>
         onHaptic: AccessibilityOverlay.performHaptic,
       );
       if (!mounted || result == null) return;
-      // 4. 写系统日历 + 按需响铃（原生 Toast 反馈）
-      final ok = await AccessibilityOverlay.addCalendarEvent(
+      // 4. 写系统日历 + 按需响铃（原生 Toast 反馈，结果码文案原生侧已区分）
+      final code = await AccessibilityOverlay.addCalendarEvent(
         time: result.time,
         title: title,
         enableAlarm: result.enableAlarm,
       );
       if (!mounted) return;
-      if (ok) {
+      if (code == 'ok') {
         print('⏰ [OverlayHome] 日历事件已写入 @ ${result.time}，标题「$title」');
         // 成功 tick 震动（对齐复制按钮反馈；失败反馈在原生 Toast）
         AccessibilityOverlay.vibrateTick();
@@ -873,7 +1058,8 @@ class _OverlayHomeState extends State<OverlayHome>
         // _collapse 幂等守卫兜底）
         _collapse();
       } else {
-        print('❌ [OverlayHome] 写日历失败（原生已 Toast 提示）');
+        // 结果码打日志便于远程定位（如 no_calendar_account = 系统日历被卸载/停用）
+        print('❌ [OverlayHome] 写日历失败（码 $code，原生已 Toast 提示）');
       }
     } catch (e) {
       print('❌ [OverlayHome] 闹钟流程失败: $e');
@@ -896,6 +1082,11 @@ class _OverlayHomeState extends State<OverlayHome>
   }) async {
     final id = diary['id'] as int;
     final content = (diary['content'] as String?) ?? '';
+    // 锁定打码卡：编辑即读取内容，先过认证
+    if (_isLockedHidden(diary)) {
+      await _ensureNoteUnlocked();
+      return;
+    }
     // 点击落在勾选框占位区（卡片 -1 哨兵）：点勾选框走归档回调，不进编辑
     if (charOffset < 0) return;
     // 占位行（content 为空）不可编辑（构建处不传 onTextTap，此处双保险）；
@@ -910,8 +1101,6 @@ class _OverlayHomeState extends State<OverlayHome>
     }
     // 编辑态与删除确认态互斥：进入编辑前清掉所有卡的删除确认态
     _deleteConfirmIds.clear();
-    // 编辑态与标注选择态同样互斥（编辑中底条是「✗取消 / ✓保存」）
-    _tagPickingIds.clear();
     // 光标偏移夹取到合法范围（TextPainter 换算失败时卡片已兜底落文末，再夹一道）
     final offset = charOffset.clamp(0, content.length);
     _editController?.dispose();
@@ -1306,13 +1495,12 @@ class _OverlayHomeState extends State<OverlayHome>
       _collapseSettled = null;
       return;
     }
-    // 面板已滑出不可见：清展开态/删除确认态/标注选择态——收起 = 本轮编辑结束，
+    // 面板已滑出不可见：清展开态/删除确认态——收起 = 本轮编辑结束，
     // 下次从把手再展开应全部收起（不能在 _collapse 入口清：滑出动画会原地缩卡
     // 跳变；中断收起路径走不到这里，状态天然保留）。_resetFromNative 有同样清空，
     // 覆盖"彻底隐藏"路径，两者互补
     _expandedIds.clear();
     _deleteConfirmIds.clear();
-    _tagPickingIds.clear();
     _controller.collapse(); // → resize(28,88)；此刻旧纹理已是空白 → 无重投影闪烁
     _scheduleAutoHide(); // 收起态排定自动隐藏（必须在 collapse 之后）
     print('🎬 [OverlayHome] 面板滑出完成 → 缩窗回把手 + 排定自动隐藏');
@@ -1329,7 +1517,7 @@ class _OverlayHomeState extends State<OverlayHome>
   Future<void> _expand() async {
     // 停靠侧刷新（await）：面板锚点/推屏方向/卡片镜像必须赶在滑入动画的
     // 首个 setState 前就位，展开是设置变更后的第一个用户可见转换
-    await _refreshSide();
+    await _refreshOverlayConfig();
     // 展开即取消"收起后自动隐藏"计时（时限内再展开不会中途消失）
     _hideScheduleGeneration++;
     _autoHideTimer?.cancel();
@@ -1421,7 +1609,7 @@ class _OverlayHomeState extends State<OverlayHome>
     _stopAudioPlayback();
     // 停靠侧异步补读：下次召唤由 Kotlin 建窗按新侧落位，Dart 镜像要在
     // 那之前就位（fire-and-forget，窗口已隐藏期间有整段缓冲时间）
-    _refreshSide();
+    _refreshOverlayConfig();
     // 动画跳终态（收起）：stop → phase 先归 idle → value=0，顺序不可换——
     // value setter 若补发 dismissed 回调，此刻 phase 已是 idle，被
     // _onPanelAnimStatus 守卫吞掉，不会误触缩窗+自动隐藏链（窗口已被原生
@@ -1452,11 +1640,10 @@ class _OverlayHomeState extends State<OverlayHome>
     _hideScheduleGeneration++;
     _autoHideTimer?.cancel();
     _autoHideTimer = null;
-    // 展开态/删除确认态/标注选择态随窗口移除一并清空：下次打开从全收起开始
+    // 展开态/删除确认态随窗口移除一并清空：下次打开从全收起开始
     //（overlay engine 常驻、State 跨会话存活，不清会带着上次的展开卡）
     _expandedIds.clear();
     _deleteConfirmIds.clear();
-    _tagPickingIds.clear();
     _expandFirstDiaryAfterLoad = false;
     // 防御性清编辑态（窗口被原生移除路径）：残留编辑态会把键盘焦点 /
     // focuspointer flag 带到下个会话。走 _cancelEdit 而非 _exitEdit：
@@ -1474,7 +1661,9 @@ class _OverlayHomeState extends State<OverlayHome>
     }
   }
 
-  /// 读取停靠侧配置到 [_sideLeft]（设置页 overlay_side_left）。
+  /// 读取停靠侧 / 把手大小档位 / 把手主题到内存镜像（[_sideLeft] /
+  /// [_handleSizePercent] / [_handleTheme]，设置页 overlay_side_left /
+  /// overlay_handle_size_percent / overlay_handle_theme）。
   ///
   /// 跨 engine 各自读 prefs 且无内存共享，必须 reload 后再取（同
   /// _scheduleAutoHide 读自动隐藏秒数的既有机制）。刷新时机：
@@ -1482,18 +1671,40 @@ class _OverlayHomeState extends State<OverlayHome>
   /// 赶在滑入动画前就位）/ 语音速记启动 handler 顶部（await——胶囊镜像
   /// 赶在揭示首帧前就位）/ _scheduleAutoHide（收起排定计时，顺带读）
   /// / _resetFromNative（窗口被原生移除后异步补读，赶下次召唤首帧）。
-  /// 读取失败保持当前侧不阻塞流程
-  Future<void> _refreshSide() async {
+  /// 读取失败保持当前值不阻塞流程
+  Future<void> _refreshOverlayConfig() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.reload();
       final left =
           prefs.getBool(OverlayConstants.overlaySideLeftPrefKey) ?? false;
-      if (!mounted || left == _sideLeft) return;
-      setState(() => _sideLeft = left);
-      print('🧭 [OverlayHome] 停靠侧已刷新: ${left ? '左缘' : '右缘'}');
+      final size = OverlayConstants.parseHandleSizePercent(
+        prefs.getInt(OverlayConstants.handleSizePrefKey),
+      );
+      final theme = OverlayConstants.parseHandleTheme(
+        prefs.getString(OverlayConstants.handleThemePrefKey),
+      );
+      if (!mounted) return;
+      final sideChanged = left != _sideLeft;
+      final sizeChanged = size != _handleSizePercent;
+      final themeChanged = theme != _handleTheme;
+      if (!sideChanged && !sizeChanged && !themeChanged) return;
+      setState(() {
+        _sideLeft = left;
+        _handleSizePercent = size;
+        _handleTheme = theme;
+      });
+      if (sideChanged) {
+        print('🧭 [OverlayHome] 停靠侧已刷新: ${left ? '左缘' : '右缘'}');
+      }
+      if (sizeChanged) {
+        print('🫧 [OverlayHome] 把手大小已刷新: $size%');
+      }
+      if (themeChanged) {
+        print('🎨 [OverlayHome] 把手主题已刷新: ${theme.name}');
+      }
     } catch (_) {
-      // 读配置失败按当前侧兜底，不阻塞悬浮窗流程
+      // 读配置失败按当前值兜底，不阻塞悬浮窗流程
     }
   }
 
@@ -1518,13 +1729,27 @@ class _OverlayHomeState extends State<OverlayHome>
           OverlayConstants.autoHideDefaultSeconds;
       edgeLineEnabled =
           prefs.getBool(OverlayConstants.edgeLineEnabledPrefKey) ?? true;
-      // 停靠侧顺带刷新（收起是设置变更后的第一个状态转换，此处生效后
-      // 下次展开的面板与再下次收起的把手窗口都在新侧）
+      // 停靠侧/把手大小档位顺带刷新（收起是设置变更后的第一个状态转换，
+      // 此处生效后下次展开的面板与再下次收起的把手窗口都在新侧/新档）
       final left =
           prefs.getBool(OverlayConstants.overlaySideLeftPrefKey) ?? false;
       if (mounted && left != _sideLeft) {
         setState(() => _sideLeft = left);
         print('🧭 [OverlayHome] 停靠侧已刷新: ${left ? '左缘' : '右缘'}');
+      }
+      final size = OverlayConstants.parseHandleSizePercent(
+        prefs.getInt(OverlayConstants.handleSizePrefKey),
+      );
+      if (mounted && size != _handleSizePercent) {
+        setState(() => _handleSizePercent = size);
+        print('🫧 [OverlayHome] 把手大小已刷新: $size%');
+      }
+      final theme = OverlayConstants.parseHandleTheme(
+        prefs.getString(OverlayConstants.handleThemePrefKey),
+      );
+      if (mounted && theme != _handleTheme) {
+        setState(() => _handleTheme = theme);
+        print('🎨 [OverlayHome] 把手主题已刷新: ${theme.name}');
       }
     } catch (_) {
       // 读配置失败按默认 10 秒/开关开/当前侧兜底，不阻塞隐藏流程
@@ -1568,6 +1793,70 @@ class _OverlayHomeState extends State<OverlayHome>
     // → notifyListeners → _onStateChanged resize(edgeLineWindowWidth, edgeLineHeight)
     _controller.enterEdgeLine();
     print('🎬 [OverlayHome] 自动隐藏到期 → 缩成贴边竖线驻留');
+  }
+
+  /// 息屏立即推进到驻留终态（Kotlin ACTION_SCREEN_OFF 转发，2026-09-22 用户
+  /// 拍板「进 AOD 必须收」）：面板/把手不再等自动隐藏计时，立即按「隐藏后保留
+  /// 贴边竖线」开关分流——开 → 缩成贴边竖线（亮屏/解锁后只会看到竖线，把手/
+  /// 面板不复活）；关 → closeOverlay 彻底移除窗口。「永久」档
+  /// （overlay_auto_hide_seconds=-1）在此不生效——它只管亮屏期间的常驻，
+  /// 息屏推进无条件（AOD 防残留是硬需求）。
+  ///
+  /// 为什么跳终态而不走 _collapse 推屏动画：息屏后窗口已被 Kotlin 置 GONE、
+  /// vsync 停、AnimationController 不跑，等 dismissed 边界回调会卡到亮屏才
+  /// 缩窗；黑屏期间无人在看，旧纹理重投影的空白帧协议（防用户看见拉伸帧）在
+  /// GONE 下天然满足——GONE 本身就是终极空白帧。缩窗的 awaitingResize 守卫
+  /// 照挂（[_enterEdgeLine] 内），息屏期间 metrics 可能不回调，亮屏后首个
+  /// build 由 _maybeAdvanceMetricsStage 解除，竖线淡入。
+  ///
+  /// 录音/转写中跳过：活动会话不打断（黑屏期间窗口 GONE 不可见，录音结束后
+  /// 用户回到悬浮窗自然走既有自动隐藏链）。编辑中先保存（空内容删占位行/取消，
+  /// 同 _openDiaryPage 先例），写库失败留在编辑态放弃收起，不丢用户输入。
+  Future<void> _onScreenAutoHide() async {
+    if (!mounted) return;
+    if (_voiceMemo.state != OverlayVoiceMemoState.idle) return;
+    // 作废挂起的自动隐藏计时：下面的推进即刻到位，遗留 Timer 到期只会撞上
+    // 幂等守卫空转（_enterEdgeLine 幂等/closeOverlay 空窗 no-op），主动取消防串
+    _hideScheduleGeneration++;
+    _autoHideTimer?.cancel();
+    _autoHideTimer = null;
+    if (!_controller.isCollapsed) {
+      // 展开态跳终态：停播（收起即停的既有语义，无窗口不放声）→ 保存编辑中
+      // 内容 → 动画跳收起终态（_resetFromNative 同款手法，顺序不可换——value
+      // setter 若补发 dismissed 回调，phase 已归 idle 被边界守卫吞掉）
+      _stopAudioPlayback();
+      if (_editingDiaryId != null) {
+        await _saveEdit();
+        if (!mounted || _editingDiaryId != null) return;
+      }
+      _panelAnim.stop();
+      _panelAnimPhase = _PanelAnimPhase.idle;
+      _panelAnim.value = 0;
+      _expandedIds.clear();
+      _deleteConfirmIds.clear();
+      _collapseSettled?.complete();
+      _collapseSettled = null;
+      _controller.collapse(); // → resize(28,88)；紧接着的驻留分流再缩到 20×64
+    }
+    var edgeLineEnabled = true;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      // 跨 engine 读主 App 新写的值（各 engine prefs 内存缓存隔离，必须 reload）
+      await prefs.reload();
+      edgeLineEnabled =
+          prefs.getBool(OverlayConstants.edgeLineEnabledPrefKey) ?? true;
+    } catch (_) {
+      // 读失败按开启兜底（同 _scheduleAutoHide），不阻塞息屏推进
+    }
+    if (!mounted) return;
+    if (edgeLineEnabled) {
+      _enterEdgeLine(); // 幂等：已线态（isEdgeLine）/非收起态 no-op
+      print('🌙 [OverlayHome] 息屏 → 缩成贴边竖线驻留');
+    } else {
+      // → 原生 hideOverlay → 发 reset 复位 Dart 状态（见 _resetFromNative）
+      await AccessibilityOverlay.closeOverlay();
+      print('🌙 [OverlayHome] 息屏 → 彻底移除悬浮窗（贴边竖线开关关）');
+    }
   }
 
   @override
@@ -1691,6 +1980,8 @@ class _OverlayHomeState extends State<OverlayHome>
         _expand();
       },
       dockLeft: _sideLeft,
+      sizePercent: _handleSizePercent,
+      theme: _handleTheme,
       onDragStart: _onHandleDragStart,
       onDragUpdate: _onHandleDragUpdate,
       onDragEnd: _onHandleDragEnd,
@@ -1768,13 +2059,14 @@ class _OverlayHomeState extends State<OverlayHome>
       },
       // drag 被取消时清掉残留标记
       onHorizontalDragCancel: () => _willExpandEdgeLine = false,
-      // 窗口 20×64 = 触摸缓冲区（opaque 整窗可命中），视觉线 4dp 贴停靠缘——
-      // 手指按在缓冲区内任意位置都算按中（4dp 难触发的修复，见常量注释）
+      // 窗口 20×64 = 触摸缓冲区（opaque 整窗可命中），视觉线 4dp 贴停靠缘、
+      // 高度随把手大小档位缩（宽不缩，见常量注释）——手指按在缓冲区内任意
+      // 位置都算按中（4dp 难触发的修复，见常量注释）
       child: Align(
         alignment: _sideLeft ? Alignment.centerLeft : Alignment.centerRight,
         child: Container(
           width: OverlayConstants.edgeLineWidth,
-          height: OverlayConstants.edgeLineHeight,
+          height: OverlayConstants.edgeLineVisualHeight(_handleSizePercent),
           decoration: BoxDecoration(
             // 明暗渐变：屏内端深灰 → 贴缘端浅灰（随停靠侧镜像）——白底看
             // 深端、黑底看浅端，任何背景至少一端可见（旧单一半透明白在
@@ -2089,6 +2381,10 @@ class _OverlayHomeState extends State<OverlayHome>
                                                   _onCardSwipeDismissed(diary),
                                               child: OverlayDiaryCard(
                                                 diary: diary,
+                                                // 锁定且会话外：卡片内部打码
+                                                //（收起态/展开态正文均不出现明文）
+                                                lockedHidden:
+                                                    _isLockedHidden(diary),
                                                 // 卡片宽度上限：仅本卡展开时用加宽值，
                                                 // 收起卡恒用默认值（面板加宽不影响其他卡）
                                                 maxWidth:
@@ -2170,9 +2466,7 @@ class _OverlayHomeState extends State<OverlayHome>
                                                 onDeleteCancel: () =>
                                                     _onCardDeleteCancel(id),
                                                 onCopy: () => _onCardCopy(
-                                                  (diary['content']
-                                                          as String?) ??
-                                                      '',
+                                                  diary,
                                                 ),
                                                 // 闹钟：识别时间预填转轮确认 sheet →
                                                 // 写系统日历（见 _onCardAlarm）
@@ -2180,23 +2474,20 @@ class _OverlayHomeState extends State<OverlayHome>
                                                     _onCardAlarm(diary),
                                                 onAiChat: () =>
                                                     _onCardShareToAI(
-                                                      (diary['content']
-                                                              as String?) ??
-                                                          '',
+                                                      diary,
                                                     ),
-                                                // 标注选择态（底行变「❗ ⭐ 💡 ✗返回」）：
-                                                // 入口按钮进选择态；点 tag 写库换色
-                                                //（点已选中的 tag = 取消标注，传 null）；
-                                                // ✗ 退出还原。归档卡同样允许标注
+                                                // 锁定开关（底条锁图标）：锁定 =
+                                                // 结束解锁会话整体打码；解除锁定
+                                                // 会话外先认证（语义与主 App 一致）
+                                                onLockToggle: () =>
+                                                    _toggleDiaryLock(diary),
+                                                // 标注三色按钮（展开卡时间行
+                                                // 一级直出）：点 tag 写库换色
+                                                //（点已选中的 tag = 取消标注，
+                                                // 传 null）。归档卡同样允许标注
                                                 //（视觉仍灰，恢复后显示标注色）
-                                                isTagPicking: _tagPickingIds
-                                                    .contains(id),
-                                                onTagEntry: () =>
-                                                    _onCardTagEntry(id),
                                                 onTagToggle: (tag) =>
                                                     _setDiaryTag(id, tag),
-                                                onTagPickCancel: () =>
-                                                    _onCardTagPickCancel(id),
                                               ),
                                             ),
                                           ],
