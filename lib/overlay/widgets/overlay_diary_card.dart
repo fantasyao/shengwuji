@@ -1,10 +1,12 @@
 // ⚠️ intl 导出自家 TextDirection（LTR/RTL/UNKNOWN 常量类），会遮蔽 Flutter 的
 // TextDirection 枚举（TextPainter 换算点击字符偏移用的 TextDirection.ltr 会
 // 解析成 intl 版直接编译错误）——必须 hide 掉
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show OverflowBoxFit;
 import 'package:intl/intl.dart' hide TextDirection;
 import '../../utils/diary_tag.dart';
+import '../../utils/link_text.dart';
 import '../../utils/note_unlock_session.dart' show kLockedMaskText;
 import '../overlay_constants.dart';
 
@@ -14,6 +16,12 @@ import '../overlay_constants.dart';
 /// TextPainter 必须以同尺寸 WidgetSpan 占位布局，首行缩进才与真实渲染一致
 const double _kExpandedCheckboxHitSize = 28;
 const double _kExpandedCheckboxRightGap = 8;
+
+/// 展开态截图附件缩略图（正文右侧，2026-10-21）：边长与正文间距。
+/// _buildViewingBodyWithThumbnail 渲染与 _estimateExpandedHeight 测量共用——
+/// 缩略图挤占正文排版宽度，两处不同源会让展开高度估算偏低、收起动画跳帧
+const double _kExpandedThumbSize = 44;
+const double _kExpandedThumbGap = 8;
 
 /// 收起态文字宽度测量缓存（性能审查 Top7）：key = 文本+textScaler+fontFamily+
 /// 字号（2026-09-27 字体大小档位加入——不同档位的同文本宽度不同，不进 key
@@ -38,7 +46,8 @@ double _measureCollapsedTextWidth(
   String? fontFamily,
   double fontSize,
 ) {
-  final String key = '$text\u0000$textScaler\u0000${fontFamily ?? ''}\u0000$fontSize';
+  final String key =
+      '$text\u0000$textScaler\u0000${fontFamily ?? ''}\u0000$fontSize';
   final double? cached = _kCollapsedTextWidthCache[key];
   if (cached != null) return cached;
   double textWidth = 0.0;
@@ -46,10 +55,7 @@ double _measureCollapsedTextWidth(
     final painter = TextPainter(
       text: TextSpan(
         text: text,
-        style: TextStyle(
-          fontSize: fontSize,
-          fontFamily: fontFamily,
-        ),
+        style: TextStyle(fontSize: fontSize, fontFamily: fontFamily),
       ),
       textDirection: TextDirection.ltr,
       textScaler: textScaler,
@@ -72,8 +78,9 @@ double _measureCollapsedTextWidth(
 /// - 宽度随内容自适应：短内容短胶囊（下限 [OverlayConstants.cardMinWidth]），
 ///   超长在 [maxWidth]（面板宽 - 左右 margin）处截断省略号
 /// - 取色（固定默认色 + 标注换色）：已归档固定灰色半透明 + 白字删除线；
-///   活跃卡按 diary['tag'] 命中 [DiaryTag.colors] 取标注色（紧急/收藏/
-///   灵感），未标注用 [OverlayConstants.defaultCardColor]
+///   活跃卡按 diary['tag'] 命中 4 槽位外观配置取标注色（默认紧急/收藏/
+///   灵感/待办，可在设置页改图标/颜色），未标注用
+///   [OverlayConstants.defaultCardColor]
 /// - 展开态（[expanded] 为 true）：多行全文 + 撑满 maxWidth + 固定小圆角
 ///   [OverlayConstants.cardExpandedRadius]，收起态回单行省略全圆角胶囊
 ///   （圆角/maxWidth/padding 由 AnimatedContainer 补间；纵向收放由
@@ -121,6 +128,15 @@ class OverlayDiaryCard extends StatelessWidget {
   final VoidCallback? onDelete;
   final VoidCallback? onCopy;
 
+  /// 复制按钮长按（截图附件入口，2026-10-21）：父层先收起面板再截屏，
+  /// 成功后写回 diary.image_path。null 时长按无反应（tap 复制照常）。
+  /// 与 [onCopy] 靠手势竞技场自然分流：tap 复制、长按截图
+  final VoidCallback? onCopyLongPress;
+
+  /// 展开态正文右侧截图缩略图点击（打开预览层，语义在父层
+  /// OverlayHome._openImagePreview）；null 不渲染缩略图
+  final VoidCallback? onImageTap;
+
   /// 闹钟按钮（Icons.alarm）：解析卡片时间预填转轮弹确认 sheet，写系统日历
   /// （语义在父层 OverlayHome._onCardAlarm；识别不到时间则预填默认时刻）。
   /// 2026-09-06 前为恒禁用占位（null 回调），现已实现
@@ -156,13 +172,20 @@ class OverlayDiaryCard extends StatelessWidget {
   /// 无反应）
   final VoidCallback? onLongPressText;
 
+  /// 查看态正文里的 http(s) 链接点击回调（2026-10-27：正文网址白色下划线，
+  /// 点击打开系统浏览器）。参数 = 规范化 URL（`www.` 已补 `https://`）；
+  /// null 时不渲染链接下划线。悬浮窗 engine 无 Activity，父层 OverlayHome
+  /// 走 AccessibilityOverlay.openUrl 原生通道（Service.startActivity +
+  /// FLAG_ACTIVITY_NEW_TASK），不用 url_launcher
+  final ValueChanged<String>? onLinkTap;
+
   /// 编辑态底部按钮条回调：✓保存 / ✗取消
   final VoidCallback? onEditSave;
   final VoidCallback? onEditCancel;
 
   /// 标注三色按钮（时间行一级直出，紧凑 32×32 命中区）点击回调，参数 =
-  /// 目标 tag（'urgent'/'star'/'idea'）；点击当前已选中的 tag = 取消标注，
-  /// 传 null（toggle 回默认色）。写库由父层 OverlayHome._setDiaryTag 处理
+  /// 目标 tag（'urgent'/'star'/'idea'/'task'）；点击当前已选中的 tag = 取消
+  /// 标注，传 null（toggle 回默认色）。写库由父层 OverlayHome._setDiaryTag 处理
   final ValueChanged<String?>? onTagToggle;
 
   /// 锁定且会话外（真值在父层 OverlayHome._isLockedHidden，含 is_locked +
@@ -193,6 +216,11 @@ class OverlayDiaryCard extends StatelessWidget {
   /// 046fe0b 的不变量（估算偏窄会把短文字顶出省略号）
   final int fontSizeStep;
 
+  /// 4 槽位标注外观（图标/颜色）。悬浮窗是独立 engine，父层
+  /// OverlayHome._refreshOverlayConfig 从 prefs 读出后显式传入；不传时退回
+  /// 本 engine 内的全局配置（测试直接构造卡片的场景）
+  final DiaryTagStyleConfig? tagStyles;
+
   const OverlayDiaryCard({
     super.key,
     required this.diary,
@@ -204,6 +232,8 @@ class OverlayDiaryCard extends StatelessWidget {
     this.isDeleteConfirming = false,
     this.onDelete,
     this.onCopy,
+    this.onCopyLongPress,
+    this.onImageTap,
     this.onAlarm,
     this.onAiChat,
     this.onCollapse,
@@ -213,6 +243,7 @@ class OverlayDiaryCard extends StatelessWidget {
     this.editFocusNode,
     this.onTextTap,
     this.onLongPressText,
+    this.onLinkTap,
     this.onEditSave,
     this.onEditCancel,
     this.onTagToggle,
@@ -222,6 +253,7 @@ class OverlayDiaryCard extends StatelessWidget {
     this.onLongPress,
     this.dockLeft = false,
     this.fontSizeStep = OverlayConstants.fontSizeStepDefault,
+    this.tagStyles,
   });
 
   /// 测试探针：收起态文字宽度实际执行 TextPainter.layout 的次数（Top7 缓存验证）
@@ -230,6 +262,9 @@ class OverlayDiaryCard extends StatelessWidget {
 
   /// 字号档位缩放简写：基准 + fontSizeStep（每档 1pt），渲染与测量共用
   double _fs(double base) => OverlayConstants.fontScaled(base, fontSizeStep);
+
+  /// 生效的标注外观：父层传入优先，否则退回本 engine 全局配置
+  DiaryTagStyleConfig get _tagStyles => tagStyles ?? DiaryTagStyles.config;
 
   /// 测试入口：直接调用带缓存的收起态文字测量
   @visibleForTesting
@@ -271,11 +306,14 @@ class OverlayDiaryCard extends StatelessWidget {
     final textScaler = MediaQuery.textScalerOf(context);
     final textFontFamily = DefaultTextStyle.of(context).style.fontFamily;
     // 归档固定灰色半透明（允许标注入库，但视觉仍固定灰，恢复后才显示标注色）；
-    // 活跃卡：diary['tag'] 命中标注映射取标注色，否则固定默认色
+    // 活跃卡：diary['tag'] 命中 4 槽位外观配置取标注色，否则固定默认色。
+    // 配置由父层显式传入（独立 engine 的 prefs 镜像），不传退回全局配置
+    final tag = diary['tag'] as String?;
     final Color bgColor = isArchived
         ? Colors.blueGrey.shade300.withValues(alpha: 0.5)
-        : (DiaryTag.colorOf(diary['tag'] as String?) ??
-              OverlayConstants.defaultCardColor);
+        : (DiaryTag.isValid(tag)
+              ? _tagStyles.styleOf(tag!).color
+              : OverlayConstants.defaultCardColor);
 
     return GestureDetector(
       onTap: onTap,
@@ -598,8 +636,9 @@ class OverlayDiaryCard extends StatelessWidget {
                               style: TextStyle(
                                 // 收起态专用小字号（比展开态小 2），保证胶囊达
                                 // 最大宽度时能显示约 9 个汉字 + 省略号
-                                fontSize:
-                                    _fs(OverlayConstants.cardCollapsedFontSize),
+                                fontSize: _fs(
+                                  OverlayConstants.cardCollapsedFontSize,
+                                ),
                                 color: Colors.white,
                                 decoration: isArchived
                                     ? TextDecoration.lineThrough
@@ -667,47 +706,52 @@ class OverlayDiaryCard extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // 1. 时间行 + 标注三色按钮（一级直出，2026-09-22 用户要求从二级
-          // 标注选择态上提——时间文本后紧凑排列，点按即换色/取消）+ 右上角
-          // 收起 chevron。Spacer 吃掉按钮组与 chevron 之间的空隙
+          // 1. 时间行 + 4 槽位标注按钮（一级直出；时间文本后可换图标/颜色，
+          // 2026-10-22 由三色扩成 4 槽位并压缩间距）+ 右上角收起 chevron。
+          // 左侧整体 Expanded：时间文本可 FittedBox 缩排，按钮组不被挤出
           Row(
             children: [
-              Text(
-                timeText,
-                style: TextStyle(
-                  fontSize: _fs(12),
-                  color: Colors.white.withValues(alpha: 0.75),
+              Expanded(
+                child: Row(
+                  children: [
+                    Flexible(
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          timeText,
+                          maxLines: 1,
+                          style: TextStyle(
+                            fontSize: _fs(12),
+                            color: Colors.white.withValues(alpha: 0.75),
+                          ),
+                        ),
+                      ),
+                    ),
+                    if (onTagToggle != null) ...[
+                      const SizedBox(width: 4),
+                      // 按钮命中区 28×32、相邻 2dp——4 个槽位比原三色多出
+                      // 一个按钮，收起间距后 320dp 窄屏仍放得下（时间文本
+                      // 由 FittedBox 兜底缩排）
+                      for (var i = 0; i < DiaryTag.tagIds.length; i++) ...[
+                        if (i > 0) const SizedBox(width: 2),
+                        _buildInlineTagButton(
+                          _tagStyles.styleOf(DiaryTag.tagIds[i]).icon,
+                          _tagStyles.styleOf(DiaryTag.tagIds[i]).color,
+                          DiaryTag.tagIds[i],
+                          currentTag == DiaryTag.tagIds[i],
+                        ),
+                      ],
+                    ],
+                  ],
                 ),
               ),
-              if (onTagToggle != null) ...[
-                const SizedBox(width: 4),
-                _buildInlineTagButton(
-                  Icons.priority_high,
-                  DiaryTag.urgent,
-                  currentTag == DiaryTag.urgent,
-                ),
-                // 按钮间 4dp 间距（2026-09-22 用户复验要求稍微隔开——时间行
-                // 右侧到 chevron 仍有富余，与时间文本后的间距同值）
-                const SizedBox(width: 4),
-                _buildInlineTagButton(
-                  Icons.star_rounded,
-                  DiaryTag.star,
-                  currentTag == DiaryTag.star,
-                ),
-                const SizedBox(width: 4),
-                _buildInlineTagButton(
-                  Icons.lightbulb_outline,
-                  DiaryTag.idea,
-                  currentTag == DiaryTag.idea,
-                ),
-              ],
-              const Spacer(),
               if (onCollapse != null)
                 GestureDetector(
                   behavior: HitTestBehavior.opaque,
                   onTap: onCollapse,
                   child: const SizedBox(
-                    width: 40,
+                    width: 32,
                     height: 32,
                     child: Center(
                       child: Icon(
@@ -755,10 +799,14 @@ class OverlayDiaryCard extends StatelessWidget {
                 : KeyedSubtree(
                     key: const ValueKey('card-body-viewing'),
                     // 锁定打码卡：正文整块替换为打码占位行（锁图标 + 固定
-                    // 星号），明文一帧都不进组件树
+                    // 星号），明文一帧都不进组件树；截图附件同理不渲染
                     child: lockedHidden
                         ? _buildLockedBody()
-                        : _buildViewingBody(content, isArchived, textScaler),
+                        : _buildViewingBodyWithThumbnail(
+                            content,
+                            isArchived,
+                            textScaler,
+                          ),
                   ),
           ),
           // 3. 重放录音独立行（有录音且未归档才显示，条件与收起态一致）。
@@ -839,6 +887,98 @@ class OverlayDiaryCard extends StatelessWidget {
     );
   }
 
+  /// 查看态正文 + 图片附件缩略图（正文右侧顶对齐，2026-10-21）。
+  /// 无附件/锁定打码时原样返回正文；缩略图点击经 [onImageTap] 打开图集。
+  /// 编辑态不走本方法（父层分支固定在查看态），缩略图不挤占编辑输入宽度。
+  /// ⚠️ 缩略图宽度必须与 _estimateExpandedHeight 的正文排版宽度扣减同源
+  Widget _buildViewingBodyWithThumbnail(
+    String content,
+    bool isArchived,
+    TextScaler textScaler,
+  ) {
+    final imagePath = _primaryImagePath;
+    final body = _buildViewingBody(content, isArchived, textScaler);
+    if (imagePath == null) return body;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(child: body),
+        const SizedBox(width: _kExpandedThumbGap),
+        _buildImageThumbnail(imagePath, _imageCount),
+      ],
+    );
+  }
+
+  /// 首选缩略图：手机自拍截图优先，否则取同步下收的第一张电脑端图片
+  String? get _primaryImagePath {
+    for (final key in const ['primary_image_path', 'image_path']) {
+      final path = diary[key] as String?;
+      if (path != null && path.isNotEmpty) return path;
+    }
+    return null;
+  }
+
+  int get _imageCount => (diary['image_count'] as num?)?.toInt() ?? 0;
+
+  /// 图片附件缩略图：44×44 圆角裁切，解码限宽 176（≈4x 密度上限，避免
+  /// 原图几百 KB~几 MB 全解码进内存）。多图时右下角叠数量角标。文件被
+  /// 外部清理/路径失效时显示 broken_image 占位，点击仍由父层兜底提示
+  Widget _buildImageThumbnail(String imagePath, int count) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onImageTap,
+      child: SizedBox(
+        width: _kExpandedThumbSize,
+        height: _kExpandedThumbSize,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: Image.file(
+                File(imagePath),
+                fit: BoxFit.cover,
+                cacheWidth: 176,
+                errorBuilder: (context, error, stackTrace) => Container(
+                  color: Colors.white.withValues(alpha: 0.15),
+                  child: const Icon(
+                    Icons.broken_image_outlined,
+                    size: 20,
+                    color: Colors.white70,
+                  ),
+                ),
+              ),
+            ),
+            if (count > 1)
+              Positioned(
+                right: 2,
+                bottom: 2,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 4,
+                    vertical: 1,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.62),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    '$count',
+                    style: const TextStyle(
+                      fontSize: 9,
+                      height: 1.2,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   /// 查看态正文：勾选框 WidgetSpan 内联首行（归档划线样式与收起态一致）。
   /// [onTextTap] 非空时外包 GestureDetector：点按把点击位置用 TextPainter
   /// 换算成字符偏移回调给父层（进入编辑态、光标定位到点击处；-1 哨兵 =
@@ -866,8 +1006,7 @@ class OverlayDiaryCard extends StatelessWidget {
     // 否则框架按 textScaler.scale(缩放后字号)/缩放后字号 放大、本侧按未缩放
     // 基准反缩放，档位非 0 时勾选框尺寸被二次偏差
     final double bodyFontSize = _fs(OverlayConstants.cardFontSize);
-    final double fontScale =
-        textScaler.scale(bodyFontSize) / bodyFontSize;
+    final double fontScale = textScaler.scale(bodyFontSize) / bodyFontSize;
     final body = Text.rich(
       TextSpan(
         children: [
@@ -886,7 +1025,22 @@ class OverlayDiaryCard extends StatelessWidget {
                 ),
               ),
             ),
-          TextSpan(text: content),
+          // 正文链接（2026-10-27）：白色下划线，点击走父层 onLinkTap 打开
+          // 浏览器。下划线/颜色不改变字宽与行高，_charOffsetAt /
+          // _estimateExpandedHeight 的纯文本 TextPainter 度量无需同步
+          ...buildLinkSpans(
+            text: content,
+            linkStyle: TextStyle(
+              color: Colors.white,
+              decoration: combineUnderline(
+                isArchived ? TextDecoration.lineThrough : null,
+              ),
+              decorationColor: Colors.white,
+            ),
+            onLinkTap: onLinkTap == null
+                ? null
+                : (link) => onLinkTap!(link.url),
+          ),
         ],
       ),
       style: TextStyle(
@@ -1089,21 +1243,34 @@ class OverlayDiaryCard extends StatelessWidget {
           ),
         ]);
       }
+      // 截图附件缩略图占正文右侧（2026-10-21）：正文排版宽度扣掉缩略图 +
+      // 间距，正文高与缩略图高取大——矮正文时卡高由 44dp 缩略图主导。
+      // ⚠️ 扣减宽度必须与 _buildViewingBodyWithThumbnail 的实际 Row 布局
+      // 同源，否则长文本会多折一行、展开高度系统性低估
+      final hasThumb = !lockedHidden && _primaryImagePath != null;
+      final double thumbWidth = hasThumb
+          ? _kExpandedThumbSize + _kExpandedThumbGap
+          : 0;
       painter.layout(
         maxWidth:
             maxWidth -
             2 * OverlayConstants.cardHPadding -
-            2 * OverlayConstants.cardBorderWidth,
+            2 * OverlayConstants.cardBorderWidth -
+            thumbWidth,
       );
       bodyH = painter.height;
+      if (hasThumb && bodyH < _kExpandedThumbSize) {
+        bodyH = _kExpandedThumbSize;
+      }
       painter.dispose();
     } catch (_) {
       bodyH = 0; // 度量异常兜底：偏置与 clamp 接管，仍被淡出掩盖
     }
     // 时间行高：chevron 命中盒 32 主导（时间行标注按钮命中区同为 32，不改变
     // 行高）；两者皆无回调时只剩 12pt 小字 ≈17
-    final double timeRowH =
-        (onCollapse != null || onTagToggle != null) ? 32 : 17;
+    final double timeRowH = (onCollapse != null || onTagToggle != null)
+        ? 32
+        : 17;
     final double audioRowH = showPlayButton ? 8 + 40 : 0;
     const double actionRowH = 8 + 1 + 4 + 40;
     return timeRowH + 4 + bodyH + audioRowH + actionRowH + 10; // +10 过估偏置
@@ -1161,7 +1328,8 @@ class OverlayDiaryCard extends StatelessWidget {
         // 闹钟：识别卡片时间预填转轮确认 sheet → 写系统日历（父层 _onCardAlarm）。
         // 空文案卡也可用（识别不到预填默认时刻，转轮手动调）
         _buildActionButton(Icons.alarm, onAlarm),
-        if (onCopy != null) _buildActionButton(Icons.copy, onCopy),
+        if (onCopy != null)
+          _buildActionButton(Icons.copy, onCopy, onLongPress: onCopyLongPress),
         // AI 对话：图标对齐日记页卡片同款按钮（chat_bubble_outline），
         // 点击复制 + 跳转 AI 应用（语义在父层 _onCardShareToAI）
         if (showAiChat) _buildActionButton(Icons.chat_bubble_outline, onAiChat),
@@ -1208,22 +1376,26 @@ class OverlayDiaryCard extends StatelessWidget {
     );
   }
 
-  /// 时间行标注按钮（紧凑版，一级直出——2026-09-22 用户要求从二级标注选择态
-  /// 上提到时间行）：未选中 = 白色小图标（同 _buildActionButton 视觉语言）；
-  /// 选中 = 白底圆 + 标注色图标（对齐 _buildCheckbox 勾选态「白底圆+深色图标」
-  /// 的视觉语言，此处图标为标注色）。点击 tag → onTagToggle(tag)；点击当前
-  /// 已选中的 tag = 取消标注（onTagToggle(null)，toggle 回默认色）。
-  /// 32×32 opaque 命中区 = 时间行高（与 chevron 命中区 32 同高，不撑高时间行，
-  /// _estimateExpandedHeight 的 timeRowH 分母不变）；相邻按钮间 4dp 间距——
-  /// 命中区自带留白（视觉图标 17，加上间距后相邻图标净隔 19dp），比原二级
-  /// 菜单 40×40 spaceEvenly 紧凑得多，三个按钮 + 时间文本在展开面板宽内富余
-  Widget _buildInlineTagButton(IconData icon, String tag, bool selected) {
+  /// 时间行标注按钮（紧凑版，一级直出）：未选中 = 白色图标（同
+  /// _buildActionButton 视觉语言）；选中 = 白底圆 + 标注色图标（对齐
+  /// _buildCheckbox 勾选态「白底圆+深色图标」的视觉语言，此处图标为标注色）。
+  /// 点击 tag → onTagToggle(tag)；点击当前已选中的 tag = 取消标注
+  ///（onTagToggle(null)，toggle 回默认色）。
+  /// 28×32 opaque 命中区（4 槽位比原三色多一个，横向收紧 4dp）+ 相邻 2dp：
+  /// 命中区高度仍 = 时间行高 32，_estimateExpandedHeight 的 timeRowH 不变；
+  /// 图标/颜色取配置 [tagStyles]，由设置页「标签外观」写入
+  Widget _buildInlineTagButton(
+    IconData icon,
+    Color color,
+    String tag,
+    bool selected,
+  ) {
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       // 点击已选中的 tag = 取消标注（传 null，toggle 回默认色）
       onTap: () => onTagToggle?.call(selected ? null : tag),
       child: SizedBox(
-        width: 32,
+        width: 28,
         height: 32,
         child: Center(
           child: selected
@@ -1234,7 +1406,7 @@ class OverlayDiaryCard extends StatelessWidget {
                     shape: BoxShape.circle,
                     color: Colors.white,
                   ),
-                  child: Icon(icon, size: 15, color: DiaryTag.colors[tag]),
+                  child: Icon(icon, size: 15, color: color),
                 )
               : Icon(icon, size: 17, color: Colors.white),
         ),
@@ -1242,13 +1414,20 @@ class OverlayDiaryCard extends StatelessWidget {
     );
   }
 
-  /// 底部按钮条单个图标按钮：onTap 为 null 时 white38 禁用态（无手势），
-  /// 否则白色图标 + GestureDetector opaque 40×40 命中区（点按钮不冒泡，
-  /// 同 _buildCheckbox / _buildPlayButton 模式）
-  Widget _buildActionButton(IconData icon, VoidCallback? onTap) {
+  /// 底部按钮条单个图标按钮：onTap/onLongPress 均为 null 时 white38 禁用态
+  /// （无手势），否则白色图标 + GestureDetector opaque 40×40 命中区（点按钮
+  /// 不冒泡，同 _buildCheckbox / _buildPlayButton 模式）。onLongPress 目前
+  /// 只有复制按钮用（截图附件入口），tap 与长按由手势竞技场自然分流
+  Widget _buildActionButton(
+    IconData icon,
+    VoidCallback? onTap, {
+    VoidCallback? onLongPress,
+  }) {
+    final enabled = onTap != null || onLongPress != null;
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: onTap,
+      onLongPress: onLongPress,
       child: SizedBox(
         width: 40,
         height: 40,
@@ -1256,7 +1435,7 @@ class OverlayDiaryCard extends StatelessWidget {
           child: Icon(
             icon,
             size: 20,
-            color: onTap == null ? Colors.white38 : Colors.white,
+            color: enabled ? Colors.white : Colors.white38,
           ),
         ),
       ),

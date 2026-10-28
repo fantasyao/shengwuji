@@ -10,6 +10,12 @@ import '../overlay_constants.dart';
 /// 大爆炸分词层（锤子 Big Bang 式交互）：展开卡正文长按唤起，白底
 /// 模态把一大段文字炸成词块（深字浅底，2026-10-08 起由深色改浅色，
 /// 对齐锤子原版白色卡片视觉），点选/滑选后一键复制。
+/// **深色模式适配**（2026-10-08 用户拍板，防深色模式下白底刺眼）：
+/// [isDark] = true 换深色配色（近黑底 [OverlayConstants.bigBangBackgroundDark]
+/// + 浅字浅底词块，选中词块维持主题蓝底白字不变）；null = 跟随
+/// `Theme.of(context).brightness` 自动判定（主 App 路由在 MaterialApp
+/// 树下天然正确）；悬浮窗 engine 固定浅色主题（跨背景对比度设计），
+/// 由 overlay_home 读 theme_mode prefs 显式传入。
 ///
 /// 层顶边对齐面板 header 上缘（[topInset]，随「面板高度」档位联动），
 /// 不撑满全屏——单手够得着顶栏；顶边上方与底部关闭条透出下层画面但
@@ -78,6 +84,11 @@ class BigBangLayer extends StatefulWidget {
   /// 触感回调（测试注入记录器；缺省走原生 performHaptic 通道）
   final void Function(String type)? onHaptic;
 
+  /// 深色配色开关：true = 近黑底浅字（深色模式防白底刺眼）；null = 跟随
+  /// Theme brightness 自动判定（主 App 路径）。悬浮窗 engine 固定浅色主题，
+  /// 自动判定恒为浅色，须由 overlay_home 显式传入
+  final bool? isDark;
+
   const BigBangLayer({
     super.key,
     required this.text,
@@ -88,6 +99,7 @@ class BigBangLayer extends StatefulWidget {
     required this.onCopy,
     this.onSearch,
     this.onHaptic,
+    this.isDark,
   });
 
   @override
@@ -121,6 +133,29 @@ class _BigBangLayerState extends State<BigBangLayer> {
   bool _copying = false;
   bool _searching = false;
   DateTime _lastTick = DateTime.fromMillisecondsSinceEpoch(0);
+
+  // --- 深浅双色板（浅色 = 锤子原版白底深字；深色 = 近黑底浅字防刺眼，
+  // 2026-10-08 用户拍板）。选中词块恒主题蓝底白字，不随深浅变化 ---
+  static Color _primaryText(bool d) =>
+      d ? Colors.white.withValues(alpha: 0.87) : Colors.black87;
+  static Color _secondaryText(bool d) => d ? Colors.white38 : Colors.black38;
+  static Color _actionText(bool d) => d ? Colors.white60 : Colors.black54;
+  static Color _unselectedBg(bool d) => d
+      ? Colors.white.withValues(alpha: 0.07)
+      : Colors.black.withValues(alpha: 0.05);
+  static Color _unselectedBorder(bool d) => d
+      ? Colors.white.withValues(alpha: 0.14)
+      : Colors.black.withValues(alpha: 0.10);
+  static Color _disabledBg(bool d) => d
+      ? Colors.white.withValues(alpha: 0.08)
+      : Colors.black.withValues(alpha: 0.06);
+  static Color _disabledIcon(bool d) => d ? Colors.white30 : Colors.black26;
+  static Color _barBg(bool d) => d
+      ? Colors.white.withValues(alpha: 0.06)
+      : Colors.black.withValues(alpha: 0.05);
+  static Color _barBorder(bool d) => d
+      ? Colors.white.withValues(alpha: 0.10)
+      : Colors.black.withValues(alpha: 0.08);
 
   @override
   void initState() {
@@ -333,6 +368,10 @@ class _BigBangLayerState extends State<BigBangLayer> {
 
   @override
   Widget build(BuildContext context) {
+    // null = 自动判定：主 App 路由在 MaterialApp 树下，Theme brightness 已
+    // 解析好「跟随系统」；悬浮窗 engine 固定浅色主题，须显式传 isDark
+    final isDark =
+        widget.isDark ?? Theme.of(context).brightness == Brightness.dark;
     final fs = OverlayConstants.fontScaled(
       OverlayConstants.bigBangFontSize,
       widget.fontSizeStep,
@@ -366,7 +405,9 @@ class _BigBangLayerState extends State<BigBangLayer> {
             child: Container(
               color: OverlayConstants.bigBangScrimColor,
               child: Material(
-                color: OverlayConstants.bigBangBackground,
+                color: isDark
+                    ? OverlayConstants.bigBangBackgroundDark
+                    : OverlayConstants.bigBangBackground,
                 // 四角圆弧（用户拍板）：Material 的 borderRadius 只影响背景
                 // 形状，子内容须显式 clipBehavior 才会随圆角裁切
                 borderRadius:
@@ -374,21 +415,21 @@ class _BigBangLayerState extends State<BigBangLayer> {
                 clipBehavior: Clip.antiAlias,
                 child: Column(
                   children: [
-                    _buildTopBar(),
+                    _buildTopBar(isDark),
                     Expanded(
                       child: _tokens == null
-                          ? const Center(
+                          ? Center(
                               child: Text(
                                 '分词中…',
                                 style: TextStyle(
-                                  color: Colors.black38,
+                                  color: _secondaryText(isDark),
                                   fontSize: 14,
                                 ),
                               ),
                             )
-                          : _buildTokenArea(fs),
+                          : _buildTokenArea(fs, isDark),
                     ),
-                    _buildBottomBar(),
+                    _buildBottomBar(isDark),
                   ],
                 ),
               ),
@@ -431,24 +472,24 @@ class _BigBangLayerState extends State<BigBangLayer> {
     );
   }
 
-  Widget _buildTopBar() {
+  Widget _buildTopBar(bool isDark) {
     final count = _tokens == null ? 0 : _selectedCharCount;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8),
       child: Row(
         children: [
           const SizedBox(width: 8),
-          const Text(
+          Text(
             '大爆炸',
-            style: TextStyle(color: Colors.black87, fontSize: 14),
+            style: TextStyle(color: _primaryText(isDark), fontSize: 14),
           ),
           const SizedBox(width: 10),
           Text(
             '已选 $count 字',
-            style: const TextStyle(color: Colors.black38, fontSize: 12),
+            style: TextStyle(color: _secondaryText(isDark), fontSize: 12),
           ),
           const Spacer(),
-          _buildTopAction('全选', () {
+          _buildTopAction(isDark, '全选', () {
             setState(
               () => _selected
                 ..clear()
@@ -459,13 +500,13 @@ class _BigBangLayerState extends State<BigBangLayer> {
             );
             _tick();
           }),
-          _buildTopAction('清空', () {
+          _buildTopAction(isDark, '清空', () {
             if (_selected.isEmpty) return;
             setState(_selected.clear);
             _tick();
           }),
           IconButton(
-            icon: const Icon(Icons.close, color: Colors.black54, size: 22),
+            icon: Icon(Icons.close, color: _actionText(isDark), size: 22),
             tooltip: '关闭',
             onPressed: widget.onClose,
           ),
@@ -474,7 +515,7 @@ class _BigBangLayerState extends State<BigBangLayer> {
     );
   }
 
-  Widget _buildTopAction(String label, VoidCallback onTap) {
+  Widget _buildTopAction(bool isDark, String label, VoidCallback onTap) {
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: _tokens == null ? null : onTap,
@@ -482,13 +523,13 @@ class _BigBangLayerState extends State<BigBangLayer> {
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
         child: Text(
           label,
-          style: const TextStyle(color: Colors.black54, fontSize: 13),
+          style: TextStyle(color: _actionText(isDark), fontSize: 13),
         ),
       ),
     );
   }
 
-  Widget _buildTokenArea(double fs) {
+  Widget _buildTokenArea(double fs, bool isDark) {
     return Listener(
       onPointerDown: _onPointerDown,
       onPointerMove: _onPointerMove,
@@ -518,7 +559,8 @@ class _BigBangLayerState extends State<BigBangLayer> {
                 width: double.infinity,
                 child: Wrap(
                   children: [
-                    for (var i = 0; i < _tokens!.length; i++) _buildToken(i, fs),
+                    for (var i = 0; i < _tokens!.length; i++)
+                      _buildToken(i, fs, isDark),
                   ],
                 ),
               ),
@@ -529,7 +571,7 @@ class _BigBangLayerState extends State<BigBangLayer> {
     );
   }
 
-  Widget _buildToken(int i, double fs) {
+  Widget _buildToken(int i, double fs, bool isDark) {
     final token = _tokens![i];
     // 空白 token：不渲染词块（流式布局天然留白），仅占位透出间距
     if (BigBangTokenizer.isWhitespace(token.text)) {
@@ -542,7 +584,7 @@ class _BigBangLayerState extends State<BigBangLayer> {
         padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
         child: Text(
           token.text,
-          style: TextStyle(color: Colors.black38, fontSize: fs, height: 1.2),
+          style: TextStyle(color: _secondaryText(isDark), fontSize: fs, height: 1.2),
         ),
       );
     }
@@ -554,22 +596,22 @@ class _BigBangLayerState extends State<BigBangLayer> {
         margin: const EdgeInsets.symmetric(horizontal: 3, vertical: 4),
         padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
         decoration: BoxDecoration(
-          // 白底层上的明暗反转：未选 = 浅灰底深字，选中 = 主题蓝底白字
-          //（滑选/点选即「变白」，与锤子原版选中高亮同语义）
+          // 明暗反转：未选 = 浅灰底深字（深色模式 = 深灰底浅字），选中 =
+          // 主题蓝底白字（滑选/点选即高亮，与锤子原版选中同语义，不随深浅变）
           color: selected
               ? OverlayConstants.defaultCardColor
-              : Colors.black.withValues(alpha: 0.05),
+              : _unselectedBg(isDark),
           borderRadius: BorderRadius.circular(8),
           border: Border.all(
             color: selected
                 ? OverlayConstants.defaultCardColor
-                : Colors.black.withValues(alpha: 0.10),
+                : _unselectedBorder(isDark),
           ),
         ),
         child: Text(
           token.text,
           style: TextStyle(
-            color: selected ? Colors.white : Colors.black87,
+            color: selected ? Colors.white : _primaryText(isDark),
             fontSize: fs,
             height: 1.2,
           ),
@@ -579,12 +621,13 @@ class _BigBangLayerState extends State<BigBangLayer> {
   }
 
   /// 底栏圆形图标胶囊（刀/搜索按钮共用）：启用 = defaultCardColor 底白图标，
-  /// 禁用 = 浅灰底 + 灰图标（白底层配色），onTap 置 null
+  /// 禁用 = 浅灰底 + 灰图标（深色模式反转为深灰底浅灰图标），onTap 置 null
   Widget _buildCapsuleIcon({
     required IconData icon,
     required String tooltip,
     required bool enabled,
     required VoidCallback onTap,
+    required bool isDark,
   }) {
     return Tooltip(
       message: tooltip,
@@ -596,20 +639,20 @@ class _BigBangLayerState extends State<BigBangLayer> {
           decoration: BoxDecoration(
             color: enabled
                 ? OverlayConstants.defaultCardColor
-                : Colors.black.withValues(alpha: 0.06),
+                : _disabledBg(isDark),
             borderRadius: BorderRadius.circular(20),
           ),
           child: Icon(
             icon,
             size: 20,
-            color: enabled ? Colors.white : Colors.black26,
+            color: enabled ? Colors.white : _disabledIcon(isDark),
           ),
         ),
       ),
     );
   }
 
-  Widget _buildBottomBar() {
+  Widget _buildBottomBar(bool isDark) {
     final hasSelection = _tokens != null && _selected.isNotEmpty;
     final preview = _tokens == null
         ? ''
@@ -618,9 +661,9 @@ class _BigBangLayerState extends State<BigBangLayer> {
       margin: const EdgeInsets.fromLTRB(12, 8, 12, 8),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.05),
+        color: _barBg(isDark),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+        border: Border.all(color: _barBorder(isDark)),
       ),
       child: Row(
         children: [
@@ -630,7 +673,9 @@ class _BigBangLayerState extends State<BigBangLayer> {
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                color: hasSelection ? Colors.black87 : Colors.black38,
+                color: hasSelection
+                    ? _primaryText(isDark)
+                    : _secondaryText(isDark),
                 fontSize: 13,
                 height: 1.4,
               ),
@@ -644,6 +689,7 @@ class _BigBangLayerState extends State<BigBangLayer> {
             tooltip: '再炸成单字',
             enabled: _canExplode,
             onTap: _doExplode,
+            isDark: isDark,
           ),
           // 搜索按钮（onSearch 注入时才渲染）
           if (widget.onSearch != null) ...[
@@ -653,6 +699,7 @@ class _BigBangLayerState extends State<BigBangLayer> {
               tooltip: '搜索',
               enabled: hasSelection,
               onTap: _doSearch,
+              isDark: isDark,
             ),
           ],
           const SizedBox(width: 8),
@@ -664,13 +711,15 @@ class _BigBangLayerState extends State<BigBangLayer> {
               decoration: BoxDecoration(
                 color: hasSelection
                     ? OverlayConstants.defaultCardColor
-                    : Colors.black.withValues(alpha: 0.06),
+                    : _disabledBg(isDark),
                 borderRadius: BorderRadius.circular(20),
               ),
               child: Text(
                 '复制',
                 style: TextStyle(
-                  color: hasSelection ? Colors.white : Colors.black38,
+                  color: hasSelection
+                      ? Colors.white
+                      : _secondaryText(isDark),
                   fontSize: 14,
                   fontWeight: FontWeight.w600,
                 ),

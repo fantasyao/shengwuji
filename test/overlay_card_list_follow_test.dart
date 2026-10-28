@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shengwuji_app/overlay/widgets/overlay_diary_card.dart';
+import 'package:shengwuji_app/theme/app_theme.dart';
 
 /// 诊断性测试（2026-09-02 建；2026-09-03 恢复 945be75 补间结构后重写基线；
 /// 同日纵向真补间重构后再重写）：悬浮窗日记卡片收起动画期间，ListView 里
@@ -50,6 +51,7 @@ void main() {
   const shortText = '钥匙放在玄关柜';
 
   Widget wrap({required bool expandCard2}) => MaterialApp(
+    theme: AppThemes.defaultTeal.toThemeData(),
     home: Scaffold(
       body: SizedBox(
         width: 296, // 模拟面板宽（对齐 overlay_diary_card_test 的 wrap 模式）

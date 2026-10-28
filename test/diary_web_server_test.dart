@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/material.dart' show Icons;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:shengwuji_app/web_server/diary_web_server.dart';
@@ -125,6 +126,13 @@ void main() {
       expect(second['duration'], 12);
       expect(second['tag'], 'star');
       expect(second['createdAt'], '2026-09-12T08:30:00.000');
+      // 4 槽位标签外观随列表下发：网页用 codePoint + /tag-icons.otf 渲染
+      final tagConfig = (r['body'] as Map)['tagConfig'] as List;
+      expect(tagConfig, hasLength(4));
+      final task = tagConfig.firstWhere((t) => t['tag'] == 'task');
+      expect(task['codePoint'], Icons.task_alt.codePoint);
+      expect(task['fg'], '#2e9f5c');
+      expect(task['bg'], isA<String>());
       await server.stop();
     });
 

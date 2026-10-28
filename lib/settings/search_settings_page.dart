@@ -112,10 +112,9 @@ class _SearchSettingsPageState extends State<SearchSettingsPage>
   Future<Uint8List?> _loadIcon(String packageName) async {
     if (_iconCache.containsKey(packageName)) return _iconCache[packageName];
     try {
-      final bytes = await _channel.invokeMethod<Uint8List>(
-        'getAppIcon',
-        {'packageName': packageName},
-      );
+      final bytes = await _channel.invokeMethod<Uint8List>('getAppIcon', {
+        'packageName': packageName,
+      });
       _iconCache[packageName] = bytes;
     } catch (e) {
       _iconCache[packageName] = null;
@@ -144,7 +143,7 @@ class _SearchSettingsPageState extends State<SearchSettingsPage>
         padding: const EdgeInsets.all(20),
         children: [
           const SettingsSectionTitle("搜索引擎"),
-          SettingsCard(child: _buildEngineSelector(ext)),
+          SettingsCard(child: _buildEngineSelector()),
           const SizedBox(height: 24),
           const SettingsSectionTitle("用什么浏览器打开"),
           SettingsCard(child: _buildBrowserSection(ext)),
@@ -153,7 +152,7 @@ class _SearchSettingsPageState extends State<SearchSettingsPage>
     );
   }
 
-  Widget _buildEngineSelector(AppThemeExtension ext) {
+  Widget _buildEngineSelector() {
     // 显示名取 searchEngines 注册表唯一真值（lib/utils/big_bang_search.dart）
     final options = SearchEngine.values;
     return Wrap(
@@ -163,20 +162,12 @@ class _SearchSettingsPageState extends State<SearchSettingsPage>
         final label = searchEngines[engine]!.label;
         const icon = Icons.search;
         final selected = _engine == engine;
-        return ChoiceChip(
-          avatar: Icon(
-            icon,
-            size: 16,
-            color: selected ? ext.textOnPrimary : ext.primary,
-          ),
+        return buildSettingsChoiceChip(
+          context,
+          icon: icon,
           label: Text(label),
           selected: selected,
-          selectedColor: ext.primary,
-          labelStyle: TextStyle(
-            color: selected ? ext.textOnPrimary : ext.textPrimary,
-            fontSize: 13,
-          ),
-          onSelected: (_) => _saveEngine(engine),
+          onTap: () => _saveEngine(engine),
         );
       }).toList(),
     );
@@ -255,10 +246,7 @@ class _SearchSettingsPageState extends State<SearchSettingsPage>
                       color: ext.textSecondary,
                     ),
                   )
-                : _BrowserIcon(
-                    packageName: packageName,
-                    loader: _loadIcon,
-                  ),
+                : _BrowserIcon(packageName: packageName, loader: _loadIcon),
             const SizedBox(width: 14),
             Expanded(
               child: Text(

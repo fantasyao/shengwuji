@@ -59,21 +59,28 @@
   - **交换单击与双击**（设置页开关，prefs 历史 key `diary_card_swap_tap_longpress`）：开启后单击=编辑、双击=复制；长按大爆炸不受开关影响。修改后需重启 App 生效
 - **查询答案区**：检测到"XX在哪儿"等查询语句时，卡片正文下方独立显示物品位置预填答案（详见下文"查询答案预填模式"）
 - **归档分区**: 已归档条目单独显示在分割线下方
-- **标注筛选**（2026-09-29）：搜索框与导出按钮之间的筛选图标按钮展开/收起筛选行（默认收起，页面零常驻新增元素；筛选生效时图标右上角带标注色小圆点提示），单选四档 全部/❗紧急/⭐收藏/💡灵感，与搜索关键词在 SQL 层 AND 叠加（`DbHelper.getDiaries(keyword:, tag:)`），归档区同样参与过滤；筛选刷新同搜索走 `clearParseCaches: false` 纯过滤路径
+- **标注筛选**（2026-09-29；2026-10-20 加「普通」档；2026-10-22 去掉「全部」档改点选切换）：搜索框与导出按钮之间的筛选图标按钮展开/收起筛选行（默认收起，页面零常驻新增元素；筛选生效时图标右上角带标注色小圆点提示），单选四档 🔵普通/❗紧急/⭐收藏/💡灵感——不再设「全部」芯片（中字号下行宽放不下），改为**点一次选中、再点已选中芯片取消筛选（恢复全部）**，与搜索关键词在 SQL 层 AND 叠加（`DbHelper.getDiaries(keyword:, tag:)`），归档区同样参与过滤；筛选刷新同搜索走 `clearParseCaches: false` 纯过滤路径。「普通」= 无标注日记，走 `DiaryTag.filterNormal` 哨兵值（不落库，`getDiaries` SQL 层翻成 `tag IS NULL`），显示色与悬浮窗无标注卡片默认蓝 #6F9AF0 同源（`DiaryTag.normalColor`）
+- **图片附件图标**（2026-10-24）：卡片日期/时长行末尾，仅有图的笔记（`image_count > 0`）显示 `Icons.image_outlined`（15dp，主题色），数量 > 1 时图标后跟张数；点击打开全屏图集（与悬浮窗共用 `OverlayImagePreview`，经 `fullscreenDialog` 路由推入，关闭回调 `maybePop`）。文件被外部清理时提示「图片文件已不存在」；锁定打码卡不显示图标（图片属笔记内容）。数量来自 `getDiaries` 计算列 `image_count`（本机截图 + `diary_images`），首图 `primary_image_path`
+- **下拉刷新云同步**（2026-10-24）：列表与空态均可下拉（空态撑满视口 + `AlwaysScrollableScrollPhysics`），触发一次 WebDAV 手动同步后 `refreshList()` 重查；未配置时只刷新本地并提示「设置 → 云端同步」不联网；结果走 SnackBar，文案与悬浮窗共用 `CloudSyncResult.pullRefreshMessage`（成功无新增/带分项统计/友好错误）
 
 #### Settings Tab（设置标签）
 
 > **2026-09-16 二级页下沉**（commit 22906ad）：主页从 13 组长列表瘦身为「入口行 + 状态摘要」布局，低频配置移入 `lib/settings/` 二级页——识别与修正（热词替换 + 智能修正学习合并）、AI 应用分享、悬浮窗设置、音量键快捷操作、关于（更新日志/导出日志/开源许可），2026-10-06 起新增大爆炸搜索（搜索引擎 + 浏览器选择）。入口行返回后刷新摘要；prefs key 全部不变，各读取方零影响。共享组件在 `lib/settings/settings_widgets.dart`（SectionTitle/Card/EntryRow/ProBadge，主页 `_buildSectionTitle`/`_buildCard` 已改为委托）。预览稿见 [docs/previews/settings_refactor_preview.html](../previews/settings_refactor_preview.html)。
+>
+> **2026-10-22 第二批下沉**：外观（主题/深色模式/图标/字号/字体 + 标签外观）、日记智能与交互（笔记锁定/智能识别/智能查询/单击双击交换）、眼不见为净（隐藏存物品页/隐藏查物品页/后台隐藏）三组也从一级页收成入口行——一级页不再有外观与日记智能的分区卡片，三个二级页分别为 `lib/settings/appearance_settings_page.dart` / `diary_interaction_settings_page.dart` / `visibility_settings_page.dart`；「标签外观」从日记智能挪进「外观」页。
 
 - 模型管理（内置状态 + 可选导入，入口注释隐藏中）
 - 备份与恢复
-- 外观设置：主题/皮肤选择 + Android 图标包切换（均支持 Pro 门禁）
 - 电脑访问（局域网日记服务，按拍板保留一级页面）
 - **支持作者分区**：Pro 付费解锁入口（诊断区与关于区之间）
+- 眼不见为净 → 二级页：隐藏存物品页 + 隐藏查物品页（重启生效）+ 后台隐藏（写 prefs 即真值源、通道实时生效）
+- 日记智能与交互 → 二级页：笔记锁定总开关、日记智能识别物品、日记智能查询物品位置、交换单击与双击
+- 外观 → 二级页：主题 / 深色模式 / 图标 / 字号 / 字体（Pro 门禁）+ 标签外观（4 槽位图标与颜色）
 - 识别与修正 → 二级页：热词编辑（已并入全量备份/恢复）+ 修正对管理入口 + 同音词上下文纠错开关
 - AI 应用分享 → 二级页：日记分享跳转应用单选
 - 音量键快捷操作 → 二级页：无障碍服务三态状态 + 4 手势槽位配置 + 录音静音/说完自动停止开关（主页入口行保留无障碍状态点，resume 自动重查）
 - 悬浮窗 → 二级页：自动隐藏时长/停靠侧/贴边竖线两开关（Pro 门禁走 `ProGate.tryAccess`）
+- 使用帮助 → 二级页：功能说明（2026-10-22 新增，`lib/settings/feature_guide_page.dart`）——按「存物品 / 查物品 / 随手记 / 悬浮窗 / 搜索与按键 / 识别修正 / 数据同步 / 外观安全」分组的全量操作指南，覆盖录入分隔词、查询双向说法、搬家模式撤销词、各页面手势、截图/语音搜索、快捷方式与黑屏限制。与随手记内置说明卡互补：说明卡是日记行、老用户升级看不到新增基础卡且可被删除，功能说明页是常驻入口，升级用户随时可查
 - 关于 → 二级页：17 版更新日志时间线 + 导出运行日志 + 开源许可
 
 ## Widget 组织
@@ -85,7 +92,7 @@
 - [lib/list_tab.dart](../lib/list_tab.dart) - 物品列表界面
 - [lib/diary_tab.dart](../lib/diary_tab.dart) - 语音日记界面
 - [lib/settings_tab.dart](../lib/settings_tab.dart) - 设置界面
-- [lib/theme/app_theme.dart](../lib/theme/app_theme.dart) - 主题定义注册表（4 套预设）
+- [lib/theme/app_theme.dart](../lib/theme/app_theme.dart) - 主题定义注册表（5 套预设）
 - [lib/theme/app_theme_extension.dart](../lib/theme/app_theme_extension.dart) - 语义化色槽 ThemeExtension
 - [lib/utils/icon_pack_switcher.dart](../lib/utils/icon_pack_switcher.dart) - Android 图标包切换 MethodChannel 桥接
 - [lib/widgets/checklist_widget.dart](../lib/widgets/checklist_widget.dart) - 清单 markdown 渲染组件
@@ -136,7 +143,7 @@
 日记内容中的时间表达式自动高亮并可设置闹钟：
 
 ### 组件
-- **TimeAwareText** (`lib/widgets/time_aware_text.dart`) - 富文本渲染，时间表达式蓝色高亮
+- **TimeAwareText** (`lib/widgets/time_aware_text.dart`) - 富文本渲染，时间表达式蓝色高亮 + http(s) 链接下划线（见下文「正文链接」）
 - **DartChronoParser** (`lib/utils/dart_chrono_parser.dart`) - 纯 Dart 中文时间解析器
 - **AlarmDialog** (`lib/widgets/alarm_dialog.dart`) - 闹钟确认对话框
 
@@ -154,6 +161,19 @@
 ### 支持的时间格式
 - 相对时间："明天"、"后天"、"下周一"
 - 绝对时间："下午3点"、"明天早上8点"
+- 月日表达（2026-10-18 起）："1月5日"（中文数字同权"十月五号"）、裸"21号/21日"（本月未过取本月、已过滚下月、本月无该日顺延）、"下个月21号/这个月/本月/下下个月"、裸"下个月"（次月1日）；物品场景防误伤（"3号电池/3号楼/21号线/第21号"不识别），"5日后"归相对偏移不重复命中
+
+## 正文链接（2026-10-27）
+
+随手记与悬浮窗正文里的 http(s)/www 链接显示下划线，点击用系统浏览器打开（不内嵌 WebView）：
+
+- **识别**：`lib/utils/link_text.dart#findTextLinks` 两处共用。只认 `http://` / `https://` / `www.`（`www.` 补 `https://`）；裸域名、邮箱、版本号不识别；中文紧贴网址按 ASCII 边界截断；尾部句号/逗号/多余右括号不入链接；成对括号（Wikipedia 词条）保留。带 256 条扫描缓存。
+- **随手记**：`diary_tab.dart` 正文统一走 `TimeAwareText`（时间实体/链接都为空时内部退回普通 `Text`，折叠参数透传不变）。链接色 = `AppThemeExtension.linkColor`（跟随各主题 `timeHighlight` 蓝色），归档卡叠加删除线；点击 `launchUrl(LaunchMode.externalApplication)`，失败 SnackBar 提示手动访问。
+- **悬浮窗**：`OverlayDiaryCard(onLinkTap:)` → `OverlayHome._onCardLinkTap` → `AccessibilityOverlay.openUrl`。悬浮窗 engine 无 Activity，`url_launcher` 不可用；原生 `Service.startActivity(ACTION_VIEW + FLAG_ACTIVITY_NEW_TASK)`，失败原生 Toast。彩色胶囊上链接取白色下划线（详见 [floating-window.md](../architecture/floating-window.md#正文链接2026-10-27)）。
+- **时间实体让位链接**：两段区间重叠时链接优先——URL 路径里的日期（`https://a.com/2026/10/27`）不做时间实体，点整段网址都跳浏览器。
+- **手势**：TextSpan 内 `TapGestureRecognizer` 在竞技场胜过卡片外层手势；随手记外层有 `onDoubleTap`，单击需等 300ms 双击判定窗口关闭（与时间高亮点击同口径）。
+- **已知边界**：收起态胶囊不渲染链接（单行预览，点卡片展开）；清单卡（`ChecklistWidget`）条目里的链接暂不支持（行点击是勾选）。
+- **测试**：`test/link_text_test.dart`（识别/切段/缓存无关边界）、`test/time_aware_text_test.dart`（链接与时间共存、外层手势）、`test/overlay_card_link_test.dart`（不误进编辑）。
 
 ## 查询答案预填模式
 
@@ -251,6 +271,7 @@
 - **内置字体**: 霞鹜文楷等宽屏幕版（`LXGWWenKaiMonoGBScreen.ttf`）
 - **位置**: `assets/LXGWWenKaiMonoGBScreen.ttf`
 - **应用方式**: 所有 TextTheme 样式显式配置（避免 Roboto 回退）
+- **字体选项**（2026-10-22）: 设置页「外观 → 字体」可切「系统默认」（平台 Roboto 系，不跟随厂商自定义字体），prefs key `app_font_family`；系统默认档由 Typography 填充平台字体
 
 ## 屏幕唤醒
 - **库**: `wakelock_plus: ^1.2.8`
@@ -258,14 +279,14 @@
 
 ## 外观设置
 
-设置页"外观"分区集中管理主题皮肤和 Android 桌面图标包，均支持 Pro 门禁。
+设置页「外观」二级页（`lib/settings/appearance_settings_page.dart`，2026-10-22 从一级页下沉）集中管理主题皮肤、深色模式、Android 桌面图标包、字号与字体，主题/皮肤与图标包切换支持 Pro 门禁；「标签外观」（4 槽位标注图标与颜色）也收在本页。
 
 ### 主题 / 皮肤系统
 
-- **4 套预设**：默认青（Teal）、暖橙（Warm Orange）、墨绿（Forest Green）、黑金（Black Gold，Pro）
-- **实现**：`AppThemeExtension`（25 个语义化色槽）+ `AppThemeDefinition` 注册表 + `AppRoot.themeNotifier` 全局切换
-- **持久化**：`selected_theme`（SharedPreferences），冷启动恢复
-- **Pro 门禁**：黑金主题未解锁时点击调起 `ProUnlockDialog`
+- **5 套预设**：默认青（Teal）、暖橙（Warm Orange）、墨绿（Forest Green）、晴空蓝（Pro）、新拟物（Pro）
+- **实现**：`AppThemeExtension`（语义化色槽）+ `AppThemeDefinition` 注册表 + `AppRoot.themeNotifier` 全局切换
+- **持久化**：`selected_theme` + `app_font_family`（SharedPreferences），冷启动恢复
+- **Pro 门禁**：晴空蓝 / 新拟物未解锁时点击调起 `ProUnlockDialog`
 
 ### Android 图标包切换
 
@@ -277,6 +298,7 @@
 ### 关键文件
 - [lib/theme/app_theme.dart](../lib/theme/app_theme.dart) - 主题定义注册表
 - [lib/theme/app_theme_extension.dart](../lib/theme/app_theme_extension.dart) - 语义化色槽
+- [lib/theme/app_font.dart](../lib/theme/app_font.dart) - 字体选项 + prefs 解析
 - [lib/utils/icon_pack_switcher.dart](../lib/utils/icon_pack_switcher.dart) - 图标包 MethodChannel 桥接
 - [lib/utils/pro_gate.dart](../lib/utils/pro_gate.dart) - Pro 门禁工具
 - [android/app/src/main/AndroidManifest.xml](../android/app/src/main/AndroidManifest.xml) - activity-alias 声明

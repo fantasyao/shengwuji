@@ -45,7 +45,7 @@ return Container(color: ext.positiveAccent);
 - `AppThemes.all`：所有预设主题列表（**只含浅色皮肤**），设置页自动遍历显示
 - `AppThemes.defaultTheme`：首次启动默认主题
 - `AppThemes.dark`：全 App 唯一深色皮肤，**不在 all 中**，只喂 `MaterialApp.darkTheme`（见下节）
-- `toThemeData()`：生成带霞鹜文楷字体的 `ThemeData`（ColorScheme 亮度随 `brightness` 字段）
+- `toThemeData({font})`：生成 `ThemeData`（ColorScheme 亮度随 `brightness`）；字体由 `AppFontChoice` 决定，默认霞鹜文楷，见「字体选项」
 
 ### AppRoot — 全局切换入口
 
@@ -55,6 +55,7 @@ return Container(color: ext.positiveAccent);
 - 任意位置 `AppRoot.themeNotifier.value = newTheme` 即可触发整树重建
 - `main()` 启动时从 `SharedPreferences` 的 `selected_theme` 读取并初始化
 - `AppRoot.themeModeNotifier` 是全局 `ValueNotifier<ThemeMode>`（深浅三档，见下节），`main()` 启动时从 `theme_mode` 读取
+- `AppRoot.fontChoiceNotifier` 是全局 `ValueNotifier<AppFontChoice>`（字体档，见「字体选项」），`main()` 启动时从 `app_font_family` 读取
 
 ## 深色模式（2026-09-28 新增）
 
@@ -96,6 +97,39 @@ return Container(color: ext.positiveAccent);
 ### 悬浮窗为何不做
 
 悬浮窗卡片是深色半透明胶囊+白描边设计，跨任意背景可读；系统深色不代表悬浮窗下垫的背景是深色。overlay engine 不消费 `theme_mode` key。
+
+## 字体选项（2026-10-22 新增）
+
+用户反馈霞鹜文楷与部分场景观感不搭，新增全局字体档（主 App + 悬浮窗共用）：
+
+| ID | 展示名 | fontFamily |
+|---|---|---|
+| `wenkai`（默认） | 霞鹜文楷 | `LXGWWenKaiMonoGBScreen` |
+| `system` | 系统默认 | `null`（Flutter/Android 平台默认 Roboto 系） |
+
+- 「系统默认」= **平台字体**，不跟随手机厂商自定义字体（后者需原生探测、各厂商支持不一致）
+- prefs key `app_font_family`，`parseAppFontChoice` 对 null/空串/坏串兜底 wenkai（老用户视觉不变）
+- 写：设置页「外观 → 字体」ChoiceChip；读：`main()` 启动预读 + 悬浮窗 `_loadTheme` 时 `prefs.reload()` 后解析
+- 生效：`AppThemeDefinition.toThemeData(font:)` 同时设 `ThemeData.fontFamily` 与 15 个 TextTheme style；传 null 时由 Typography 填充平台默认（两层字体陷阱见 CLAUDE.md）
+- 悬浮窗是独立 engine：OverlayHome 展开/刷新配置时回调 `onThemePrefsChanged → OverlayApp._loadTheme` 重读 prefs，key 未变则 no-op
+- 测试：`test/app_font_test.dart`（解析兜底 / 两层字体一致性 / 明暗主题共用字体档）
+
+## 新拟物覆盖收口（2026-10-28）
+
+用户反馈新拟物主题仍有页面残留 M3 默认控件，视觉断层集中在**设置页二级页面**。本次收敛为单一来源，避免各页各写一份 `ext.isNeumorphic` 分支：
+
+- `lib/widgets/neu_widgets.dart` 新增 `NeuChoiceChip`：拟物单选胶囊——选中 `NeuInset(radius:999)` + `primaryDark` 粗体，未选 `neuRaisedDecoration` 凸起；`onSelected == null` 时 45% 不透明禁用态
+- `lib/settings/settings_widgets.dart` 新增 4 个分流辅助（拟物走 Neu 组件，其余主题**原样**保留 M3 控件）：
+  - `buildSettingsChoiceChip`（icon / avatar / iconSize / showCheckmark / labelPadding）→ `NeuChoiceChip` | `ChoiceChip`
+  - `buildSettingsPrimaryButton`（busy / minHeight / expand）→ `NeuPressable` + `primaryDark` 前景 | `ElevatedButton.icon`
+  - `buildSettingsSecondaryButton` → `NeuPressable` + `primary` 字 | `OutlinedButton.icon`
+  - `buildSettingsFieldShell` → `NeuInset(radius:15)` 外壳 | 原样返回
+- 输入框配套不变量：拟物主题 `TextField.filled` 必须为 false，否则填充色盖住 `NeuInset` 内阴影（cloud_sync / recognition 两页已按 `!ext.isNeumorphic` 传入）
+- 输入框标签不变量（2026-10-28 用户真机反馈修正）：拟物主题**禁用 `InputDecoration.labelText`**。浮动标签是 `OutlineInputBorder` 的配套排版（压在上边框线上、为切口预留上内边距），而拟物壳没有可见边框，标签会悬在凹陷上沿被内阴影切掉半截、输入框还凭空变高。拟物分支改传 `buildSettingsFieldShell(label: ...)`，由外壳在凹陷外画 12px `textSecondary` 小标题；非拟物主题仍走 M3 浮动标签，视觉零变化（cloud_sync_page 的 4 个字段已统一走 `_buildField`）
+
+覆盖范围（均为用户点名项）：WebDAV 同步页（保存配置 / 测试连接 / 立即同步 / 同步录音开关 / 各输入框）、识别与修正页（热词输入框 + 保存并更新热词）、大爆炸搜索页（3 个搜索引擎）、音量键快捷操作页（4 槽位动作 + 长按时长预设/自定义 + 说完自动停止秒数 + 底部系统设置按钮）、悬浮窗设置页（把手大小 / 把手主题 / 字体大小 / 面板高度 / 按钮位置 / 自动隐藏 / 停靠侧 / 边缘间距 + 立即启动悬浮窗）、外观页（字体两档 / 字号 / 深色模式三档）。
+
+测试：`test/settings_neu_controls_test.dart`（12 例：共享分流 7 例 + 搜索/外观/悬浮窗/音量键/云端同步页面级各 1~2 例，断言拟物命中 `NeuChoiceChip`/`NeuPressable`/`NeuInset` 且点击确实写 prefs；输入框 3 例含「标签整体落在凹陷上沿之外」几何断言与「拟物 4 个字段不用 labelText」页面级断言）。
 
 ## 切换流程
 
@@ -162,6 +196,10 @@ return Container(color: ext.positiveAccent);
 
 - [lib/theme/app_theme_extension.dart](../../lib/theme/app_theme_extension.dart) - 语义化色槽
 - [lib/theme/app_theme.dart](../../lib/theme/app_theme.dart) - 主题定义注册表
+- [lib/theme/app_font.dart](../../lib/theme/app_font.dart) - 字体档枚举 + prefs 解析
+- [lib/widgets/neu_widgets.dart](../../lib/widgets/neu_widgets.dart) - 新拟物组件库（凸/凹阴影、NeuPressable、NeuSwitch、NeuChoiceChip）
+- [lib/settings/settings_widgets.dart](../../lib/settings/settings_widgets.dart) - 设置页控件分流层（拟物 / 其他主题）
+- [lib/overlay/overlay_app.dart](../../lib/overlay/overlay_app.dart) - 悬浮窗主题/字体重载（独立 engine）
 - [lib/theme/custom_theme.dart](../../lib/theme/custom_theme.dart) - 自定义主题（配置存取 + 色系派生）
 - [lib/settings/custom_theme_page.dart](../../lib/settings/custom_theme_page.dart) - 自定义主题编辑页（选色盘）
 - [lib/main.dart](../../lib/main.dart) - `AppRoot.themeNotifier` 全局切换

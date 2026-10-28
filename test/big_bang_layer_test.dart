@@ -351,6 +351,75 @@ void main() {
     expect(tokenText.style?.color, Colors.black87);
   });
 
+  testWidgets('深色配色：isDark=true 主体换深色底 + 词块浅字深底', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: BigBangLayer(
+            text: '苹果，牛奶 bread',
+            initialTokens: tokens,
+            isDark: true,
+            onClose: () {},
+            onCopy: (_) async => true,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    // 主体 Material 用 bigBangBackgroundDark（深色），数值钉死
+    expect(OverlayConstants.bigBangBackgroundDark, const Color(0xFA101319));
+    final material = tester.widget<Material>(
+      find.byWidgetPredicate(
+        (w) =>
+            w is Material &&
+            w.borderRadius ==
+                BorderRadius.circular(OverlayConstants.bigBangCornerRadius),
+      ),
+    );
+    expect(material.color, OverlayConstants.bigBangBackgroundDark);
+    // 压暗遮罩深浅共用（35% 黑），仍 3 处
+    expect(
+      find.byWidgetPredicate(
+        (w) => w is Container && w.color == OverlayConstants.bigBangScrimColor,
+      ),
+      findsNWidgets(3),
+    );
+    // 未选中词块：浅字（white 87%）深底（white 7%）
+    final tokenText = tester.widget<Text>(find.text('牛奶'));
+    expect(tokenText.style?.color, Colors.white.withValues(alpha: 0.87));
+  });
+
+  testWidgets('isDark 缺省跟随 Theme brightness（主 App 路由路径）', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(brightness: Brightness.dark),
+        home: Scaffold(
+          body: BigBangLayer(
+            text: '苹果，牛奶 bread',
+            initialTokens: tokens,
+            onClose: () {},
+            onCopy: (_) async => true,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    final material = tester.widget<Material>(
+      find.byWidgetPredicate(
+        (w) =>
+            w is Material &&
+            w.borderRadius ==
+                BorderRadius.circular(OverlayConstants.bigBangCornerRadius),
+      ),
+    );
+    // 不传 isDark 时随 Theme 深色 → 深色底；浅色主题（既有测试）→ 白底
+    expect(material.color, OverlayConstants.bigBangBackgroundDark);
+  });
+
   testWidgets('topInset：顶部留白高度生效，层内容整体下移', (tester) async {
     // 默认 = 面板状态栏避让（40，与 _buildHeader 同源常量）
     await pumpLayer(tester);

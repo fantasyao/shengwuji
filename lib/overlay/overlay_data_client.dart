@@ -1,6 +1,8 @@
 import 'dart:developer';
 import 'dart:io';
 import '../db_helper.dart';
+import '../sync/cloud_sync_service.dart';
+import '../text_processor.dart';
 
 /// 悬浮窗 engine 侧的数据客户端
 ///
@@ -10,6 +12,13 @@ import '../db_helper.dart';
 /// 无需再经 MethodChannel 跨 engine 转发到主 isolate。
 class OverlayDataClient {
   final DbHelper _dbHelper = DbHelper();
+
+  /// 下拉刷新云同步：与主 App 设置页同一套 WebDAV 引擎。悬浮窗 engine 直连
+  /// 同一数据库；热词读写走本地 user_hotwords.txt（TextProcessor 同一路径）
+  late final CloudSyncService _cloudSyncService = CloudSyncService(
+    dbHelper: _dbHelper,
+    processor: TextProcessor(),
+  );
 
   /// 查询全部 diary 记录（含已归档）
   Future<List<Map<String, dynamic>>> getDiaries() async {
@@ -27,6 +36,26 @@ class OverlayDataClient {
       log('queryDiaries error', error: e, stackTrace: stack);
       rethrow; // 向上抛出，让 UI 展示错误态，而不是伪装成空数据
     }
+  }
+
+  /// 某条日记的全部图片路径：手机自拍截图（diary.image_path）在前，
+  /// 云同步下收的电脑端多图（diary_images）按 position 跟随其后
+  Future<List<String>> getDiaryImagePaths(Map<String, dynamic> diary) async {
+    final paths = <String>[];
+    final own = diary['image_path'] as String?;
+    if (own != null && own.isNotEmpty) paths.add(own);
+    final uuid = diary['sync_uuid'] as String?;
+    if (uuid != null && uuid.isNotEmpty) {
+      try {
+        for (final row in await _dbHelper.getDiaryImages(uuid)) {
+          final path = row['image_path'] as String?;
+          if (path != null && path.isNotEmpty) paths.add(path);
+        }
+      } catch (e) {
+        print('⚠️ [OverlayDataClient] 查询图片列表失败: $e');
+      }
+    }
+    return paths;
   }
 
   /// 归档日记（仅置 is_archived=1 标记，不删音频文件——悬浮窗侧归档可恢复，
@@ -54,10 +83,14 @@ class OverlayDataClient {
     }
   }
 
-  /// 删除日记（删数据库行 + 删录音文件）。录音文件删除失败不阻塞删库结果
-  ///（try-catch 容错，对齐主 App 物品转存删录音模式）；删库失败 rethrow，
-  /// 让上层（OverlayHome._onCardDelete）回滚/打日志
-  Future<void> deleteDiary(int id, String? audioPath) async {
+  /// 删除日记（删数据库行 + 删录音文件 + 删截图附件）。文件删除失败不阻塞
+  /// 删库结果（try-catch 容错，对齐主 App 物品转存删录音模式）；删库失败
+  /// rethrow，让上层（OverlayHome._onCardDelete）回滚/打日志
+  Future<void> deleteDiary(
+    int id,
+    String? audioPath, {
+    String? imagePath,
+  }) async {
     try {
       await _dbHelper.deleteDiary(id);
       if (audioPath != null && audioPath.isNotEmpty) {
@@ -65,6 +98,13 @@ class OverlayDataClient {
           await File(audioPath).delete();
         } catch (e) {
           print('⚠️ [OverlayDataClient] 删除录音文件失败（库行已删）: $e');
+        }
+      }
+      if (imagePath != null && imagePath.isNotEmpty) {
+        try {
+          await File(imagePath).delete();
+        } catch (e) {
+          print('⚠️ [OverlayDataClient] 删除截图附件失败（库行已删）: $e');
         }
       }
       print('🗑️ [OverlayDataClient] deleteDiary($id) 成功');
@@ -130,6 +170,25 @@ class OverlayDataClient {
       print('🗑️ [OverlayDataClient] 删除录音文件成功: $audioPath');
     } catch (e) {
       print('⚠️ [OverlayDataClient] 删除录音文件失败: $e');
+    }
+  }
+
+  /// 下拉刷新：执行一次 WebDAV 手动同步（配置/合并/上传全在同步引擎内）。
+  /// 调用方（OverlayHome）负责同步后重查列表与 Toast 反馈
+  Future<CloudSyncResult> syncFromCloud() async {
+    log('☁️ [OverlayDataClient] 下拉刷新触发云同步');
+    return _cloudSyncService.sync();
+  }
+
+  /// 删除截图附件文件（滑动删除撤销窗口落定补删；重新截图替换旧图也走这里）。
+  /// 失败只打日志不抛——与录音文件同语义，库行/字段已更新，最坏残留孤儿文件
+  Future<void> deleteImageFile(String? imagePath) async {
+    if (imagePath == null || imagePath.isEmpty) return;
+    try {
+      await File(imagePath).delete();
+      print('🗑️ [OverlayDataClient] 删除截图附件成功: $imagePath');
+    } catch (e) {
+      print('⚠️ [OverlayDataClient] 删除截图附件失败: $e');
     }
   }
 }

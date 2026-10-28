@@ -19,15 +19,17 @@ import '../app_logger.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import '../widgets/pro_unlock_dialog.dart';
 import '../theme/app_theme_extension.dart';
-import '../theme/app_theme.dart'; // AppThemes / AppThemeDefinition（Phase 3 主题选择）
-import '../theme/custom_theme.dart'; // 自定义主题（配置存取 + 色系派生）
-import '../main.dart'; // AppRoot.themeNotifier（Phase 3 主题切换）
-import '../utils/icon_pack_switcher.dart'; // Phase 4 图标包切换
+import '../theme/app_font.dart'; // 外观入口行摘要：字体档位解析
+import '../theme/app_theme.dart'; // 外观入口行摘要：深色模式档位解析
+import '../main.dart'; // AppRoot.themeNotifier（外观入口行摘要读当前主题名）
 import '../utils/pro_gate.dart'; // Pro 门禁（永久解锁 + 7 天试用）
-import '../utils/tab_visibility.dart'; // 功能页面隐藏开关 key（main.dart main() 预读同一组 key，重启生效）
+import '../utils/note_lock_settings.dart'; // 日记智能入口行摘要：笔记锁定开关
+import '../utils/tab_visibility.dart'; // 眼不见为净入口行摘要：两个隐藏开关 key（main.dart main() 预读同一组 key，重启生效）
 import '../overlay/overlay_constants.dart'; // OverlayConstants.autoHide*（自动隐藏档位唯一真值，与 overlay engine 共用；主页悬浮窗入口行摘要读）
 import '../utils/backup_csv.dart'; // 全量备份 CSV 编解码（导出/导入共用：生成、解析、时间归一化、去重键）
+import '../utils/diary_tag.dart'; // 4 槽位标签外观配置（随全量备份 tag_config.json 走）
 import '../utils/correction_learner.dart'; // 错误-修正学习表（编解码 + 备份内容）
+import '../utils/search_command_detector.dart'; // 语音搜索触发词（全量备份导出/导入 + 默认值唯一真值）
 import '../web_server/diary_server_controller.dart'; // 电脑访问服务开关编排
 import '../web_server/web_server_settings_card.dart'; // 电脑访问服务设置卡片
 // zcode: 2026-09 设置页下沉——热词+修正学习/AI 应用/悬浮窗/音量键/关于五组
@@ -35,11 +37,14 @@ import '../web_server/web_server_settings_card.dart'; // 电脑访问服务设�
 import 'settings/about_page.dart';
 import 'settings/accessibility_check.dart';
 import 'settings/ai_app_page.dart';
+import 'settings/appearance_settings_page.dart'; // 外观（主题/深色模式/图标/字号/字体/标签外观）
 import 'settings/cloud_sync_page.dart';
-import 'settings/custom_theme_page.dart'; // 自定义主题编辑页（选色盘 + 推荐色系）
+import 'settings/diary_interaction_settings_page.dart'; // 日记智能与交互（锁定/识别/查询/点击交换）
+import 'settings/feature_guide_page.dart'; // 全量功能说明（常驻入口，含升级用户）
 import 'settings/overlay_settings_page.dart';
 import 'settings/recognition_correction_page.dart';
 import 'settings/search_settings_page.dart'; // 大爆炸搜索二级页
+import 'settings/visibility_settings_page.dart'; // 眼不见为净（物品页隐藏 + 后台隐藏）
 import 'utils/big_bang_search.dart'; // 搜索引擎/浏览器 prefs key 与显示名唯一真值
 import 'settings/settings_widgets.dart';
 import 'widgets/neu_widgets.dart';
@@ -80,23 +85,15 @@ class SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
   String? _cloudSyncSubtitle;
   String _appVersion = ''; // 版本号，来自 package_info_plus（关于入口行）
   bool _isExportingStartupLog = false; // 启动日志导出中（同上）
-  bool _isProActive =
-      false; // Pro 是否可用（永久解锁或试用中），统一走 ProGate 判定
-  String _currentIconPackId = 'default'; // 当前图标包 ID（从原生层读取，不依赖 prefs），Phase 4
-  bool _itemTransferEnabled = true; // 日记智能识别物品+位置开关（默认开启）
-  bool _queryAnswerEnabled = true; // 日记智能查询物品位置开关（默认开启）
-  bool _swapTapLongPress = false; // 日记卡片单击/双击交换开关（prefs key 是历史名 diary_card_swap_tap_longpress，不可改）
-  bool _recordTabHidden = false; // 功能页面：隐藏存物品页开关（prefKeyRecordTabHidden，main.dart main() 预读，重启生效）
-  bool _listTabHidden = false; // 功能页面：隐藏查物品页开关（prefKeyListTabHidden，同上）
+  bool _isProActive = false; // Pro 是否可用（永久解锁或试用中），统一走 ProGate 判定
+  // 入口行摘要（配置本体已下沉二级页，本页只读 prefs/全局 notifier 生成摘要）
+  String _appearanceSummary = '默认青 · 跟随系统 · 中字号';
+  String _visibilitySummary = '存物品页显示中 · 查物品页显示中 · 后台隐藏关';
+  String _diaryInteractionSummary = '锁定开 · 识别开 · 查询开';
   int _overlayAutoHideSeconds = OverlayConstants
       .autoHideDefaultSeconds; // 悬浮窗入口行摘要：收起后自动隐藏秒数（二级页写，overlay engine 读同一 key）
   bool _overlaySideLeft =
       false; // 悬浮窗入口行摘要：停靠侧（OverlayConstants.overlaySideLeftPrefKey：false=右缘/true=左缘）
-  // 字号缩放档位（外观分区选择器；默认 1.0 中档）
-  double _fontScale = 1.0;
-
-  // 深色模式档位（外观分区选择器；默认跟随系统）
-  ThemeMode _themeMode = ThemeMode.system;
 
   /// 启动耗时诊断 UI 开关（暂时隐藏，需要时改为 true）
   static const bool _kShowStartupDiagnostics = false;
@@ -110,12 +107,10 @@ class SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
     _loadSearchSummary(); // 加载大爆炸搜索入口行摘要（引擎 · 浏览器）
     _loadAppVersion(); // 加载应用版本号（关于入口行）
     _loadProUnlockStatus(); // 加载 Pro 解锁状态
-    _loadCurrentIconPack(); // Phase 4：从原生层加载当前图标包状态
-    _loadSmartSwitches(); // 加载日记智能识别开关状态
-    _loadTabVisibility(); // 加载功能页面隐藏开关
+    _loadAppearanceSummary(); // 外观入口行摘要（主题/深色/字号/字体）
+    _loadVisibilitySummary(); // 眼不见为净入口行摘要（两页隐藏 + 后台隐藏）
+    _loadDiaryInteractionSummary(); // 日记智能与交互入口行摘要
     _loadOverlaySummary(); // 加载悬浮窗入口行摘要（停靠侧 + 自动隐藏）
-    _loadFontScale(); // 加载全局字号缩放档位
-    _loadThemeMode(); // 加载深色模式档位
     _loadCorrectionPairCount(); // 加载错误-修正学习表条数（入口行摘要）
     _loadCloudSyncSummary(); // 加载云端同步入口行摘要（是否配置 + 上次同步）
     WidgetsBinding.instance.addObserver(this);
@@ -176,51 +171,64 @@ class SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
     }
   }
 
-  /// Phase 4：从原生层查询当前图标包（状态源是系统 ComponentEnabledSetting，不依赖 prefs）
-  void _loadCurrentIconPack() async {
-    final packId = await IconPackSwitcher.getCurrentPackId();
-    if (mounted) {
-      setState(() => _currentIconPackId = packId);
-    }
+  /// 加载外观入口行摘要（主题名取全局 notifier，深色/字号/字体读 prefs；
+  /// 完整配置与切换逻辑已下沉 lib/settings/appearance_settings_page.dart）
+  void _loadAppearanceSummary() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    final themeName = AppRoot.themeNotifier.value.name;
+    final darkLabel = switch (parseThemeMode(
+      prefs.getString(kThemeModePrefKey),
+    )) {
+      ThemeMode.light => '浅色',
+      ThemeMode.dark => '深色',
+      ThemeMode.system => '跟随系统',
+    };
+    final scale = prefs.getDouble('font_size_scale') ?? 1.0;
+    final scaleLabel = switch (scale) {
+      0.85 => '小',
+      1.15 => '大',
+      1.3 => '特大',
+      _ => '中',
+    };
+    final fontLabel =
+        parseAppFontChoice(prefs.getString(kAppFontPrefKey)) ==
+            AppFontChoice.system
+        ? ' · 系统字体'
+        : '';
+    setState(
+      () => _appearanceSummary =
+          '$themeName · $darkLabel · $scaleLabel字号$fontLabel',
+    );
   }
 
-  /// 加载日记页智能识别开关状态（与 DiaryTab._loadSmartSwitches 读同一组 prefs key）
-  void _loadSmartSwitches() async {
+  /// 加载眼不见为净入口行摘要（两个 Tab 隐藏开关 + 后台隐藏，均以 prefs 为准）
+  void _loadVisibilitySummary() async {
     final prefs = await SharedPreferences.getInstance();
-    if (mounted) {
-      setState(() {
-        _itemTransferEnabled =
-            prefs.getBool('diary_item_transfer_enabled') ?? true;
-        _queryAnswerEnabled =
-            prefs.getBool('diary_query_answer_enabled') ?? true;
-        _swapTapLongPress =
-            prefs.getBool('diary_card_swap_tap_longpress') ?? false;
-      });
-    }
+    if (!mounted) return;
+    final recordHidden = prefs.getBool(prefKeyRecordTabHidden) ?? false;
+    final listHidden = prefs.getBool(prefKeyListTabHidden) ?? false;
+    final recentsHidden = prefs.getBool('exclude_from_recents') ?? false;
+    setState(
+      () => _visibilitySummary =
+          '存物品页${recordHidden ? '已隐藏' : '显示中'} · '
+          '查物品页${listHidden ? '已隐藏' : '显示中'} · '
+          '后台隐藏${recentsHidden ? '开' : '关'}',
+    );
   }
 
-  /// 加载功能页面隐藏开关（读取方：main.dart main() 预读同一组 key，
-  /// MainScaffold 按 visibleTabStack 装配底部导航；重启生效）
-  void _loadTabVisibility() async {
+  /// 加载日记智能与交互入口行摘要（锁定/识别/查询/点击交换）
+  void _loadDiaryInteractionSummary() async {
     final prefs = await SharedPreferences.getInstance();
-    if (mounted) {
-      setState(() {
-        _recordTabHidden = prefs.getBool(prefKeyRecordTabHidden) ?? false;
-        _listTabHidden = prefs.getBool(prefKeyListTabHidden) ?? false;
-      });
-    }
-  }
-
-  /// 保存功能页面隐藏开关（读取方：main.dart main() 预读；下次冷启动装配生效）
-  Future<void> _saveTabVisibility({
-    required bool recordHidden,
-    required bool listHidden,
-  }) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(prefKeyRecordTabHidden, recordHidden);
-    await prefs.setBool(prefKeyListTabHidden, listHidden);
-    print(
-      '🔧 [Settings] tab_visibility recordHidden=$recordHidden listHidden=$listHidden',
+    final noteLock = await NoteLockSettings.isEnabled();
+    if (!mounted) return;
+    final itemTransfer = prefs.getBool('diary_item_transfer_enabled') ?? true;
+    final queryAnswer = prefs.getBool('diary_query_answer_enabled') ?? true;
+    final swapTap = prefs.getBool('diary_card_swap_tap_longpress') ?? false;
+    setState(
+      () => _diaryInteractionSummary =
+          '锁定${noteLock ? '开' : '关'} · 识别${itemTransfer ? '开' : '关'} · '
+          '查询${queryAnswer ? '开' : '关'}${swapTap ? ' · 点击已交换' : ''}',
     );
   }
 
@@ -241,42 +249,6 @@ class SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
             prefs.getBool(OverlayConstants.overlaySideLeftPrefKey) ?? false;
       });
     }
-  }
-
-  /// 加载全局字号缩放档位（读取方：AppRoot 的 fontScaleNotifier，启动时 main() 已预读）
-  void _loadFontScale() async {
-    final prefs = await SharedPreferences.getInstance();
-    if (mounted) {
-      setState(() {
-        _fontScale = prefs.getDouble('font_size_scale') ?? 1.0;
-      });
-    }
-  }
-
-  /// 保存全局字号缩放档位（写 prefs 持久化 + 立即触发整树重建）
-  Future<void> _saveFontScale(double scale) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setDouble('font_size_scale', scale);
-    AppRoot.fontScaleNotifier.value = scale; // 立即触发整树重建
-    setState(() => _fontScale = scale);
-  }
-
-  /// 加载深色模式档位（读取方：AppRoot 的 themeModeNotifier，启动时 main() 已预读）
-  void _loadThemeMode() async {
-    final prefs = await SharedPreferences.getInstance();
-    if (mounted) {
-      setState(() {
-        _themeMode = parseThemeMode(prefs.getString(kThemeModePrefKey));
-      });
-    }
-  }
-
-  /// 保存深色模式档位（写 prefs 持久化 + 立即触发整树重建）
-  Future<void> _saveThemeMode(ThemeMode mode) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(kThemeModePrefKey, mode.name);
-    AppRoot.themeModeNotifier.value = mode; // 立即触发整树重建
-    setState(() => _themeMode = mode);
   }
 
   /// 显示 Pro 解锁弹窗，关闭后刷新按钮文案
@@ -381,8 +353,9 @@ class SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
             .label;
     final browserPackage = prefs.getString(kSearchBrowserPackageKey) ?? '';
     final browserName = prefs.getString(kSearchBrowserNameKey) ?? '';
-    final browserLabel =
-        (browserPackage.isEmpty || browserName.isEmpty) ? '系统默认' : browserName;
+    final browserLabel = (browserPackage.isEmpty || browserName.isEmpty)
+        ? '系统默认'
+        : browserName;
     if (!mounted) return;
     setState(() => _searchSummary = '$engineName · $browserLabel');
   }
@@ -411,6 +384,30 @@ class SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
     _loadOverlaySummary(); // 摘要跟随二级页的配置（停靠侧/自动隐藏）
   }
 
+  Future<void> _openVisibilityPage() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const VisibilitySettingsPage()),
+    );
+    _loadVisibilitySummary(); // 摘要跟随二级页的开关
+  }
+
+  Future<void> _openDiaryInteractionPage() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const DiaryInteractionSettingsPage()),
+    );
+    _loadDiaryInteractionSummary(); // 摘要跟随二级页的开关
+  }
+
+  Future<void> _openAppearancePage() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const AppearanceSettingsPage()),
+    );
+    _loadAppearanceSummary(); // 主题可能刚切换，摘要重读 notifier/prefs
+  }
+
   // --- 应用版本号 ---
   Future<void> _loadAppVersion() async {
     try {
@@ -425,7 +422,7 @@ class SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
       // 回退：使用 pubspec.yaml 中的硬编码版本号
       if (mounted) {
         setState(() {
-          _appVersion = '1.5.0'; // 来自 pubspec.yaml version: 1.5.0+26
+          _appVersion = '1.6.0'; // 来自 pubspec.yaml version: 1.6.0+27
         });
       }
     }
@@ -591,6 +588,14 @@ class SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
       final correctionsContent = CorrectionLearner.encodeCorrections(
         await widget.dbHelper.getAllCorrectionPairs(),
       );
+      // 语音搜索触发词配置（规范化后换行分隔，与 prefs 同格式；
+      // 导出的是"当前实际生效"的列表，未配置时即默认白名单）
+      final prefs = await SharedPreferences.getInstance();
+      final voiceSearchTriggersContent = SearchCommandDetector.parseTriggers(
+        prefs.getString(kVoiceSearchTriggersKey),
+      ).join('\n');
+      // 4 槽位标签外观（图标/颜色）：主 App 内存里的 notifier 即当前真值
+      final tagConfigContent = DiaryTagStyles.config.encode();
 
       final appDocDir = await getApplicationDocumentsDirectory();
       final audioDirPath = p.join(appDocDir.path, 'diary_audio');
@@ -605,6 +610,8 @@ class SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
         readme: readme,
         hotwordsContent: hotwordsContent,
         correctionsContent: correctionsContent,
+        voiceSearchTriggersContent: voiceSearchTriggersContent,
+        tagConfigContent: tagConfigContent,
         audioDirPath: audioDirPath,
         validAudioNames: validAudioPaths,
       );
@@ -685,6 +692,8 @@ class SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
 - audio/: 日记音频文件
 - user_hotwords.txt: 动态热词替换配置
 - correction_pairs.txt: 错误-修正学习表（识别纠错提示用）
+- voice_search_triggers.txt: 悬浮窗语音搜索触发词（每行一个）
+- tag_config.json: 4 个标注槽位的图标与颜色配置
 
 导入说明:
 请通过设置页的"导入全量备份"功能恢复此数据。
@@ -883,7 +892,46 @@ class SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
         log('[备份导入] 备份中无 correction_pairs.txt，跳过修正对恢复（老版本备份）');
       }
 
-      // 9. 检查是否有新数据（热词已在上一步独立恢复，不受此 return 影响）
+      // 8.6 恢复语音搜索触发词（如备份中包含）——同样必须在 early return 之前。
+      // 语义是"覆盖"：按备份里的配置恢复（备份里的内容已规范化）；老版本备份
+      // 没有此文件、或文件内容为空时保留本机现有配置不动——不回落默认，避免
+      // 误清用户已配置的触发词
+      bool voiceSearchTriggersRestored = false;
+      final triggersContent = extracted.voiceSearchTriggers;
+      if (triggersContent != null) {
+        final triggers = SearchCommandDetector.normalize(triggersContent);
+        if (triggers.isNotEmpty) {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString(kVoiceSearchTriggersKey, triggers.join('\n'));
+          voiceSearchTriggersRestored = true;
+          log('[备份导入] 恢复语音搜索触发词: ${triggers.join('/')}');
+        } else {
+          log('[备份导入] voice_search_triggers.txt 内容为空，跳过（保留本机配置）');
+        }
+      } else {
+        log('[备份导入] 备份中无 voice_search_triggers.txt，跳过（老版本备份）');
+      }
+
+      // 8.7 恢复 4 槽位标签外观（如备份中包含）——同样必须在 early return 之前。
+      // 语义是"覆盖"：备份里有合法配置就整份替换；老版本备份没有此文件、
+      // 或内容非法时保留本机现值（不回落默认，避免误清用户换过的图标/颜色）
+      bool tagStylesRestored = false;
+      final tagConfigRaw = extracted.tagConfig;
+      if (tagConfigRaw != null) {
+        final config = DiaryTagStyleConfig.tryParse(tagConfigRaw);
+        if (config != null) {
+          await DiaryTagStyles.save(config);
+          tagStylesRestored = true;
+          log('[备份导入] 恢复标签外观配置: ${config.encode()}');
+        } else {
+          log('[备份导入] tag_config.json 内容非法，跳过（保留本机配置）');
+        }
+      } else {
+        log('[备份导入] 备份中无 tag_config.json，跳过（老版本备份）');
+      }
+
+      // 9. 检查是否有新数据（热词/修正对/触发词均已在前面独立恢复，
+      //    不受此 return 影响）
       if (newItems.isEmpty && newDiaries.isEmpty) {
         log('[备份导入] 无新数据 early return (hotwordsRestored=$hotwordsRestored)');
         if (mounted) {
@@ -891,6 +939,8 @@ class SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
           final extras = <String>[
             if (hotwordsRestored) '热词配置已恢复',
             if (correctionsRestored > 0) '修正对已合并 $correctionsRestored 条',
+            if (voiceSearchTriggersRestored) '语音搜索触发词已恢复',
+            if (tagStylesRestored) '标签外观已恢复',
           ];
           final msg = extras.isNotEmpty
               ? "✅ ${extras.join('，')}（无其他新数据）"
@@ -922,10 +972,18 @@ class SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
         if (correctionsRestored > 0) {
           message += "，修正对合并 $correctionsRestored 条";
         }
+        if (voiceSearchTriggersRestored) {
+          message += "，语音搜索触发词已恢复";
+        }
+        if (tagStylesRestored) {
+          message += "，标签外观已恢复";
+        }
         log(
           '[备份导入] 完成: 新物品=${newItems.length}, 新日记=${newDiaries.length}, '
           '新音频=$restoredAudioCount, 热词恢复=$hotwordsRestored, '
-          '修正对合并=$correctionsRestored',
+          '修正对合并=$correctionsRestored, '
+          '触发词恢复=$voiceSearchTriggersRestored, '
+          '标签外观恢复=$tagStylesRestored',
         );
         ScaffoldMessenger.of(
           context,
@@ -941,7 +999,6 @@ class SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
       }
     }
   }
-
 
   @override
   Widget build(BuildContext context) {
@@ -1147,62 +1204,42 @@ class SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
               controller: DiaryServerController.instance,
             ),
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 12),
 
-          // --- 日记智能与交互区域 ---
-          // 日记页行为设置集中一卡：物品/位置智能识别开关 + 卡片单击长按交互交换，
-          // prefs key 与 DiaryTab._loadSmartSwitches 一致
-          _buildSectionTitle("日记智能与交互"),
+          // --- 眼不见为净（功能页面显隐 + 后台隐藏聚合二级页，2026-10-22）---
+          // 两个 Tab 隐藏开关重启生效（main.dart main() 预读同一组 key）；
+          // 后台隐藏写 prefs 即真值源并经 RecentsVisibility 通道实时生效
           _buildCard(
-            child: Column(
-              children: [
-                buildSettingsSwitchTile(
-                  context,
-                  title: const Text('日记智能识别物品', style: TextStyle(fontSize: 13)),
-                  subtitle: Text(
-                    '识别"物品+位置"语句并显示转存按钮',
-                    style: TextStyle(fontSize: 11, color: ext.textHint),
-                  ),
-                  value: _itemTransferEnabled,
-                  onChanged: (v) async {
-                    setState(() => _itemTransferEnabled = v);
-                    final prefs = await SharedPreferences.getInstance();
-                    await prefs.setBool('diary_item_transfer_enabled', v);
-                  },
-                ),
-                buildSettingsSwitchTile(
-                  context,
-                  title: const Text(
-                    '日记智能查询物品位置',
-                    style: TextStyle(fontSize: 13),
-                  ),
-                  subtitle: Text(
-                    '识别"XX在哪儿"语句并显示答案区',
-                    style: TextStyle(fontSize: 11, color: ext.textHint),
-                  ),
-                  value: _queryAnswerEnabled,
-                  onChanged: (v) async {
-                    setState(() => _queryAnswerEnabled = v);
-                    final prefs = await SharedPreferences.getInstance();
-                    await prefs.setBool('diary_query_answer_enabled', v);
-                  },
-                ),
-                const Divider(height: 1),
-                buildSettingsSwitchTile(
-                  context,
-                  title: const Text('交换单击与双击', style: TextStyle(fontSize: 13)),
-                  subtitle: Text(
-                    '开启后：单击=编辑、双击=复制（默认：单击=复制、双击=编辑）；长按=大爆炸分词不受开关影响。修改后需重启 App 生效',
-                    style: TextStyle(fontSize: 11, color: ext.textHint),
-                  ),
-                  value: _swapTapLongPress,
-                  onChanged: (v) async {
-                    setState(() => _swapTapLongPress = v);
-                    final prefs = await SharedPreferences.getInstance();
-                    await prefs.setBool('diary_card_swap_tap_longpress', v);
-                  },
-                ),
-              ],
+            padding: EdgeInsets.zero,
+            child: SettingsEntryRow(
+              icon: Icons.visibility_off_outlined,
+              title: '眼不见为净',
+              subtitle: _visibilitySummary,
+              onTap: _openVisibilityPage,
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // --- 日记智能与交互（下沉二级页，2026-10-22）---
+          _buildCard(
+            padding: EdgeInsets.zero,
+            child: SettingsEntryRow(
+              icon: Icons.auto_awesome_outlined,
+              title: '日记智能与交互',
+              subtitle: _diaryInteractionSummary,
+              onTap: _openDiaryInteractionPage,
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // --- 外观（主题/深色模式/图标/字号/字体/标签外观下沉二级页，2026-10-22）---
+          _buildCard(
+            padding: EdgeInsets.zero,
+            child: SettingsEntryRow(
+              icon: Icons.palette_outlined,
+              title: '外观',
+              subtitle: _appearanceSummary,
+              onTap: _openAppearancePage,
             ),
           ),
           const SizedBox(height: 24),
@@ -1247,83 +1284,6 @@ class SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
             const SizedBox(height: 24),
           ],
 
-          // --- 功能页面区域：主界面 Tab 显隐开关 ---
-          // 读取方：main.dart main() 预读同一组 key，MainScaffold 按
-          // visibleTabStack 装配 IndexedStack/底部导航；重启生效
-          _buildSectionTitle("功能页面"),
-          _buildCard(
-            child: Column(
-              children: [
-                buildSettingsSwitchTile(
-                  context,
-                  title: const Text('隐藏存物品页', style: TextStyle(fontSize: 13)),
-                  subtitle: Text(
-                    '隐藏语音录入物品页，搬家模式一并隐藏。重启 App 后生效',
-                    style: TextStyle(fontSize: 11, color: ext.textHint),
-                  ),
-                  value: _recordTabHidden,
-                  onChanged: (v) async {
-                    setState(() => _recordTabHidden = v);
-                    await _saveTabVisibility(
-                      recordHidden: v,
-                      listHidden: _listTabHidden,
-                    );
-                    if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('已保存，重启 App 后生效'),
-                          duration: Duration(seconds: 2),
-                        ),
-                      );
-                    }
-                  },
-                ),
-                buildSettingsSwitchTile(
-                  context,
-                  title: const Text('隐藏查物品页', style: TextStyle(fontSize: 13)),
-                  subtitle: Text(
-                    '隐藏物品位置列表页，重启 App 后生效',
-                    style: TextStyle(fontSize: 11, color: ext.textHint),
-                  ),
-                  value: _listTabHidden,
-                  onChanged: (v) async {
-                    setState(() => _listTabHidden = v);
-                    await _saveTabVisibility(
-                      recordHidden: _recordTabHidden,
-                      listHidden: v,
-                    );
-                    if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('已保存，重启 App 后生效'),
-                          duration: Duration(seconds: 2),
-                        ),
-                      );
-                    }
-                  },
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 24),
-
-          // --- 外观区域（Phase 3 主题选择 + Phase 4 图标包入口）---
-          _buildSectionTitle("外观"),
-          _buildCard(
-            child: Column(
-              children: [
-                _buildThemeEntry(), // Phase 3
-                const Divider(height: 1),
-                _buildDarkModeEntry(), // 深色模式三档
-                const Divider(height: 1),
-                _buildIconPackEntry(), // Phase 4 新增
-                const Divider(height: 1),
-                _buildFontSizeEntry(), // 字号缩放
-              ],
-            ),
-          ),
-          const SizedBox(height: 24),
-
           // --- 支持作者区域 ---
           _buildSectionTitle("支持作者"),
           _buildCard(
@@ -1361,6 +1321,23 @@ class SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
           ),
           const SizedBox(height: 24),
 
+          // --- 使用帮助：全量功能说明常驻入口（说明卡只是日记行，会被删除且
+          // 旧文案不随版本更新；本页保证升级用户也能随时查到最新说法）---
+          _buildSectionTitle("使用帮助"),
+          _buildCard(
+            padding: EdgeInsets.zero,
+            child: SettingsEntryRow(
+              icon: Icons.menu_book_outlined,
+              title: '功能说明',
+              subtitle: '全功能操作指南：语音说法、手势、悬浮窗与快捷方式',
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const FeatureGuidePage()),
+              ),
+            ),
+          ),
+          const SizedBox(height: 24),
+
           // --- 关于（更新日志 / 导出运行日志 / 开源许可下沉二级页，zcode: 2026-09）---
           const Divider(thickness: 1, height: 32),
           const SizedBox(height: 8),
@@ -1384,7 +1361,6 @@ class SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
       ),
     );
   }
-
 
   // --- 音量键入口行无障碍状态点（绿=已开启 / 灰=未开启或检测失败；详情在二级页）---
   Widget _buildA11yStatusDot() {
@@ -1410,820 +1386,6 @@ class SettingsTabState extends State<SettingsTab> with WidgetsBindingObserver {
 
   Widget _buildCard({required Widget child, EdgeInsetsGeometry? padding}) {
     return SettingsCard(child: child, padding: padding);
-  }
-
-  // ==================== Phase 3：主题选择 ====================
-
-  /// 主题入口（仿 iOS 设置项风格，ListTile 风格）
-  ///
-  /// 显示当前主题名 + 调色板图标，点击调起 [_showThemePicker] BottomSheet。
-  Widget _buildThemeEntry() {
-    final ext = AppThemeExtension.of(context);
-    final currentTheme = AppRoot.themeNotifier.value;
-    return InkWell(
-      onTap: _showThemePicker,
-      borderRadius: BorderRadius.circular(15),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        child: Row(
-          children: [
-            Icon(Icons.palette_outlined, color: ext.primary, size: 22),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '主题',
-                    style: TextStyle(fontSize: 15, color: ext.textPrimary),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    currentTheme.name,
-                    style: TextStyle(fontSize: 12, color: ext.textSecondary),
-                  ),
-                ],
-              ),
-            ),
-            Icon(Icons.chevron_right, color: ext.textHint, size: 22),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// 主题选择弹窗（BottomSheet，2×2 网格）
-  ///
-  /// 遍历 [AppThemes.all] 渲染所有预设主题，每个主题用自己的色槽预览，
-  /// 让用户在切换前看到真实视觉效果。Pro 主题未解锁时点击触发 [ProUnlockDialog]。
-  /// 网格末尾追加"自定义"卡：有保存的配置则用派生色槽预览，否则显示创建入口。
-  Future<void> _showThemePicker() async {
-    // 打开前先载自定义配置（决定自定义卡是"预览"还是"创建"样式）
-    final customConfig = await CustomThemeConfig.load();
-    if (!mounted) return;
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: AppThemeExtension.of(context).cardBackground,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (sheetCtx) => Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // 顶部拖拽指示条
-            Center(
-              child: Container(
-                width: 36,
-                height: 4,
-                margin: const EdgeInsets.only(bottom: 16),
-                decoration: BoxDecoration(
-                  color: AppThemeExtension.of(
-                    sheetCtx,
-                  ).textHint.withValues(alpha: 0.3),
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-            ),
-            // 标题
-            Text(
-              '选择主题',
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.bold,
-                color: AppThemeExtension.of(sheetCtx).textPrimary,
-              ),
-            ),
-            const SizedBox(height: 16),
-            // 2 列主题网格：5 套预设 + 末尾"自定义"卡（第 3 行）
-            GridView.count(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              crossAxisCount: 2,
-              mainAxisSpacing: 12,
-              crossAxisSpacing: 12,
-              childAspectRatio: 1.1,
-              children: [
-                ...AppThemes.all
-                    .map((t) => _buildThemeCard(sheetCtx, t))
-                    .toList(),
-                _buildCustomThemeCard(sheetCtx, customConfig),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// 单个主题卡片（2 列网格里的一格）
-  ///
-  /// 卡片背景/文字/边框全部使用 **该主题自己的色槽** [theme.extension]，
-  /// 这样用户能直观看到切换后的视觉。当前选中主题加粗边框 + 右下角对勾。
-  /// Pro 主题右上角显示金色 Pro 徽章。
-  /// [onTap] 缺省走 [_onThemeTap]；自定义主题卡传编辑页入口覆盖。
-  Widget _buildThemeCard(
-    BuildContext sheetCtx,
-    AppThemeDefinition theme, {
-    VoidCallback? onTap,
-  }) {
-    final currentExt = AppThemeExtension.of(sheetCtx); // 弹窗当前主题色槽（用于非预览元素）
-    final previewExt = theme.extension; // 被预览主题自己的色槽
-    final isCurrent = AppRoot.themeNotifier.value.id == theme.id;
-
-    return GestureDetector(
-      onTap: onTap ?? () => _onThemeTap(theme),
-      child: Container(
-        padding: const EdgeInsets.all(12),
-        // 拟物主题预览卡用自己的色槽画双向凸起阴影（不能走 neuRaisedDecoration——
-        // 那取的是"当前主题"的阴影槽，在旧主题下打开选择器会拿占位色）
-        decoration: previewExt.isNeumorphic
-            ? BoxDecoration(
-                color: previewExt.scaffoldBackground,
-                borderRadius: BorderRadius.circular(14),
-                boxShadow: [
-                  BoxShadow(
-                    color: previewExt.neuShadowDark,
-                    offset: const Offset(3, 3),
-                    blurRadius: 6,
-                  ),
-                  BoxShadow(
-                    color: previewExt.neuShadowLight,
-                    offset: const Offset(-3, -3),
-                    blurRadius: 6,
-                  ),
-                ],
-              )
-            : BoxDecoration(
-                color: previewExt.scaffoldBackground,
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(
-                  color: isCurrent
-                      ? previewExt.primary
-                      : currentExt.textHint.withValues(alpha: 0.2),
-                  width: isCurrent ? 2 : 1,
-                ),
-              ),
-        child: Stack(
-          children: [
-            // 内容：主题名（顶）+ 4 色点（底）
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  theme.name,
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.bold,
-                    color: previewExt.textPrimary,
-                  ),
-                ),
-                const Spacer(),
-                Row(
-                  children: [
-                    _colorDot(previewExt.primary),
-                    const SizedBox(width: 6),
-                    _colorDot(previewExt.positiveAccent),
-                    const SizedBox(width: 6),
-                    _colorDot(previewExt.warningAccent),
-                    const SizedBox(width: 6),
-                    _colorDot(previewExt.cardBackground, withBorder: true),
-                  ],
-                ),
-              ],
-            ),
-            // Pro 徽章（右上角金色，仅 Pro 主题显示）
-            if (theme.isPro)
-              Positioned(
-                top: 0,
-                right: 0,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 6,
-                    vertical: 2,
-                  ),
-                  decoration: BoxDecoration(
-                    color: previewExt.goldAccent,
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: const Text(
-                    'Pro',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 10,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-              ),
-            // 选中对勾（右下角，仅当前主题显示）
-            if (isCurrent)
-              Positioned(
-                bottom: 0,
-                right: 0,
-                child: Icon(
-                  Icons.check_circle,
-                  color: previewExt.primary,
-                  size: 22,
-                ),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// 色点辅助组件（主题卡片底部的 4 个预览圆点）
-  ///
-  /// [withBorder] 用于浅色色点（如 cardBackground=白色），加灰色细边避免在白底卡片上不可见。
-  Widget _colorDot(Color color, {bool withBorder = false}) {
-    return Container(
-      width: 18,
-      height: 18,
-      decoration: BoxDecoration(
-        color: color,
-        shape: BoxShape.circle,
-        border: withBorder
-            ? Border.all(color: Colors.grey.shade400, width: 0.5)
-            : null,
-      ),
-    );
-  }
-
-  /// 自定义主题卡片（主题网格末尾，第 6 格）
-  ///
-  /// 有保存的配置 → 复用 [_buildThemeCard] 用派生色槽预览（isPro=true 自动带
-  /// 金色徽章）；无配置 → 虚线边框"+ 创建自定义主题"入口样式。
-  /// 点击不直接切主题（应用动作统一在编辑页"使用此主题"完成，避免点击语义
-  /// 二义），先过 Pro 门禁再进编辑页；编辑页 pop(true)=已应用才关 sheet。
-  Widget _buildCustomThemeCard(
-    BuildContext sheetCtx,
-    CustomThemeConfig? config,
-  ) {
-    if (config != null) {
-      final customTheme = generateCustomTheme(config);
-      return _buildThemeCard(
-        sheetCtx,
-        customTheme,
-        onTap: () => _onCustomThemeTap(),
-      );
-    }
-    final currentExt = AppThemeExtension.of(sheetCtx);
-    final isCurrent = AppRoot.themeNotifier.value.id == kCustomThemeId;
-    return GestureDetector(
-      onTap: () => _onCustomThemeTap(),
-      child: Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: currentExt.cardBackground,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-            color: isCurrent ? currentExt.primary : currentExt.divider,
-            width: isCurrent ? 2 : 1,
-          ),
-        ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.add_circle_outline,
-                color: currentExt.primary, size: 30),
-            const SizedBox(height: 8),
-            Text(
-              '创建自定义主题',
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.bold,
-                color: currentExt.textPrimary,
-              ),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              'Pro · 选色盘搭配',
-              style: TextStyle(
-                fontSize: 11,
-                color: currentExt.textSecondary,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// 自定义主题卡点击：Pro 门禁（与 [_onThemeTap] 同链路，未解锁弹解锁引导
-  /// 并留在 sheet）→ 进编辑页；pop(true)=已应用主题 → 关 sheet，否则留下
-  /// 继续挑预设
-  Future<void> _onCustomThemeTap() async {
-    final active = await ProGate.tryAccess(context);
-    if (!active) return;
-    if (!mounted) return;
-    final applied = await Navigator.push<bool>(
-      context,
-      MaterialPageRoute(builder: (_) => const CustomThemePage()),
-    );
-    if (applied == true && mounted) {
-      Navigator.of(context).pop(); // 关闭主题选择 sheet
-    }
-  }
-
-  /// 主题点击逻辑：Pro 门禁 + 写 prefs + 切 notifier
-  ///
-  /// 流程：
-  /// 1. Pro 门禁：Pro 主题不可用 → 弹 ProUnlockDialog（试用/输码成功返回 true
-  ///    继续应用主题；弹窗盖在主题选择 sheet 之上，不再强关 sheet，未解锁时
-  ///    用户可留在选择器改选免费主题）
-  /// 2. 正常切换：写 SharedPreferences('selected_theme') → 更新 [AppRoot.themeNotifier]
-  ///    → 关闭弹窗 → SnackBar 提示
-  Future<void> _onThemeTap(AppThemeDefinition theme) async {
-    // Pro 门禁：不可用时弹解锁引导（内部含 7 天试用 / 授权码输入出口）
-    if (theme.isPro) {
-      final active = await ProGate.tryAccess(context);
-      if (!active) return;
-    }
-
-    // 写入 prefs + 更新 notifier（触发整树重建）
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('selected_theme', theme.id);
-    AppRoot.themeNotifier.value = theme;
-
-    if (mounted) {
-      Navigator.of(context).pop(); // 关闭主题弹窗
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('已切换到「${theme.name}」主题'),
-          backgroundColor: theme.extension.primary,
-        ),
-      );
-    }
-  }
-
-  // ==================== Phase 4：图标包选择 ====================
-
-  /// 图标包入口（ListTile 风格，仿 _buildThemeEntry）
-  Widget _buildIconPackEntry() {
-    final ext = AppThemeExtension.of(context);
-    final currentPack =
-        IconPacks.findById(_currentIconPackId) ?? IconPacks.defaultPack;
-    return InkWell(
-      onTap: _showIconPackPicker,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        child: Row(
-          children: [
-            Icon(Icons.app_shortcut_outlined, color: ext.primary, size: 22),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '图标',
-                    style: TextStyle(fontSize: 15, color: ext.textPrimary),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    currentPack.name,
-                    style: TextStyle(fontSize: 12, color: ext.textSecondary),
-                  ),
-                ],
-              ),
-            ),
-            // 圆形预览：背景色 + 前景色 mic 图标
-            Container(
-              width: 28,
-              height: 28,
-              decoration: BoxDecoration(
-                color: Color(currentPack.backgroundColor),
-                shape: BoxShape.circle,
-                // minimal 浅色背景加细边框，避免在白底卡片上不可见
-                border: currentPack.id == 'minimal'
-                    ? Border.all(
-                        color: ext.textHint.withValues(alpha: 0.3),
-                        width: 0.5,
-                      )
-                    : null,
-              ),
-              child: Image.asset(
-                'assets/icon/icon2_fg_white.png',
-                width: 14,
-                height: 14,
-                color: Color(currentPack.foregroundColor),
-                colorBlendMode: BlendMode.srcIn,
-              ),
-            ),
-            const SizedBox(width: 8),
-            Icon(Icons.chevron_right, color: ext.textHint, size: 22),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// 字号缩放入口（两行：标题行 + 档位 chips 行）
-  ///
-  /// 曾试过标题与 chips 挤同行的单行方案：App 内「特大」档 1.3 倍整树缩放
-  /// （再叠加系统字体放大）会把行宽撑爆，「特大」chip 溢出卡片边——真机两轮
-  /// 截图确诊，2026-09 用户拍板换行展示。相对最初版本仍保留瘦身：chips 无
-  /// 重复 format_size 图标、无选中勾（showCheckmark）、档位名「标准→中」、
-  /// labelPadding 收窄 8；选中态由 chip 实心底色表达，不再需要「当前档位」副标题。
-  Widget _buildFontSizeEntry() {
-    final ext = AppThemeExtension.of(context);
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.format_size, color: ext.primary, size: 22),
-              const SizedBox(width: 14),
-              Text('字号', style: TextStyle(fontSize: 15, color: ext.textPrimary)),
-            ],
-          ),
-          const SizedBox(height: 10),
-          _buildFontSizeSelector(),
-        ],
-      ),
-    );
-  }
-
-  /// 字号缩放档位选择器（无图标 chips 行；仿 _buildAutoHideSelector 配色。
-  /// 瘦身三件套与单行失败的教训详见 _buildFontSizeEntry 注释）
-  Widget _buildFontSizeSelector() {
-    final ext = AppThemeExtension.of(context);
-    final options = [(0.85, '小'), (1.0, '中'), (1.15, '大'), (1.3, '特大')];
-    return Wrap(
-      spacing: 8,
-      runSpacing: 6,
-      children: options.map((opt) {
-        final (scale, label) = opt;
-        final selected = _fontScale == scale;
-        // 拟物主题：选中=凹陷+品牌青字、未选=凸起（预览拍板样式，2026-09-18
-        // 真机反馈字号 chip 没有 M3 ChoiceChip 之外的拟物形态）；其余主题保持 ChoiceChip
-        if (ext.isNeumorphic) {
-          // 选中=NeuInset 凹陷（双轴渐变晕影，与开关/输入框同款）+品牌青字、
-          // 未选=凸起；凹凸跨结构无法隐式插值，即时切换（2026-09-19 统一）
-          final labelStyle = TextStyle(
-            fontSize: 13,
-            fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-            color: selected ? ext.primaryDark : ext.textPrimary,
-          );
-          return GestureDetector(
-            onTap: () => _saveFontScale(scale),
-            child: selected
-                ? NeuInset(
-                    radius: 999,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 8,
-                    ),
-                    child: Text(label, style: labelStyle),
-                  )
-                : Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 8,
-                    ),
-                    decoration: neuRaisedDecoration(context, radius: 999),
-                    child: Text(label, style: labelStyle),
-                  ),
-          );
-        }
-        return ChoiceChip(
-          label: Text(label),
-          labelPadding: const EdgeInsets.symmetric(horizontal: 8),
-          showCheckmark: false,
-          selected: selected,
-          selectedColor: ext.primary,
-          labelStyle: TextStyle(
-            color: selected ? ext.textOnPrimary : ext.textPrimary,
-            fontSize: 13,
-          ),
-          onSelected: (_) => _saveFontScale(scale),
-        );
-      }).toList(),
-    );
-  }
-
-  /// 深色模式入口（两行：标题行 + 三档 chips 行，与 _buildFontSizeEntry 同款
-  /// 布局——单行方案已被字号「特大」档撑爆教训否决，见 _buildFontSizeEntry 注释）
-  Widget _buildDarkModeEntry() {
-    final ext = AppThemeExtension.of(context);
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.dark_mode_outlined, color: ext.primary, size: 22),
-              const SizedBox(width: 14),
-              Text('深色模式', style: TextStyle(fontSize: 15, color: ext.textPrimary)),
-            ],
-          ),
-          const SizedBox(height: 10),
-          _buildDarkModeSelector(),
-        ],
-      ),
-    );
-  }
-
-  /// 深色模式三档选择器（跟随系统/浅色/深色；仿 _buildFontSizeSelector）
-  Widget _buildDarkModeSelector() {
-    final ext = AppThemeExtension.of(context);
-    final options = [
-      (ThemeMode.system, '跟随系统'),
-      (ThemeMode.light, '浅色'),
-      (ThemeMode.dark, '深色'),
-    ];
-    return Wrap(
-      spacing: 8,
-      runSpacing: 6,
-      children: options.map((opt) {
-        final (mode, label) = opt;
-        final selected = _themeMode == mode;
-        // 拟物主题：选中=凹陷+品牌青字、未选=凸起（同 _buildFontSizeSelector 先例）
-        if (ext.isNeumorphic) {
-          final labelStyle = TextStyle(
-            fontSize: 13,
-            fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-            color: selected ? ext.primaryDark : ext.textPrimary,
-          );
-          return GestureDetector(
-            onTap: () => _saveThemeMode(mode),
-            child: selected
-                ? NeuInset(
-                    radius: 999,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 8,
-                    ),
-                    child: Text(label, style: labelStyle),
-                  )
-                : Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 8,
-                    ),
-                    decoration: neuRaisedDecoration(context, radius: 999),
-                    child: Text(label, style: labelStyle),
-                  ),
-          );
-        }
-        return ChoiceChip(
-          label: Text(label),
-          labelPadding: const EdgeInsets.symmetric(horizontal: 8),
-          showCheckmark: false,
-          selected: selected,
-          selectedColor: ext.primary,
-          labelStyle: TextStyle(
-            color: selected ? ext.textOnPrimary : ext.textPrimary,
-            fontSize: 13,
-          ),
-          onSelected: (_) => _saveThemeMode(mode),
-        );
-      }).toList(),
-    );
-  }
-
-  /// 图标包选择弹窗（BottomSheet，2×2 网格，仿 _showThemePicker）
-  void _showIconPackPicker() {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: AppThemeExtension.of(context).cardBackground,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (sheetCtx) => Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // 拖拽指示条
-            Center(
-              child: Container(
-                width: 36,
-                height: 4,
-                margin: const EdgeInsets.only(bottom: 16),
-                decoration: BoxDecoration(
-                  color: AppThemeExtension.of(
-                    sheetCtx,
-                  ).textHint.withValues(alpha: 0.3),
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-            ),
-            // 标题
-            Text(
-              '选择图标',
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.bold,
-                color: AppThemeExtension.of(sheetCtx).textPrimary,
-              ),
-            ),
-            const SizedBox(height: 4),
-            // 切换提示（关键：告知用户应用会短暂重启）
-            Text(
-              '切换后应用会短暂重启',
-              style: TextStyle(
-                fontSize: 12,
-                color: AppThemeExtension.of(sheetCtx).textSecondary,
-              ),
-            ),
-            const SizedBox(height: 16),
-            // 2×2 图标网格
-            GridView.count(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              crossAxisCount: 2,
-              mainAxisSpacing: 12,
-              crossAxisSpacing: 12,
-              childAspectRatio: 1.1,
-              children: IconPacks.all
-                  .map((p) => _buildIconPackCard(sheetCtx, p))
-                  .toList(),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// 单个图标包卡片（2×2 网格里的一格，仿 _buildThemeCard）
-  Widget _buildIconPackCard(BuildContext sheetCtx, IconPack pack) {
-    final currentExt = AppThemeExtension.of(sheetCtx);
-    final isCurrent = _currentIconPackId == pack.id;
-
-    return GestureDetector(
-      onTap: () => _onIconPackTap(pack),
-      child: Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: currentExt.scaffoldBackground,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-            color: isCurrent
-                ? currentExt.primary
-                : currentExt.textHint.withValues(alpha: 0.2),
-            width: isCurrent ? 2 : 1,
-          ),
-        ),
-        child: Stack(
-          children: [
-            // 内容：图标包名（顶）+ 圆形预览（底）
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  pack.name,
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.bold,
-                    color: currentExt.textPrimary,
-                  ),
-                ),
-                const Spacer(),
-                Center(
-                  child: Container(
-                    width: 48,
-                    height: 48,
-                    decoration: BoxDecoration(
-                      color: Color(pack.backgroundColor),
-                      shape: BoxShape.circle,
-                      // minimal 浅色背景加细边框，避免在白底卡片上不可见
-                      border: pack.id == 'minimal'
-                          ? Border.all(
-                              color: currentExt.textHint.withValues(alpha: 0.3),
-                              width: 0.5,
-                            )
-                          : null,
-                    ),
-                    child: Image.asset(
-                      'assets/icon/icon2_fg_white.png',
-                      width: 26,
-                      height: 26,
-                      color: Color(pack.foregroundColor),
-                      colorBlendMode: BlendMode.srcIn,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            // Pro 徽章（右上角金色，仅 Pro 图标包显示）
-            if (pack.isPro)
-              Positioned(
-                top: 0,
-                right: 0,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 6,
-                    vertical: 2,
-                  ),
-                  decoration: BoxDecoration(
-                    color: currentExt.goldAccent,
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: const Text(
-                    'Pro',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 10,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-              ),
-            // 选中对勾（右下角，仅当前图标包显示）
-            if (isCurrent)
-              Positioned(
-                bottom: 0,
-                right: 0,
-                child: Icon(
-                  Icons.check_circle,
-                  color: currentExt.primary,
-                  size: 22,
-                ),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// 图标包点击逻辑：Pro 门禁 + 调原生切换 + 延迟关闭弹窗
-  ///
-  /// 流程：
-  /// 1. 当前已选中的，点一下不做事
-  /// 2. Pro 门禁：Pro 图标包不可用 → 弹 ProUnlockDialog（试用/输码成功返回 true
-  ///    继续切换；弹窗盖在选择弹窗之上，不强关）
-  /// 3. 正常切换：写 prefs('selected_icon_pack') → 调 IconPackSwitcher.switchTo
-  ///    → 显示"正在切换..." → 延迟 3 秒关闭弹窗（进程可能已被系统杀死）
-  Future<void> _onIconPackTap(IconPack pack) async {
-    // 当前已选中，不切换
-    if (_currentIconPackId == pack.id) {
-      if (mounted) Navigator.of(context).pop();
-      return;
-    }
-
-    // Pro 门禁：不可用时弹解锁引导（内部含 7 天试用 / 授权码输入出口）
-    if (pack.isPro) {
-      final active = await ProGate.tryAccess(context);
-      if (!active) return;
-    }
-
-    // 写 prefs（仅用于 UI 显示当前选中，真正的状态源是系统 ComponentEnabledSetting）
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('selected_icon_pack', pack.id);
-
-    // 调原生层切换
-    final success = await IconPackSwitcher.switchTo(pack.id);
-
-    if (!mounted) return; // 进程可能已被系统杀死
-
-    if (success) {
-      setState(() => _currentIconPackId = pack.id);
-
-      // 显示"正在切换" SnackBar
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Row(
-            children: [
-              const SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: Colors.white,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Text('正在切换到「${pack.name}」图标...'),
-            ],
-          ),
-          duration: const Duration(seconds: 3),
-        ),
-      );
-
-      // 延迟关闭弹窗（进程可能在此之前已被系统杀死）
-      await Future.delayed(const Duration(seconds: 3));
-      if (mounted) {
-        Navigator.of(context).pop();
-      }
-    } else {
-      // 切换失败
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('图标切换失败，请重试'),
-          backgroundColor: Colors.red,
-        ),
-      );
-    }
   }
 
   Widget _buildSecondaryBtn(
@@ -2379,6 +1541,8 @@ Future<(Uint8List, int)> _runBuildBackupZip({
   required String readme,
   required String hotwordsContent,
   required String correctionsContent,
+  required String voiceSearchTriggersContent,
+  required String tagConfigContent,
   required String audioDirPath,
   required Set<String> validAudioNames,
 }) {
@@ -2389,6 +1553,8 @@ Future<(Uint8List, int)> _runBuildBackupZip({
       readme: readme,
       hotwordsContent: hotwordsContent,
       correctionsContent: correctionsContent,
+      voiceSearchTriggersContent: voiceSearchTriggersContent,
+      tagConfigContent: tagConfigContent,
       audioDirPath: audioDirPath,
       validAudioNames: validAudioNames,
     ),
@@ -2402,6 +1568,8 @@ Future<
     String diaryCsv,
     String? hotwords,
     String? corrections,
+    String? voiceSearchTriggers,
+    String? tagConfig,
     int restoredAudioCount,
   })
 >
@@ -2420,6 +1588,8 @@ _runExtractBackupZip(String zipPath, String audioDirPath) {
   required String readme,
   required String hotwordsContent,
   required String correctionsContent,
+  required String voiceSearchTriggersContent,
+  required String tagConfigContent,
   required String audioDirPath,
   required Set<String> validAudioNames,
 }) {
@@ -2447,6 +1617,22 @@ _runExtractBackupZip(String zipPath, String audioDirPath) {
       'correction_pairs.txt',
       correctionsContent.length,
       utf8.encode(correctionsContent),
+    ),
+  );
+  // 悬浮窗语音搜索触发词（每行一个；导出的是当前实际生效列表）
+  archive.addFile(
+    ArchiveFile(
+      'voice_search_triggers.txt',
+      voiceSearchTriggersContent.length,
+      utf8.encode(voiceSearchTriggersContent),
+    ),
+  );
+  // 4 槽位标签外观（图标/颜色 JSON；老版本备份无此文件，导入侧可空兼容）
+  archive.addFile(
+    ArchiveFile(
+      'tag_config.json',
+      tagConfigContent.length,
+      utf8.encode(tagConfigContent),
     ),
   );
 
@@ -2484,6 +1670,8 @@ _runExtractBackupZip(String zipPath, String audioDirPath) {
   String diaryCsv,
   String? hotwords,
   String? corrections,
+  String? voiceSearchTriggers,
+  String? tagConfig,
   int restoredAudioCount,
 })
 _extractBackupZip({required String zipPath, required String audioDirPath}) {
@@ -2494,6 +1682,8 @@ _extractBackupZip({required String zipPath, required String audioDirPath}) {
   String? diaryCsv;
   String? hotwords;
   String? corrections;
+  String? voiceSearchTriggers;
+  String? tagConfig;
   int restoredAudioCount = 0;
 
   final audioDir = Directory(audioDirPath);
@@ -2507,6 +1697,10 @@ _extractBackupZip({required String zipPath, required String audioDirPath}) {
       hotwords = utf8.decode(file.content as List<int>);
     } else if (file.name == 'correction_pairs.txt') {
       corrections = utf8.decode(file.content as List<int>);
+    } else if (file.name == 'voice_search_triggers.txt') {
+      voiceSearchTriggers = utf8.decode(file.content as List<int>);
+    } else if (file.name == 'tag_config.json') {
+      tagConfig = utf8.decode(file.content as List<int>);
     } else if (file.name.startsWith('audio/')) {
       // 不清空现有音频文件，增量合并：只恢复不存在的
       final fileName = p.basename(file.name);
@@ -2530,6 +1724,8 @@ _extractBackupZip({required String zipPath, required String audioDirPath}) {
     diaryCsv: diaryCsv,
     hotwords: hotwords,
     corrections: corrections,
+    voiceSearchTriggers: voiceSearchTriggers,
+    tagConfig: tagConfig,
     restoredAudioCount: restoredAudioCount,
   );
 }

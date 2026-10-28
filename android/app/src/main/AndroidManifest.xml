@@ -112,7 +112,8 @@
         </activity>
 
         <!-- 外部快捷动作透明分发层：静态快捷方式「悬浮窗语音速记」(ACTION_OVERLAY_RECORD)
-             的落地组件。不落在 MainActivity 上是为了不把主 App 拉到前台——悬浮窗动作
+             与「显示悬浮窗」(ACTION_SHOW_OVERLAY) 的落地组件。不落在 MainActivity 上是
+             为了不把主 App 拉到前台——悬浮窗动作
              在无障碍服务内即可完成（同音量键手势链路）。空 taskAffinity + 独立 task，
              不带动主任务；translucent 无 UI，分发完即 finish。 -->
         <activity
@@ -124,6 +125,7 @@
             android:noHistory="true">
             <intent-filter>
                 <action android:name="com.shengwuji.app.ACTION_OVERLAY_RECORD"/>
+                <action android:name="com.shengwuji.app.ACTION_SHOW_OVERLAY"/>
                 <category android:name="android.intent.category.DEFAULT"/>
             </intent-filter>
         </activity>

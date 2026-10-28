@@ -96,12 +96,20 @@ class _DiaryFloatingButtonState extends State<DiaryFloatingButton> {
     // 深色近黑，2026-09-28 深色模式反馈白图标太跳）
     final bool isNeu = ext.isNeumorphic;
     Color btnColor = ext.fabReady;
-    Widget btnChild = Icon(Icons.mic, color: isNeu ? ext.primary : ext.fabContentColor, size: 46);
+    Widget btnChild = Icon(
+      Icons.mic,
+      color: isNeu ? ext.primary : ext.fabContentColor,
+      size: 46,
+    );
 
     if (!widget.isReady && !widget.modelAvailable) {
       // 模型文件不存在 → 禁用按钮
       btnColor = ext.fabDisabled;
-      btnChild = Icon(Icons.mic, color: isNeu ? ext.textHint : ext.fabContentColor, size: 46);
+      btnChild = Icon(
+        Icons.mic,
+        color: isNeu ? ext.textHint : ext.fabContentColor,
+        size: 46,
+      );
     } else if (widget.isListening) {
       btnColor = ext.fabRecording;
       btnChild = Icon(
@@ -124,7 +132,11 @@ class _DiaryFloatingButtonState extends State<DiaryFloatingButton> {
       // 滑动提示由上滑拉出的「↑ Aa」徽章承担（见 _buildAaBadge）；下滑暂无功能，不做对称提示以免误导。
       // ⚠️ 本按钮位于 Scaffold 外层 Stack（无 Material 祖先），Text 若不给完整样式会
       // fallback 到黄色双下划线警示样式（_buildAaBadge 已按此防护）
-      btnChild = Icon(Icons.mic, color: isNeu ? ext.primary : ext.fabContentColor, size: 46);
+      btnChild = Icon(
+        Icons.mic,
+        color: isNeu ? ext.primary : ext.fabContentColor,
+        size: 46,
+      );
     }
 
     return Positioned(
@@ -232,46 +244,43 @@ class _DiaryFloatingButtonState extends State<DiaryFloatingButton> {
                                 widget.onStopListening();
                               }
                             },
-                            child: NeuVoiceFab(
-                              size: 94,
-                              child: btnChild,
-                            ),
+                            child: NeuVoiceFab(size: 94, child: btnChild),
                           )
                         : AnimatedContainer(
-                      duration: const Duration(milliseconds: 200),
-                      width: 94,
-                      height: 94,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: btnColor,
-                        // 🎨 黏土拟态阴影：ext.fabClayShadow（三处语音圆钮共用
-                        // 唯一真值）——浅色=白高光+暗影；深色=仅暗影（白高光
-                        // 在深底显形为光晕，2026-09-28 真机反馈）
-                        boxShadow: ext.fabClayShadow,
-                      ),
-                      child: GestureDetector(
-                        // 内层：保留原有 onTap / onLongPressStart / onLongPressEnd
-                        onTap: () {
-                          // 锁定录音模式下，点击停止录音
-                          if (widget.isLockedRecording) {
-                            widget.onStopListening();
-                          }
-                        },
-                        onLongPressStart: (_) {
-                          // 普通模式下，长按开始录音
-                          if (!widget.isLockedRecording) {
-                            widget.onStartListening();
-                          }
-                        },
-                        onLongPressEnd: (_) {
-                          // 普通模式下，松开停止录音
-                          if (!widget.isLockedRecording) {
-                            widget.onStopListening();
-                          }
-                        },
-                        child: Center(child: btnChild),
-                      ),
-                    ),
+                            duration: const Duration(milliseconds: 200),
+                            width: 94,
+                            height: 94,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: btnColor,
+                              // 🎨 黏土拟态阴影：ext.fabClayShadow（三处语音圆钮共用
+                              // 唯一真值）——浅色=白高光+暗影；深色=仅暗影（白高光
+                              // 在深底显形为光晕，2026-09-28 真机反馈）
+                              boxShadow: ext.fabClayShadow,
+                            ),
+                            child: GestureDetector(
+                              // 内层：保留原有 onTap / onLongPressStart / onLongPressEnd
+                              onTap: () {
+                                // 锁定录音模式下，点击停止录音
+                                if (widget.isLockedRecording) {
+                                  widget.onStopListening();
+                                }
+                              },
+                              onLongPressStart: (_) {
+                                // 普通模式下，长按开始录音
+                                if (!widget.isLockedRecording) {
+                                  widget.onStartListening();
+                                }
+                              },
+                              onLongPressEnd: (_) {
+                                // 普通模式下，松开停止录音
+                                if (!widget.isLockedRecording) {
+                                  widget.onStopListening();
+                                }
+                              },
+                              child: Center(child: btnChild),
+                            ),
+                          ),
                   ),
                 ],
               ),
@@ -287,14 +296,17 @@ class _DiaryFloatingButtonState extends State<DiaryFloatingButton> {
                 _isTriggered
                     ? '松手新建文本笔记'
                     : (widget.isSilenceCountdown && widget.statusText.isNotEmpty
-                        ? widget.statusText // 🔇 静音倒计时提示优先于锁定态固定文案
-                        : (widget.isLockedRecording
-                              ? '点击停止'
-                              : widget.statusText)),
+                          ? widget
+                                .statusText // 🔇 静音倒计时提示优先于锁定态固定文案
+                          : (widget.isLockedRecording
+                                ? '点击停止'
+                                : widget.statusText)),
                 textAlign: TextAlign.center,
                 style: TextStyle(
-                  // 显式指定霞鹜文楷字体，避免在部分 widget 链路中 Roboto 回退
-                  fontFamily: 'LXGWWenKaiMonoGBScreen',
+                  // 主题字体（避免裸 Text 链路 Roboto 回退；系统默认档为 null）
+                  fontFamily: Theme.of(
+                    context,
+                  ).textTheme.bodyMedium?.fontFamily,
                   fontSize: 16,
                   color: ext.textHint,
                   fontWeight: FontWeight.w500,
@@ -354,7 +366,9 @@ class _DiaryFloatingButtonState extends State<DiaryFloatingButton> {
                       // ⚠️ 本区域位于 Scaffold 外层 Stack（无 Material 祖先），
                       // Text 不给完整样式会 fallback 到黄色双下划线警示样式，
                       // decoration 必须显式置 none（同下方状态文字的处理）
-                      fontFamily: 'LXGWWenKaiMonoGBScreen',
+                      fontFamily: Theme.of(
+                        context,
+                      ).textTheme.bodyMedium?.fontFamily,
                       fontSize: 17,
                       fontWeight: FontWeight.w600,
                       color: ext.fabReady,

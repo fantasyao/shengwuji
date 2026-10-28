@@ -4,15 +4,18 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../overlay/overlay_constants.dart'; // OverlayConstants.autoHide*（自动隐藏档位唯一真值，与 overlay engine 共用）
 import '../theme/app_theme_extension.dart';
+import '../utils/overlay_launcher.dart'; // OverlayLauncher：主 App 内启动悬浮窗通道封装
 import '../utils/pro_gate.dart'; // ProGate：is_pro_unlocked 读写与 Pro 弹窗门禁
+import '../utils/search_command_detector.dart'; // kVoiceSearchJumpEnabledKey（与 overlay engine 读取方共用）
+import 'accessibility_check.dart';
 import 'settings_widgets.dart';
 
 /// 「悬浮窗设置」二级页（zcode: 2026-09 设置页下沉——原主页「悬浮窗」分组整体
 /// 搬入：自动隐藏时长 / 停靠侧 / 贴边竖线两开关；2026-09-22 增「把手大小」
 /// 三档；2026-09-27 增「字体大小」五档；2026-10-06 增「面板高度」可见条数
-/// 五档。prefs key 与 overlay engine、原生窗口 Gravity 等读取方全部不变；
-/// 悬浮窗配置同走 Pro 门禁（原 _ensureOverlayPro 语义，改用共享
-/// ProGate.tryAccess 实现））
+/// 五档；2026-10-27 增「按钮位置」顶部/底部两档。prefs key 与 overlay engine、
+/// 原生窗口 Gravity 等读取方全部不变；悬浮窗配置同走 Pro 门禁（原
+/// _ensureOverlayPro 语义，改用共享 ProGate.tryAccess 实现））
 class OverlaySettingsPage extends StatefulWidget {
   const OverlaySettingsPage({super.key});
 
@@ -34,9 +37,14 @@ class _OverlaySettingsPageState extends State<OverlaySettingsPage> {
       OverlayConstants.fontSizeStepDefault; // 字体大小档位 -2~+2（每档 1pt）
   int _panelMaxCards =
       OverlayConstants.panelMaxCardsDefault; // 面板高度（可见条数档位 6~10）
+  bool _panelButtonsBottom = false; // 面板按钮条位置：false=顶部（历史行为）/true=底部
   bool _swipeDeleteEnabled = false; // 滑动直接删除笔记（替代滑动归档），默认关
   int _edgeLineMarginDp =
       OverlayConstants.edgeLineMarginDefault; // 竖线距屏幕边缘间距档位 0/8/16
+  bool _voiceSearchJumpEnabled = true; // 语音搜索跳转（说完"搜索 xxx"自动开浏览器），默认开
+  List<String> _voiceSearchTriggers =
+      kDefaultVoiceSearchTriggers; // 触发词（规范化：先长后短）
+  bool _screenshotExpandCard = false; // 截图成功后唤出面板并展开当前卡，默认关（历史行为）
 
   @override
   void initState() {
@@ -98,6 +106,26 @@ class _OverlaySettingsPageState extends State<OverlaySettingsPage> {
         _panelMaxCards = OverlayConstants.parsePanelMaxCards(
           prefs.getInt(OverlayConstants.panelMaxCardsPrefKey),
         );
+        // 面板按钮条位置（读取方：overlay engine 的
+        // _refreshOverlayConfig/_scheduleAutoHide + _buildPanel，默认顶部）
+        _panelButtonsBottom =
+            prefs.getBool(OverlayConstants.panelButtonsBottomPrefKey) ?? false;
+        // 语音搜索跳转开关（读取方：overlay engine 的
+        // OverlayVoiceMemoController._transcribeAndSave——转写收尾现场 reload
+        // 读，即时生效；默认开）
+        _voiceSearchJumpEnabled =
+            prefs.getBool(kVoiceSearchJumpEnabledKey) ?? true;
+        // 语音搜索触发词（读取方：同上，转写收尾 parseTriggers 解析；
+        // 空/非法回落默认白名单）
+        _voiceSearchTriggers = SearchCommandDetector.parseTriggers(
+          prefs.getString(kVoiceSearchTriggersKey),
+        );
+        // 截图后展开当前卡开关（读取方：overlay engine 的
+        // _onCardCopyLongPress——动作型开关，截图成功收尾现场 reload 读，
+        // 即时生效；默认关 = 只 Toast 提示并保持收起）
+        _screenshotExpandCard =
+            prefs.getBool(OverlayConstants.screenshotExpandCardPrefKey) ??
+            false;
       });
     }
   }
@@ -200,6 +228,119 @@ class _OverlaySettingsPageState extends State<OverlaySettingsPage> {
     print('🔧 [Settings] overlay_panel_max_cards=$cards');
   }
 
+  /// 保存「按钮位置」：底部 = 面板改贴停靠侧下角锚定、按钮条挪到列表下方
+  ///（单手拇指可达；读取方：overlay engine 的 _refreshOverlayConfig/
+  /// _scheduleAutoHide + _buildPanel）。生效时机同面板高度档位——悬浮窗
+  /// 下一次状态转换
+  Future<void> _savePanelButtonsBottom(bool bottom) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(OverlayConstants.panelButtonsBottomPrefKey, bottom);
+    setState(() => _panelButtonsBottom = bottom);
+    print('🔧 [Settings] overlay_panel_buttons_bottom=$bottom');
+  }
+
+  /// 保存「截图后展开笔记卡片」开关（读取方：overlay engine 的
+  /// _onCardCopyLongPress——动作型开关，截图成功收尾现场 reload 读，即时生效。
+  /// 开启后截图成功自动唤出面板并展开该卡，便于核对截图效果或继续编辑）
+  Future<void> _saveScreenshotExpandCard(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(OverlayConstants.screenshotExpandCardPrefKey, enabled);
+    setState(() => _screenshotExpandCard = enabled);
+    print('🔧 [Settings] screenshot_expand_card=$enabled');
+  }
+
+  /// 保存「语音搜索跳转」开关（读取方：overlay engine 的
+  /// OverlayVoiceMemoController._transcribeAndSave——动作型开关，转写收尾时
+  /// 现场 reload 读，即时生效无需等状态转换。开启后说完「搜索 xxx」自动拉起
+  /// 浏览器搜索关键词，日记照常保存）
+  Future<void> _saveVoiceSearchJumpEnabled(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(kVoiceSearchJumpEnabledKey, enabled);
+    setState(() => _voiceSearchJumpEnabled = enabled);
+    print('🔧 [Settings] voice_search_jump_enabled=$enabled');
+  }
+
+  /// 保存语音搜索触发词（读取方：overlay engine 的
+  /// OverlayVoiceMemoController._transcribeAndSave——转写收尾现场 reload 读，
+  /// 即时生效）。triggers 已经过 [SearchCommandDetector.normalize] 规范化，
+  /// prefs 落盘为换行分隔文本（全量备份同格式，见 settings_tab.dart）
+  Future<void> _saveVoiceSearchTriggers(List<String> triggers) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(kVoiceSearchTriggersKey, triggers.join('\n'));
+    if (!mounted) return;
+    setState(() => _voiceSearchTriggers = triggers);
+    print('🔧 [Settings] voice_search_triggers=${triggers.join('/')}');
+  }
+
+  /// 编辑语音搜索触发词：每行一个（也兼容逗号/顿号分隔），保存时 trim、
+  /// 去空、去重并按长度降序排列（先长后短，防短触发词截留长触发词后缀）；
+  /// 全空拒绝保存并就地报错，保证至少保留一个触发词
+  Future<void> _editVoiceSearchTriggers() async {
+    if (!await _ensureOverlayPro()) return;
+    if (!mounted) return;
+
+    var input = _voiceSearchTriggers.join('\n');
+    final result = await showDialog<List<String>>(
+      context: context,
+      builder: (dialogContext) {
+        String? errorText;
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('语音搜索触发词'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '每行一个触发词（也支持逗号/顿号分隔）。只有说在开头才触发搜索；'
+                    '保存时自动去重并按长度从长到短匹配',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: AppThemeExtension.of(context).textHint,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    initialValue: input,
+                    minLines: 3,
+                    maxLines: 5,
+                    onChanged: (v) => input = v,
+                    decoration: InputDecoration(
+                      hintText: kDefaultVoiceSearchTriggers.join('\n'),
+                      errorText: errorText,
+                      isDense: true,
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('取消'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    final triggers = SearchCommandDetector.normalize(input);
+                    if (triggers.isEmpty) {
+                      setDialogState(() => errorText = '至少保留一个触发词');
+                      return;
+                    }
+                    Navigator.pop(dialogContext, triggers);
+                  },
+                  child: const Text('保存'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    if (result == null) return;
+    await _saveVoiceSearchTriggers(result);
+  }
+
   /// 悬浮窗配置的 Pro 门禁：已解锁返回 true 放行；未解锁弹付费弹窗并返回  /// false（调用方不写 prefs）。弹窗关闭后重读解锁状态刷新 Pro 徽章
   /// （原 settings_tab._ensureOverlayPro 语义，改用 ProGate 实现）
   Future<bool> _ensureOverlayPro() async {
@@ -209,6 +350,47 @@ class _OverlaySettingsPageState extends State<OverlaySettingsPage> {
       return false;
     }
     return true;
+  }
+
+  /// 启动悬浮窗（「立即启动悬浮窗」按钮）：Pro 门禁 → 无障碍服务状态检查
+  ///（未开启弹引导对话框，可跳系统设置）→ 通道调原生 showOverlayFromSettings
+  Future<void> _launchOverlay() async {
+    if (!await _ensureOverlayPro()) return;
+    final enabled = await checkAccessibilityServiceEnabled();
+    if (!mounted) return;
+    if (enabled != true) {
+      // null=检测失败 与 false=未开启 都走引导（检测失败大概率也是未开启，
+      // 对话框文案不区分，用户到系统页一看便知）
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('需要先开启无障碍服务'),
+          content: const Text('悬浮窗寄生于无障碍服务。请前往系统设置开启「声物记」的无障碍服务，然后再回来启动。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () {
+                Navigator.of(ctx).pop();
+                openAccessibilitySettings();
+              },
+              child: const Text('去开启'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+    final ok = await OverlayLauncher.showOverlay();
+    if (!mounted) return;
+    if (!ok) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('启动失败：无障碍服务未运行，请检查是否被系统关闭')));
+    }
+    // 成功不打 SnackBar——悬浮窗面板已在屏幕上展开，即最佳反馈
   }
 
   @override
@@ -255,13 +437,23 @@ class _OverlaySettingsPageState extends State<OverlaySettingsPage> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  '通过音量键手势召唤悬浮窗（见音量键快捷操作）',
+                  '通过音量键手势召唤悬浮窗（见音量键快捷操作），或点击下方按钮直接启动',
                   style: TextStyle(fontSize: 12, color: ext.textHint),
                 ),
                 const SizedBox(height: 4),
                 Text(
                   '收起态把手长按后可上下拖动调整位置；停靠侧可在下方切换屏幕左缘或右缘（滑动方向随侧镜像）',
                   style: TextStyle(fontSize: 12, color: ext.textHint),
+                ),
+                const SizedBox(height: 10),
+                // 「立即启动悬浮窗」按钮：不按音量键也能召唤（2026-10-19）。
+                // 链路走 _launchOverlay：Pro 门禁 → 无障碍服务检查 → 原生转发
+                buildSettingsPrimaryButton(
+                  context,
+                  icon: Icons.rocket_launch_outlined,
+                  label: '立即启动悬浮窗',
+                  expand: false,
+                  onPressed: _launchOverlay,
                 ),
               ],
             ),
@@ -282,6 +474,10 @@ class _OverlaySettingsPageState extends State<OverlaySettingsPage> {
 
           const SettingsSectionTitle("面板高度"),
           SettingsCard(child: _buildPanelHeightSelector()),
+          const SizedBox(height: 24),
+
+          const SettingsSectionTitle("按钮位置"),
+          SettingsCard(child: _buildPanelButtonsPositionSelector()),
           const SizedBox(height: 24),
 
           const SettingsSectionTitle("收起后自动隐藏"),
@@ -352,6 +548,81 @@ class _OverlaySettingsPageState extends State<OverlaySettingsPage> {
               },
             ),
           ),
+          const SizedBox(height: 24),
+
+          const SettingsSectionTitle("截图附件"),
+          SettingsCard(
+            child: buildSettingsSwitchTile(
+              context,
+              title: const Text('截图后展开笔记卡片', style: TextStyle(fontSize: 13)),
+              subtitle: Text(
+                '开启后长按复制按钮截图成功，会重新唤出悬浮窗并展开这张笔记，方便核对截图效果或继续编辑；关闭则只提示「截图已保存为附件」并保持收起',
+                style: TextStyle(fontSize: 11, color: ext.textHint),
+              ),
+              value: _screenshotExpandCard,
+              onChanged: (v) async {
+                // 悬浮窗配置同走 Pro 门禁（与其他配置一致），未解锁不写 prefs
+                if (!await _ensureOverlayPro()) return;
+                _saveScreenshotExpandCard(v);
+              },
+            ),
+          ),
+          const SizedBox(height: 24),
+
+          const SettingsSectionTitle("语音搜索跳转"),
+          SettingsCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                buildSettingsSwitchTile(
+                  context,
+                  title: const Text(
+                    '说完触发词自动搜索',
+                    style: TextStyle(fontSize: 13),
+                  ),
+                  subtitle: Text(
+                    '语音速记或按住说话转写完成后，内容以触发词开头时自动打开浏览器搜索关键词（日记照常保存）；浏览器与搜索引擎在「大爆炸搜索」里选择',
+                    style: TextStyle(fontSize: 11, color: ext.textHint),
+                  ),
+                  value: _voiceSearchJumpEnabled,
+                  onChanged: (v) async {
+                    // 悬浮窗配置同走 Pro 门禁（与其他配置一致），未解锁不写 prefs
+                    if (!await _ensureOverlayPro()) return;
+                    _saveVoiceSearchJumpEnabled(v);
+                  },
+                ),
+                Divider(height: 20, color: ext.textHint.withValues(alpha: 0.2)),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '触发词',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: ext.textPrimary,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            _voiceSearchTriggers.join(' / '),
+                            style: TextStyle(fontSize: 11, color: ext.textHint),
+                          ),
+                        ],
+                      ),
+                    ),
+                    TextButton.icon(
+                      onPressed: _editVoiceSearchTriggers,
+                      icon: const Icon(Icons.edit_outlined, size: 16),
+                      label: const Text('编辑', style: TextStyle(fontSize: 12)),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );
@@ -377,7 +648,8 @@ class _OverlaySettingsPageState extends State<OverlaySettingsPage> {
           children: options.map((opt) {
             final (theme, label) = opt;
             final selected = _handleTheme == theme;
-            return ChoiceChip(
+            return buildSettingsChoiceChip(
+              context,
               // 上下双色小圆 = 把手胶囊配色的迷你预览
               avatar: Container(
                 width: 16,
@@ -400,12 +672,7 @@ class _OverlaySettingsPageState extends State<OverlaySettingsPage> {
               ),
               label: Text(label),
               selected: selected,
-              selectedColor: ext.primary,
-              labelStyle: TextStyle(
-                color: selected ? ext.textOnPrimary : ext.textPrimary,
-                fontSize: 13,
-              ),
-              onSelected: (_) async {
+              onTap: () async {
                 // 把手主题属于悬浮窗配置，同走 Pro 门禁（未解锁不写 prefs）
                 if (!await _ensureOverlayPro()) return;
                 _saveHandleTheme(theme);
@@ -439,21 +706,14 @@ class _OverlaySettingsPageState extends State<OverlaySettingsPage> {
           children: options.map((opt) {
             final (step, label) = opt;
             final selected = _fontSizeStep == step;
-            return ChoiceChip(
+            return buildSettingsChoiceChip(
+              context,
               // Aa 图标大小随档位递减/递增：图标本身暗示字号档位
-              avatar: Icon(
-                Icons.format_size,
-                size: 14.0 + step * 2,
-                color: selected ? ext.textOnPrimary : ext.primary,
-              ),
+              icon: Icons.format_size,
+              iconSize: 14.0 + step * 2,
               label: Text(label),
               selected: selected,
-              selectedColor: ext.primary,
-              labelStyle: TextStyle(
-                color: selected ? ext.textOnPrimary : ext.textPrimary,
-                fontSize: 13,
-              ),
-              onSelected: (_) async {
+              onTap: () async {
                 // 字体大小属于悬浮窗配置，同走 Pro 门禁（未解锁不写 prefs）
                 if (!await _ensureOverlayPro()) return;
                 _saveFontSizeStep(step);
@@ -464,6 +724,49 @@ class _OverlaySettingsPageState extends State<OverlaySettingsPage> {
         const SizedBox(height: 6),
         Text(
           '缩放随手记面板的文字大小（每档 ±1pt，不影响把手与录音胶囊）。改动在悬浮窗下一次展开/收起后生效',
+          style: TextStyle(fontSize: 11, color: ext.textHint),
+        ),
+      ],
+    );
+  }
+
+  // --- 悬浮窗「按钮位置」两档选择器（2026-10-27，用户要求：按钮切到底部
+  // 便于单手操作）：顶部（默认，历史行为）/ 底部。底部模式不只是把按钮条
+  // 挪到列表下方——面板整体改为贴停靠侧下角锚定，条目少时按钮也贴着屏幕
+  // 底部（只挪按钮、面板仍顶部锚定的话按钮还停在屏幕上方）。生效时机同
+  // 面板高度——下一次展开/收起状态转换
+  Widget _buildPanelButtonsPositionSelector() {
+    final ext = AppThemeExtension.of(context);
+    final options = [
+      (false, '顶部', Icons.vertical_align_top),
+      (true, '底部', Icons.vertical_align_bottom),
+    ];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: 8,
+          runSpacing: 6,
+          children: options.map((opt) {
+            final (bottom, label, icon) = opt;
+            final selected = _panelButtonsBottom == bottom;
+            return buildSettingsChoiceChip(
+              context,
+              icon: icon,
+              label: Text(label),
+              selected: selected,
+              onTap: () async {
+                // 按钮位置属于悬浮窗配置，同走 Pro 门禁（未解锁不写 prefs）
+                if (!await _ensureOverlayPro()) return;
+                _savePanelButtonsBottom(bottom);
+              },
+            );
+          }).toList(),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          '把新增/展开/打开随手记等按钮条放到面板底部（面板整体贴屏幕下角），'
+          '单手拇指更好按。改动在悬浮窗下一次展开/收起后生效',
           style: TextStyle(fontSize: 11, color: ext.textHint),
         ),
       ],
@@ -486,21 +789,14 @@ class _OverlaySettingsPageState extends State<OverlaySettingsPage> {
           runSpacing: 6,
           children: options.map((cards) {
             final selected = _panelMaxCards == cards;
-            return ChoiceChip(
+            return buildSettingsChoiceChip(
+              context,
               // 列表图标大小随条数递减：图标本身暗示面板高度档位
-              avatar: Icon(
-                Icons.view_agenda_outlined,
-                size: 8.0 + cards,
-                color: selected ? ext.textOnPrimary : ext.primary,
-              ),
+              icon: Icons.view_agenda_outlined,
+              iconSize: 8.0 + cards,
               label: Text('$cards 条'),
               selected: selected,
-              selectedColor: ext.primary,
-              labelStyle: TextStyle(
-                color: selected ? ext.textOnPrimary : ext.textPrimary,
-                fontSize: 13,
-              ),
-              onSelected: (_) async {
+              onTap: () async {
                 // 面板高度属于悬浮窗配置，同走 Pro 门禁（未解锁不写 prefs）
                 if (!await _ensureOverlayPro()) return;
                 _savePanelMaxCards(cards);
@@ -510,7 +806,8 @@ class _OverlaySettingsPageState extends State<OverlaySettingsPage> {
         ),
         const SizedBox(height: 6),
         Text(
-          '降低面板一次可见的笔记条数，面板顶部（新建/展开按钮）随之下移、底部位置不变，单手更好按。改动在悬浮窗下一次展开/收起后生效',
+          '降低面板一次可见的笔记条数；按钮位置为「顶部」时按钮条随之下移、'
+          '底部位置不变，单手更好按。改动在悬浮窗下一次展开/收起后生效',
           style: TextStyle(fontSize: 11, color: ext.textHint),
         ),
       ],
@@ -533,21 +830,14 @@ class _OverlaySettingsPageState extends State<OverlaySettingsPage> {
           children: options.map((opt) {
             final (percent, label, dotSize) = opt;
             final selected = _handleSizePercent == percent;
-            return ChoiceChip(
+            return buildSettingsChoiceChip(
+              context,
               // 圆点大小随档位递减：图标本身暗示所选档位的视觉大小
-              avatar: Icon(
-                Icons.circle,
-                size: dotSize,
-                color: selected ? ext.textOnPrimary : ext.primary,
-              ),
+              icon: Icons.circle,
+              iconSize: dotSize,
               label: Text(label),
               selected: selected,
-              selectedColor: ext.primary,
-              labelStyle: TextStyle(
-                color: selected ? ext.textOnPrimary : ext.textPrimary,
-                fontSize: 13,
-              ),
-              onSelected: (_) async {
+              onTap: () async {
                 // 把手大小属于悬浮窗配置，同走 Pro 门禁（未解锁不写 prefs）
                 if (!await _ensureOverlayPro()) return;
                 _saveHandleSize(percent);
@@ -566,7 +856,6 @@ class _OverlaySettingsPageState extends State<OverlaySettingsPage> {
 
   // --- 悬浮窗收起后自动隐藏时长选择器（原 settings_tab._buildAutoHideSelector 搬入）---
   Widget _buildAutoHideSelector() {
-    final ext = AppThemeExtension.of(context);
     // 「永久」写哨兵值 autoHideNeverSeconds（-1）进同一 prefs key，overlay
     // engine 读到即不起隐藏计时（收起态把手常驻）
     final options = [
@@ -581,20 +870,12 @@ class _OverlaySettingsPageState extends State<OverlaySettingsPage> {
       children: options.map((opt) {
         final (seconds, label, icon) = opt;
         final selected = _autoHideSeconds == seconds;
-        return ChoiceChip(
-          avatar: Icon(
-            icon,
-            size: 16,
-            color: selected ? ext.textOnPrimary : ext.primary,
-          ),
+        return buildSettingsChoiceChip(
+          context,
+          icon: icon,
           label: Text(label),
           selected: selected,
-          selectedColor: ext.primary,
-          labelStyle: TextStyle(
-            color: selected ? ext.textOnPrimary : ext.textPrimary,
-            fontSize: 13,
-          ),
-          onSelected: (_) async {
+          onTap: () async {
             // 自动隐藏时长属于悬浮窗配置，未解锁 Pro 时门禁（不写 prefs）
             if (!await _ensureOverlayPro()) return;
             _saveOverlayAutoHide(seconds);
@@ -609,7 +890,6 @@ class _OverlaySettingsPageState extends State<OverlaySettingsPage> {
   // 展开/收起状态转换整体换侧——把手与竖线窗口 Gravity（原生直读）、面板
   // 锚点与推屏方向、滑动手势方向、卡片划走方向、录音胶囊贴屏端全部随侧镜像
   Widget _buildOverlaySideSelector() {
-    final ext = AppThemeExtension.of(context);
     final options = [
       (false, '屏幕右缘', Icons.chevron_right),
       (true, '屏幕左缘', Icons.chevron_left),
@@ -620,20 +900,12 @@ class _OverlaySettingsPageState extends State<OverlaySettingsPage> {
       children: options.map((opt) {
         final (left, label, icon) = opt;
         final selected = _overlaySideLeft == left;
-        return ChoiceChip(
-          avatar: Icon(
-            icon,
-            size: 16,
-            color: selected ? ext.textOnPrimary : ext.primary,
-          ),
+        return buildSettingsChoiceChip(
+          context,
+          icon: icon,
           label: Text(label),
           selected: selected,
-          selectedColor: ext.primary,
-          labelStyle: TextStyle(
-            color: selected ? ext.textOnPrimary : ext.textPrimary,
-            fontSize: 13,
-          ),
-          onSelected: (_) async {
+          onTap: () async {
             // 停靠侧属于悬浮窗配置，同走 Pro 门禁（未解锁不写 prefs）
             if (!await _ensureOverlayPro()) return;
             _saveOverlaySide(left);
@@ -661,21 +933,14 @@ class _OverlaySettingsPageState extends State<OverlaySettingsPage> {
           children: options.map((opt) {
             final (margin, label) = opt;
             final selected = _edgeLineMarginDp == margin;
-            return ChoiceChip(
+            return buildSettingsChoiceChip(
+              context,
               // 竖条图标离左边框的间距随档位拉宽：图标本身暗示边距档位
-              avatar: Icon(
-                Icons.vertical_align_center,
-                size: 12.0 + margin / 2,
-                color: selected ? ext.textOnPrimary : ext.primary,
-              ),
+              icon: Icons.vertical_align_center,
+              iconSize: 12.0 + margin / 2,
               label: Text(label),
               selected: selected,
-              selectedColor: ext.primary,
-              labelStyle: TextStyle(
-                color: selected ? ext.textOnPrimary : ext.textPrimary,
-                fontSize: 13,
-              ),
-              onSelected: (_) async {
+              onTap: () async {
                 // 竖线间距属于悬浮窗配置，同走 Pro 门禁（未解锁不写 prefs）
                 if (!await _ensureOverlayPro()) return;
                 _saveEdgeLineMargin(margin);

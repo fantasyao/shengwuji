@@ -38,12 +38,12 @@ class DiarySyncEntry {
   /// （合并只做新增并集，已有行的锁定状态不跨端同步）
   final bool isLocked;
 
-  /// 标注（'urgent'/'star'/'idea'，null=无）
+  /// 标注（'urgent'/'star'/'idea'/'task'，null=无）
   final String? tag;
 
   /// 活跃区自定义排序键（v16 起；归档行恒 null）。是否被对端采纳由
   /// 落库方决策：对端活跃区为空（换机全量恢复）才尊重，否则远端新行
-  /// 统一堆对端活跃区顶部（见 DbHelper.insertRemoteDiaries）
+  /// 按 created_at 插进对端现有顺序（见 DbHelper.insertRemoteDiaries）
   final int? sortOrder;
 
   /// 本地 diary 表行 → 载荷（audio_path 全路径取 basename）
@@ -288,6 +288,7 @@ class SyncManifest {
     this.updatedAt,
     this.lock,
     this.counts = const {},
+    this.raw = const {},
   });
 
   final int version;
@@ -295,6 +296,10 @@ class SyncManifest {
   final String? updatedAt;
   final SyncLock? lock;
   final Map<String, int> counts;
+
+  /// 原始 JSON。写回时先铺底、再覆盖本机字段——远端（电脑端）加的未知
+  /// 字段不能被手机整包重写抹掉
+  final Map<String, dynamic> raw;
 
   Map<String, dynamic> toJson() => {
     'v': version,
@@ -306,8 +311,9 @@ class SyncManifest {
 
   static SyncManifest? tryParse(String raw) {
     try {
-      final j = jsonDecode(raw);
-      if (j is! Map<String, dynamic>) return null;
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return null;
+      final j = decoded.map((key, value) => MapEntry(key.toString(), value));
       final counts = <String, int>{};
       final rawCounts = j['counts'];
       if (rawCounts is Map) {
@@ -320,8 +326,11 @@ class SyncManifest {
         version: (j['v'] as num?)?.toInt() ?? kSyncManifestVersion,
         deviceId: j['device_id'] as String?,
         updatedAt: j['updated_at'] as String?,
-        lock: rawLock is Map<String, dynamic> ? SyncLock.fromJson(rawLock) : null,
+        lock: rawLock is Map<String, dynamic>
+            ? SyncLock.fromJson(rawLock)
+            : null,
         counts: counts,
+        raw: j,
       );
     } catch (_) {
       return null;

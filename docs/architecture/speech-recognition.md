@@ -218,7 +218,7 @@ worker 单线程逐条处理消息，天然 FIFO：搬家模式 VAD 连发多段
 - 详情见 @architecture/volume-key-shortcuts.md
 
 ### 快捷方式（系统）
-- Android 静态快捷方式：快速录音、新建文本笔记、悬浮窗语音速记（toggle，2026-09-12 起，供努比亚滑动键等系统级硬件自定义映射，见 @architecture/volume-key-shortcuts.md「外部硬件快捷方式」）
+- Android 静态快捷方式：快速录音、新建文本笔记、悬浮窗语音速记（toggle，2026-09-12 起）、显示悬浮窗（toggle，2026-10-20 起）——后两者供努比亚滑动键等系统级硬件自定义映射，见 @architecture/volume-key-shortcuts.md「外部硬件快捷方式」
 - 桌面长按图标触发
 
 **快捷录音「退出即停」（2026-09-12 起）**：快捷方式/音量键拉起的录音会话（`startListening(lockedMode: true)`）在 App 退到后台**且屏幕仍亮着**时自动停止并照常转写保存（`DiaryTab.didChangeAppLifecycleState`，延迟 800ms 复核；判定纯函数 `lib/utils/quick_record_exit_policy.dart`）。背景：努比亚滑动键下滑"退出应用"后录音不停的反馈。息屏豁免——锁屏快捷录音中按电源键续录是既有行为；App 内手动点录音按钮的会话不受影响（后台续录不变）。

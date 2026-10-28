@@ -43,6 +43,12 @@ class VolumeGestureAction {
   ///（触发即抬手），没有松手停录语义，设置页只在长按两行提供此选项
   static const String pttRecord = 'ptt_record';
 
+  /// 剪贴板存为笔记（2026-10-28）：读系统剪贴板最后一条纯文本直接存成随笔，
+  /// 不展开面板、不切前台。浮窗未显示时 Kotlin 直建不可见的临时隐藏窗只为
+  /// 拿焦点读剪贴板（Android 10+ 限制），落库后立即收窗——用户全程看不到浮窗。
+  /// ⚠️ 与 Kotlin 侧 ACTION_OVERLAY_CLIPBOARD_NOTE 严格一致（跨端硬编码副本）
+  static const String overlayClipboardNote = 'overlay_clipboard_note';
+
   /// 全部合法动作值（合法性校验 + 设置页选项列表共用）
   static const List<String> all = [
     none,
@@ -52,6 +58,7 @@ class VolumeGestureAction {
     quickTextNote,
     overlayNewNote,
     pttRecord,
+    overlayClipboardNote,
   ];
 
   /// 值是否为合法动作（防 prefs 里存了历史遗留/损坏值）

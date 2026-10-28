@@ -249,6 +249,23 @@ void main() {
     await tester.pumpAndSettle();
     expect(haptics, ['tick']);
   });
+
+  testWidgets('月视图行高压紧（40dp×7行+头52=332）+ 响铃开关内嵌网格右下角', (
+    tester,
+  ) async {
+    await openSheet(tester);
+    final calendar = find.byType(CalendarDatePicker);
+    // 限高压行高：自然高 52+48×7=388 → 52+40×7=332
+    expect(tester.getSize(calendar).height, 332);
+    // 响铃开关叠在日历网格右下角（标题行不再持有），不越出日历容器
+    final calRect = tester.getRect(calendar);
+    final swRect = tester.getRect(find.byType(Switch));
+    expect(swRect.center.dy, greaterThan(calRect.top + calRect.height * 0.8));
+    expect(swRect.center.dx, greaterThan(calRect.center.dx));
+    expect(calRect.contains(swRect.center), isTrue);
+    expect(find.text('响铃'), findsOneWidget);
+    expect(find.text('响铃闹钟'), findsNothing);
+  });
 }
 
 /// 测试用简易值容器（闭包跨 build 持有弹层返回值）

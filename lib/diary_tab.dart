@@ -43,25 +43,36 @@ import '../utils/recognition_activity.dart';
 import '../utils/item_splitter.dart';
 import '../utils/correction_learner.dart';
 import '../overlay/widgets/big_bang_layer.dart'; // 大爆炸分词层（悬浮窗同款）
+import '../overlay/widgets/overlay_image_preview.dart'; // 图片附件图集（手机+电脑端多图）
 import '../overlay/overlay_constants.dart'; // 大爆炸层顶边参照（悬浮窗 8 条档位同源）
 import 'correction/context_corrector.dart';
 import 'correction/pair_context.dart';
 import '../utils/diary_tag.dart';
 import '../utils/diary_sync_bridge.dart';
 import '../utils/note_lock_auth.dart';
+import '../utils/note_lock_settings.dart';
 import '../utils/note_unlock_session.dart';
 import '../utils/quick_record_exit_policy.dart';
 import '../utils/waveform_extractor.dart';
+import '../utils/text_measure.dart'; // 长文折叠行数实测（TextPainter）
 import '../widgets/item_transfer_widget.dart';
 import '../widgets/location_answer_widget.dart';
 import '../widgets/diary_play_bar.dart';
 import '../theme/app_theme_extension.dart';
+import '../sync/cloud_sync_service.dart';
 
 /// 短句阈值：超过此长度的日记不触发转存/查询检测
 /// 用户在长日记里的意图太发散，强行拆分容易误命中
 /// 例："今天天气也不错，钥匙在哪里" 长度 13 → 处理
 ///     "今天天气也不错，哎，我突然想找一下我的钥匙..." 长度 >15 → 跳过
 const int kDiaryShortTextMax = 15;
+
+/// 长文折叠阈值：正文渲染超过此行数时默认折叠，卡片底部左端显示「展开」按钮
+/// （清单卡按条目数计，普通/时间高亮卡按 TextPainter 实测行数）
+const int kDiaryCollapseMaxLines = 5;
+
+/// 长文展开/收起的高度动画时长（卡片慢慢变长/收短，而非瞬时跳变）
+const Duration kDiaryExpandAnimDuration = Duration(milliseconds: 250);
 
 /// 日记页长录音保护阈值：录音时长 ≥ 此秒数时，走 VAD 切分 + 逐段识别 + 文本拼接
 /// 避免 SenseVoice 整段识别长录音时注意力分散导致质量下降
@@ -166,6 +177,12 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
   /// -1 = 尚未记录过（首次 resume 无条件刷新一次，兜底所有历史遗漏）
   int _lastSeenDiaryCounter = -1;
 
+  /// 下拉刷新 → WebDAV 云同步（与设置页「立即同步」同一引擎逻辑）
+  late final CloudSyncService _cloudSyncService = CloudSyncService(
+    dbHelper: widget.dbHelper,
+    processor: widget.processor,
+  );
+
   static const Duration _shortBackgroundThreshold = Duration(
     minutes: 10,
   ); // 短时间后台的阈值
@@ -197,6 +214,11 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
   // --- 响度波纹缓存（与 _queryAnswerCache 同模式：懒加载 + Set 守卫 + refreshList 清空） ---
   final Map<int, List<double>> _peaksCache = {};
   final Set<int> _parsingPeaksIds = {};
+
+  // --- 长文折叠展开态（仅会话内存活，refreshList 清空恢复折叠） ---
+  // 超过 kDiaryCollapseMaxLines 行的卡片默认折叠，底部左端「展开」按钮
+  // 把 diaryId 加进本集合；再点「收起」移除。不落盘——列表始终紧凑。
+  final Set<int> _expandedDiaryIds = {};
 
   // 使用单例管理器（识别链路已迁 worker isolate，门面 transcribe()/warmup()，
   // 详见 docs/architecture/speech-recognition.md「识别 worker isolate 架构」）
@@ -273,9 +295,12 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
   Timer? _searchDebounce;
   static const Duration _searchDebounceDelay = Duration(milliseconds: 250);
 
-  // --- 标注筛选（❗紧急/⭐收藏/💡灵感，单选；null=全部） ---
+  // --- 标注筛选（普通(无标注)/4 个可配置槽位，单选可取消；null=全部） ---
+  // 「普通」走 DiaryTag.filterNormal 哨兵（不落库，SQL 层翻成 tag IS NULL）。
   // 与搜索关键词在 SQL 层叠加（AND）；筛选行默认收起，由搜索框旁的
-  // 筛选图标按钮展开/收起（页面零新增常驻元素，图标小圆点提示筛选生效中）
+  // 筛选图标按钮展开/收起（页面零新增常驻元素，图标小圆点提示筛选生效中）。
+  // 不设「全部」芯片（2026-10-22 用户要求：中字号下行宽放不下）：
+  // 点一次芯片选中筛选，再点已选中的芯片取消筛选、回到全部
   String? _tagFilter;
   bool _tagFilterExpanded = false;
 
@@ -283,6 +308,9 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
   final TextEditingController _editController =
       TextEditingController(); // 编辑控制器（底部抽屉复用）
   bool _isLoadingList = true;
+  // 读取失败（2026-10-27：坏库导致 getDiaries 抛异常时，页面原来永远停在
+  // 「加载中」且只留一条未捕获异常栈——现在明确给出失败态 + 重试入口）
+  String? _listError;
 
   // --- 闹钟相关变量 ---
   // 时间实体缓存（key: diaryId, value: entities）
@@ -308,9 +336,14 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
   /// 智能识别开关（默认开启，用户可在设置页关闭）
   bool _itemTransferEnabled = true; // 日记智能识别物品+位置 → 显示转存横条
   bool _queryAnswerEnabled = true; // 日记智能查询"XX在哪儿" → 显示答案区
-  bool _swapTapLongPress = false; // 日记卡片单击/双击交换开关（默认关闭=单击复制/双击编辑；长按恒为大爆炸分词。prefs key 是历史名 diary_card_swap_tap_longpress，不可改）
+  bool _swapTapLongPress =
+      false; // 日记卡片单击/双击交换开关（默认关闭=单击复制/双击编辑；长按恒为大爆炸分词。prefs key 是历史名 diary_card_swap_tap_longpress，不可改）
 
   // ── 笔记锁定（diary.is_locked）──
+  // 加锁功能总开关（设置页「笔记锁定」，默认开）：关闭时本页与悬浮窗都不
+  // 显示锁按钮、不加锁/不认证，已锁定笔记直接按明文渲染；is_locked 落库
+  // 标记保留，重新开启即恢复保护。每次 refreshList / 回前台重读
+  bool _noteLockEnabled = true;
   // 解锁会话快照（NoteUnlockSession 的本页缓存）：true 时锁定卡显示明文。
   // 刷新时机：refreshList（所有列表变更入口）/ App 恢复前台（锁屏重锁与
   // 5 分钟过期都要在回前台时反映到打码）。写方还有 onNoteUnlockResult
@@ -343,6 +376,10 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
     // 加载 dismiss 学习数据 + 智能识别开关（与 refreshList 并行，无依赖）
     _loadDismissedSplits();
     _loadSmartSwitches();
+    // 4 槽位标注外观（设置页可换图标/颜色）：本页卡片色点与筛选行读全局
+    // notifier，保存后即时重绘；启动时从 prefs 装载（跨 engine 由悬浮窗自读）
+    DiaryTagStyles.notifier.addListener(_onTagStylesChanged);
+    DiaryTagStyles.load();
 
     // === 播放器流订阅（一次性，避免原来每次 play 内 onPlayerComplete.listen 的泄漏） ===
     // 不用 onPositionChanged（Android position 流有回退跳变，进度由 Stopwatch 自算）。
@@ -371,6 +408,11 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
   void _loadDismissedSplits() async {
     _dismissedSplits = await widget.dbHelper.loadAllDismissedSplits();
     if (mounted) setState(() {}); // 触发重渲染，已 dismiss 的卡片刷新
+  }
+
+  /// 标签外观变更（设置页保存 / 启动装载完成）→ 重绘筛选行与卡片色点
+  void _onTagStylesChanged() {
+    if (mounted) setState(() {});
   }
 
   /// 加载智能识别开关状态（设置页可关闭）
@@ -477,9 +519,9 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
     // 独立于 isReady：模型未就绪时也要刷新（键盘重试同款独立块模式）
     if (_wasInBackground && state == AppLifecycleState.resumed) {
       _syncDiaryChangesFromOverlay();
-      // 笔记锁定：回前台重读解锁会话（原生 SCREEN_OFF 已清零会话或 5 分钟
-      // 时效已过），锁定卡必须重新打码；跨息屏的"解除锁定"意图一并作废
-      //（重锁后旧意图不该在下次认证时误触发）
+      // 笔记锁定：回前台重读总开关 + 解锁会话（原生 SCREEN_OFF 已清零会话
+      // 或 5 分钟时效已过），锁定卡必须重新打码；跨息屏的"解除锁定"意图一并
+      // 作废（重锁后旧意图不该在下次认证时误触发）
       _pendingUnlockReleaseId = null;
       _refreshUnlockSnapshot();
     }
@@ -753,6 +795,7 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
     _searchDebounce?.cancel(); // 搜索防抖 Timer（防 dispose 后回调）
     // 移除生命周期监听
     WidgetsBinding.instance.removeObserver(this);
+    DiaryTagStyles.notifier.removeListener(_onTagStylesChanged);
     _audioRecorder.dispose();
     // 不再在这里释放识别器，因为它是单例共享的
     _searchController.dispose();
@@ -853,7 +896,8 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
       //    但 hasEverInitialized 不回退 → isReady=false；
       // 2. 热切换待加载：导入新模型后 worker 还在服务旧路径（isReady=true
       //    但 isServingLatestModel=false），必须放行 initEngine 加载新模型
-      if (!_recognizerManager.isReady || !_recognizerManager.isServingLatestModel) {
+      if (!_recognizerManager.isReady ||
+          !_recognizerManager.isServingLatestModel) {
         unawaited(initEngine());
       }
       return;
@@ -865,29 +909,35 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
     }
   }
 
-  /// 重读解锁会话快照（与缓存量不一致才 setState，打码/明文随之切换）。
-  /// 调用方：didChangeAppLifecycleState.resumed / refreshList 之外的入口
+  /// 重读加锁总开关 + 解锁会话快照（与缓存不一致才 setState，锁按钮显隐/
+  /// 打码与明文随之切换）。调用方：didChangeAppLifecycleState.resumed
   Future<void> _refreshUnlockSnapshot() async {
+    final lockEnabled = await NoteLockSettings.isEnabled();
     final unlocked = await NoteUnlockSession.isUnlocked();
-    if (mounted && unlocked != _notesUnlocked) {
-      _updateState(() => _notesUnlocked = unlocked);
+    if (mounted &&
+        (lockEnabled != _noteLockEnabled || unlocked != _notesUnlocked)) {
+      _updateState(() {
+        _noteLockEnabled = lockEnabled;
+        _notesUnlocked = unlocked;
+      });
     }
   }
 
-  /// 该卡片当前是否应打码展示：用户手动锁定（is_locked=1）+ 会话外 + 非空内容
-  ///（占位行/空行无内容可锁，绝不被打码）。会话内（认证通过后 5 分钟内）
-  /// 全部锁定卡显示明文
+  /// 该卡片当前是否应打码展示：加锁功能开启 + 用户手动锁定（is_locked=1）+
+  /// 会话外 + 非空内容（占位行/空行无内容可锁，绝不被打码）。会话内（认证
+  /// 通过后 5 分钟内）全部锁定卡显示明文
   bool _isLockedHidden(Map<String, dynamic> item) {
+    if (!_noteLockEnabled) return false;
     if (item['is_locked'] != 1) return false;
     if (((item['content'] as String?) ?? '').trim().isEmpty) return false;
     return !_notesUnlocked;
   }
 
   /// 锁定卡片的内容级操作门禁（查看/编辑/复制/AI/播放/删除共用）：
-  /// 会话内放行；会话外发起系统认证并返回 false——认证结果经
+  /// 总开关关闭或会话内放行；会话外发起系统认证并返回 false——认证结果经
   /// noteUnlockResult 异步回发（成功后 _notesUnlocked 翻 true，UI 自然放行）
   Future<bool> _ensureNoteUnlocked() async {
-    if (_notesUnlocked) return true;
+    if (!_noteLockEnabled || _notesUnlocked) return true;
     if (_unlockAuthInFlight) return false;
     _unlockAuthInFlight = true;
     try {
@@ -926,6 +976,8 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
   /// 结果在 onNoteUnlockResult 消费）。会话内直接解除。
   /// 点卡片本体查看是另一条路：只开临时会话不动锁定标志
   Future<void> _toggleDiaryLock(Map<String, dynamic> item) async {
+    // 加锁功能总开关关闭时卡片上不应有锁按钮，这里再兜一层防旧渲染帧误触
+    if (!_noteLockEnabled) return;
     final id = item['id'] as int;
     final locked = item['is_locked'] == 1;
     _haptic('tick');
@@ -989,18 +1041,34 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
   /// - 数据增删改后的刷新（录音完成/编辑/删除/悬浮窗同步等）→ true（默认）
   /// - 纯过滤性刷新（搜索）→ false：清了只会让所有可见卡片重新解析 + 重读音频
   Future<void> refreshList({bool clearParseCaches = true}) async {
-    // 笔记锁定：每次列表刷新同步重读解锁会话（认证成功/会话过期/锁屏重锁
-    // 后的刷新都经此入口，打码分支随快照切换）
+    // 笔记锁定：每次列表刷新同步重读总开关 + 解锁会话（切回本页/认证成功/
+    // 会话过期/锁屏重锁后的刷新都经此入口，锁按钮显隐与打码分支随快照切换）
+    _noteLockEnabled = await NoteLockSettings.isEnabled();
     _notesUnlocked = await NoteUnlockSession.isUnlocked();
-    final data = await widget.dbHelper.getDiaries(
-      keyword: _searchController.text,
-      tag: _tagFilter,
-    );
+    final List<Map<String, dynamic>> data;
+    try {
+      data = await widget.dbHelper.getDiaries(
+        keyword: _searchController.text,
+        tag: _tagFilter,
+      );
+    } catch (e) {
+      // 读库失败不能把页面留在「加载中」：显式失败态 + 重试按钮，
+      // 异常栈照常打到日志（坏库排查靠它，别吞掉）
+      log('❌ [DiaryTab] 读取日记失败: $e');
+      if (mounted) {
+        _updateState(() {
+          _isLoadingList = false;
+          _listError = '读取失败：$e';
+        });
+      }
+      return;
+    }
 
     if (mounted) {
       _updateState(() {
         _diaryList = List.from(data); // 创建可变副本
         _isLoadingList = false;
+        _listError = null;
       });
     }
 
@@ -1017,6 +1085,48 @@ class DiaryTabState extends State<DiaryTab> with WidgetsBindingObserver {
     // 清除响度波纹缓存（与上述缓存同步：录新日记/下拉刷新后波纹重新提取）
     _peaksCache.clear();
     _parsingPeaksIds.clear();
+    // 长文折叠展开态复位（列表始终紧凑；搜索过滤走 clearParseCaches=false 不复位）
+    _expandedDiaryIds.clear();
+  }
+
+  /// 读取失败后的重试：先切回加载态再重查，避免按钮连点
+  /// （失败详情由 refreshList 重新写入 _listError）
+  void _retryLoadList() {
+    _updateState(() {
+      _listError = null;
+      _isLoadingList = true;
+    });
+    refreshList();
+  }
+
+  /// 下拉刷新：先跑 WebDAV 云同步，再重查列表。
+  ///
+  /// 未配置时不联网（只刷新本地 + 提示入口），避免把下拉变成必失败请求；
+  /// 已配置则同步落库结果立即随 refreshList 显示（远端新条目按 created_at
+  /// 插进本地顺序）。
+  Future<void> _pullRefreshFromCloud() async {
+    log('☁️ [DiaryTab] 下拉刷新触发云同步');
+    final config = await CloudSyncConfig.load();
+    if (!config.isConfigured) {
+      await refreshList();
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('云同步未配置：设置 → 云端同步')));
+      return;
+    }
+
+    final result = await _cloudSyncService.sync();
+    if (!mounted) return;
+    await refreshList();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          result.ok ? '✅ ${result.pullRefreshMessage}' : '❌ ${result.message}',
+        ),
+      ),
+    );
   }
 
   /// 悬浮窗（overlay engine）侧 diary 变更的无感同步检查。
@@ -1369,6 +1479,7 @@ $content
       orElse: () => <String, dynamic>{},
     );
     final audioPath = diary['audio_path'] as String?;
+    final imagePath = diary['image_path'] as String?;
 
     // 3. 删除数据库记录
     await widget.dbHelper.deleteDiary(diaryId);
@@ -1384,6 +1495,18 @@ $content
       } catch (e) {
         // 文件删除失败不影响主流程，仅记录日志
         log('转存时删除录音文件失败: $e');
+      }
+    }
+
+    // 4.1 删除截图附件文件（转存=原日记彻底移除，附件同录音一并清）
+    if (imagePath != null && imagePath.isNotEmpty) {
+      try {
+        final file = File(imagePath);
+        if (await file.exists()) {
+          await file.delete();
+        }
+      } catch (e) {
+        log('转存时删除截图附件失败: $e');
       }
     }
 
@@ -1409,6 +1532,50 @@ $content
     }
   }
 
+  /// 打开图片附件图集（卡片日期行图片图标）：手机自拍截图在前，电脑端
+  /// 同步下来的多图按 position 跟随，左右滑动切换。文件被外部清理时提示
+  Future<void> _openDiaryImages(Map<String, dynamic> item) async {
+    final paths = <String>[];
+    final own = item['image_path'] as String?;
+    if (own != null && own.isNotEmpty) paths.add(own);
+    final uuid = item['sync_uuid'] as String?;
+    if (uuid != null && uuid.isNotEmpty) {
+      try {
+        for (final row in await widget.dbHelper.getDiaryImages(uuid)) {
+          final path = row['image_path'] as String?;
+          if (path != null && path.isNotEmpty) paths.add(path);
+        }
+      } catch (e) {
+        log('查询图片附件失败: $e');
+      }
+    }
+    final existing = <String>[];
+    for (final path in paths) {
+      try {
+        if (await File(path).exists()) existing.add(path);
+      } catch (e) {
+        log('检查图片附件失败（$path）: $e');
+      }
+    }
+    if (!mounted) return;
+    if (existing.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('图片文件已不存在')));
+      return;
+    }
+    _haptic('tick');
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (routeContext) => OverlayImagePreview(
+          imagePaths: existing,
+          onClose: () => Navigator.of(routeContext).maybePop(),
+        ),
+      ),
+    );
+  }
+
   /// 用户点了物品转存横条的 ✕：表示"这条不是物品记录"。
   /// 入库 dismissed_splits + 加内存 Set + 隐藏横条 + 震动 + SnackBar
   /// 与 _transferToItem 结构对称：写库 → 改缓存 → 震动 → SnackBar
@@ -1429,6 +1596,32 @@ $content
       const SnackBar(
         content: Text('已记下，类似内容不再提示'),
         duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
+  /// 打开正文里的 http(s) 链接（2026-10-27 用户要求：链接蓝色下划线，
+  /// 点击用系统浏览器打开）。与关于页下载链接同走 externalApplication，
+  /// 不内嵌 WebView；失败时提示可手动访问的完整 URL
+  Future<void> _openDiaryLink(Uri uri) async {
+    try {
+      final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!ok) {
+        log('⚠️ 打开链接失败（launchUrl 返回 false）: $uri');
+        _showLinkOpenError(uri);
+      }
+    } catch (e) {
+      log('⚠️ 打开链接失败: $e');
+      _showLinkOpenError(uri);
+    }
+  }
+
+  void _showLinkOpenError(Uri uri) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('无法打开链接：$uri'),
+        duration: const Duration(seconds: 3),
       ),
     );
   }
@@ -1534,10 +1727,10 @@ $content
                 ok
                     ? (enableAlarm ? '日程已成功添加到系统日历' : '日程已添加到系统日历（无响铃）')
                     : code == 'no_calendar_account'
-                        ? '手机上没有可用的日历，请检查系统日历应用是否被卸载或停用'
-                        : code == 'permission_denied'
-                            ? '添加日历事件失败，请检查日历权限'
-                            : '添加日历事件失败',
+                    ? '手机上没有可用的日历，请检查系统日历应用是否被卸载或停用'
+                    : code == 'permission_denied'
+                    ? '添加日历事件失败，请检查日历权限'
+                    : '添加日历事件失败',
               ),
               backgroundColor: ok
                   ? AppThemeExtension.of(context).positiveText
@@ -1974,9 +2167,9 @@ $content
             }
           }
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text("⚠️ 模型加载失败，请检查设置")),
-            );
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(const SnackBar(content: Text("⚠️ 模型加载失败，请检查设置")));
           }
           _updateState(() {
             isProcessing = false;
@@ -2312,9 +2505,9 @@ $content
     try {
       // 同音组内的修正对（质朴→智谱）不提示：交给上下文纠错按语境处理，
       // 盲替换提示会把「这个人很质朴」也建议改成「智谱」
-      final allMatches = (await widget.dbHelper.matchCorrectionPairs(text))
-          .where((p) => !ContextCorrector.instance.isHomophonePair(p))
-          .toList();
+      final allMatches = (await widget.dbHelper.matchCorrectionPairs(
+        text,
+      )).where((p) => !ContextCorrector.instance.isHomophonePair(p)).toList();
       if (allMatches.isEmpty || !mounted) return false;
       final contexts = PairContextGate.groupByPair(
         await widget.dbHelper.getAllPairContexts(),
@@ -2363,7 +2556,8 @@ $content
               }
             },
           ),
-          persist: false, // ⚠️ Flutter 的 SnackBar 带 action 时 persist 默认 true=永不超时消失，必须显式关
+          persist:
+              false, // ⚠️ Flutter 的 SnackBar 带 action 时 persist 默认 true=永不超时消失，必须显式关
           duration: const Duration(seconds: 6),
           behavior: SnackBarBehavior.floating,
           backgroundColor: ext.primaryDark,
@@ -2402,18 +2596,15 @@ $content
             await widget.dbHelper.updateDiary(diaryId, fixed);
             DiarySyncBridge.bump();
             await refreshList();
-            AppLogger.appLog(
-              '✅ [Diary] 音素相似替换已应用: $first',
-            );
+            AppLogger.appLog('✅ [Diary] 音素相似替换已应用: $first');
           },
         ),
-        persist: false, // ⚠️ Flutter 的 SnackBar 带 action 时 persist 默认 true=永不超时消失，必须显式关
+        persist:
+            false, // ⚠️ Flutter 的 SnackBar 带 action 时 persist 默认 true=永不超时消失，必须显式关
         duration: const Duration(seconds: 3), // 用户要求：相似提示 3 秒即消失（原 6 秒）
         behavior: SnackBarBehavior.floating,
         backgroundColor: ext.primaryDark,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(10),
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       ),
     );
   }
@@ -2649,6 +2840,8 @@ $content
       orElse: () => <String, dynamic>{},
     );
     final audioPath = diary['audio_path'] as String?;
+    // 截图附件（本机附件，真删时与录音一起清；归档保留）
+    final imagePath = diary['image_path'] as String?;
     // R1：占位日记（content 空）时跳过文件删除——保留 audio 让用户可从备份/孤儿清理之外恢复
     final content = (diary['content'] as String?) ?? '';
 
@@ -2670,6 +2863,19 @@ $content
     } else if (audioPath != null && audioPath.isNotEmpty && content.isEmpty) {
       log('R1: 占位日记 id=$id 删除：保留 audio 文件 $audioPath');
       AppLogger.appLog('ℹ️ [Diary] R1 占位删除保留 audio: id=$id path=$audioPath');
+    }
+
+    // 4. 删除截图附件文件（不受 R1 占位保护影响：图片是用户主动截取的
+    // 内容附件，随行删除；文件缺失/删除失败都只记日志）
+    if (imagePath != null && imagePath.isNotEmpty) {
+      try {
+        final file = File(imagePath);
+        if (await file.exists()) {
+          await file.delete();
+        }
+      } catch (e) {
+        log('删除截图附件失败: $e');
+      }
     }
 
     refreshList();
@@ -2772,7 +2978,8 @@ $content
   }
 
   /// 长按卡片唤起大爆炸分词层（锤子 Big Bang 式，与悬浮窗展开卡同款交互，
-  /// 复用 overlay 的 BigBangLayer）：白底模态把正文炸成词块，点选/滑选
+  /// 复用 overlay 的 BigBangLayer）：白底模态把正文炸成词块（深色模式自动
+  /// 换深色底——不传 isDark，层内跟随 Theme brightness 判定），点选/滑选
   /// 后一键复制。主 engine 无悬浮窗的「面板高度」档位，层顶边按悬浮窗
   /// 8 条档位的顶部高度取值（OverlayConstants.bigBangMainAppTopInset，
   /// 用户拍板——比仅状态栏避让矮一截，单手够得着顶栏）；路由不透明=false
@@ -2828,8 +3035,7 @@ $content
     //    二级页 + 号添加的任意应用；查无（被移除/脏 prefs）回落默认）
     final prefs = await SharedPreferences.getInstance();
     final appId = prefs.getString('selected_ai_app') ?? 'chatgpt';
-    final selectedApp =
-        await AIApp.resolveAppById(appId) ?? AIApp.defaultApp;
+    final selectedApp = await AIApp.resolveAppById(appId) ?? AIApp.defaultApp;
 
     // 4. 根据平台和应用类型使用不同的启动方式
     if (Platform.isAndroid) {
@@ -3047,17 +3253,38 @@ $content
                       mainAxisAlignment: MainAxisAlignment.end,
                       children: [
                         TextButton(
-                          onPressed: () {
+                          onPressed: () async {
                             // 取消：如果是空白新笔记则删除
                             if (isNewEmptyNote &&
                                 _editController.text.trim().isEmpty) {
-                              widget.dbHelper.deleteDiary(id);
+                              // 空笔记也可能已从悬浮窗长按复制附加了截图——
+                              // 删行前一并读出 image_path 清文件，避免孤儿附件
+                              final rows = await widget.dbHelper
+                                  .queryAllDiaries();
+                              final row = rows.firstWhere(
+                                (d) => d['id'] == id,
+                                orElse: () => <String, dynamic>{},
+                              );
+                              final imagePath = row['image_path'] as String?;
+                              await widget.dbHelper.deleteDiary(id);
+                              if (imagePath != null && imagePath.isNotEmpty) {
+                                try {
+                                  final file = File(imagePath);
+                                  if (await file.exists()) {
+                                    await file.delete();
+                                  }
+                                } catch (e) {
+                                  log('取消空笔记时删除截图附件失败: $e');
+                                }
+                              }
                               DiarySyncBridge.bump();
                               refreshList();
                             }
                             // 🔒 锁屏隐私保护：编辑面板关闭时**不**清 flag（与 stopListening 一致），
                             // 由 ACTION_SCREEN_OFF 接收器统一负责
-                            Navigator.pop(sheetContext);
+                            if (sheetContext.mounted) {
+                              Navigator.pop(sheetContext);
+                            }
                           },
                           child: const Text("取消"),
                         ),
@@ -3184,6 +3411,17 @@ $content
 
   // 构建普通模式的卡片内容
   Widget _buildNormalCard(Map<String, dynamic> item) {
+    // LayoutBuilder 取正文实际渲染宽度，供长文折叠判定（TextPainter 实测行数）
+    return LayoutBuilder(
+      builder: (context, constraints) =>
+          _buildNormalCardContent(item, constraints.maxWidth),
+    );
+  }
+
+  Widget _buildNormalCardContent(
+    Map<String, dynamic> item,
+    double contentWidth,
+  ) {
     final ext = AppThemeExtension.of(context);
     final isArchived = item['is_archived'] == 1;
     final date = DateTime.tryParse(item['created_at']) ?? DateTime.now();
@@ -3207,8 +3445,12 @@ $content
     // 波纹提取顺带跳过（音频同属锁定内容，播放入口已隐藏）
     final lockedHidden = _isLockedHidden(item);
     // 标注小色点（悬浮窗标注的 tag 落库在 diary.tag 列；主 App 只显示
-    // 8dp 色点标记不改卡片背景，色映射与悬浮窗共用 DiaryTag.colors）
+    // 8dp 色点标记不改卡片背景，色映射与悬浮窗共用「标签外观」配置）
     final tagColor = DiaryTag.colorOf(item['tag'] as String?);
+    // 图片附件入口：手机自拍截图 + 云同步下收的电脑端图片合计数量。
+    // 锁定打码卡与悬浮窗缩略图同规则隐藏（图片同属锁定内容）
+    final imageCount = (item['image_count'] as num?)?.toInt() ?? 0;
+    final hasImages = !lockedHidden && imageCount > 0;
 
     // 首次显示时触发时间实体解析（打码卡跳过：解析缓存里的时间实体会在
     // 解锁后渲染高亮，且解析本身会把内容片段带进缓存）
@@ -3259,6 +3501,116 @@ $content
 
     final timeEntities = _timeEntitiesCache[diaryId] ?? [];
 
+    // --- 长文折叠判定（超过 kDiaryCollapseMaxLines 行的卡片默认折叠） ---
+    // 打码卡/占位行恒短不折叠；清单卡按条目数、文本卡按 TextPainter 实测
+    final isExpanded = _expandedDiaryIds.contains(diaryId);
+    final isChecklistCard =
+        !lockedHidden &&
+        !_isPlaceholder(item) &&
+        ChecklistWidget.isChecklist(content);
+    final bool needsCollapse;
+    if (lockedHidden || _isPlaceholder(item)) {
+      needsCollapse = false;
+    } else if (isChecklistCard) {
+      // 折叠判定与渲染同源（ChecklistWidget.maxItems），不硬编码高度
+      needsCollapse =
+          ChecklistWidget.itemCount(content) > kDiaryCollapseMaxLines;
+    } else {
+      needsCollapse = textExceedsLines(
+        text: content,
+        // 测量样式必须与渲染样式一致（fontSize 16 / height 1.5），颜色不影响布局
+        style: const TextStyle(fontSize: 16, height: 1.5),
+        maxWidth: contentWidth,
+        maxLines: kDiaryCollapseMaxLines,
+        textScaler: MediaQuery.textScalerOf(context),
+      );
+    }
+    final collapsed = needsCollapse && !isExpanded;
+
+    // 正文区五分支其一（锁定打码 / 占位行 / 清单 / 普通文本 / 时间高亮），
+    // 提取为局部变量以便下方外包 AnimatedSize 做展开/收起高度补间
+    final Widget body;
+    // 笔记锁定打码（优先级最高：锁定内容绝不进清单/时间高亮/普通文本分支）
+    if (lockedHidden) {
+      body = Padding(
+        padding: const EdgeInsets.only(bottom: 4),
+        child: Row(
+          children: [
+            Icon(Icons.lock, size: 15, color: ext.textHint),
+            const SizedBox(width: 8),
+            Text(
+              kLockedMaskText,
+              style: TextStyle(
+                fontSize: 16,
+                height: 1.5,
+                color: ext.textHint,
+                letterSpacing: 2,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    // 占位日记（content='' && audio_path 文件存在）：转写未完成状态
+    // 优先级高于清单/文本渲染，避免空 content 走 Text 分支显示空文本
+    else if (_isPlaceholder(item)) {
+      body = Padding(
+        padding: const EdgeInsets.only(bottom: 4),
+        child: Row(
+          children: [
+            if (_isTranscribing(diaryId))
+              SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: ext.primary,
+                ),
+              )
+            else
+              Icon(Icons.cloud_off, size: 18, color: ext.textHint),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                _isTranscribing(diaryId) ? '正在转写…' : '转写未完成，点击右上角 ⟳ 重试',
+                style: TextStyle(fontSize: 14, color: ext.textHint),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    // 清单渲染分支：检测到 markdown 任务列表格式时使用 ChecklistWidget
+    else if (isChecklistCard) {
+      body = ChecklistWidget(
+        content: content,
+        onToggle: (lineIndex) =>
+            _toggleChecklistItem(diaryId, content, lineIndex),
+        // 折叠态只渲染前 kDiaryCollapseMaxLines 条（判定与渲染同源）
+        maxItems: collapsed ? kDiaryCollapseMaxLines : null,
+      );
+    }
+    // 时间高亮 / 正文链接 / 普通文本统一走 TimeAwareText（无时间实体与链接
+    // 时内部退回普通 Text，样式/折叠行为不变）
+    // ⚠️ maxLines 与 overflow 必须成对切换——ellipsis 配 maxLines:null
+    // 会被 TextPainter 按单行渲染（既有教训）
+    else {
+      body = TimeAwareText(
+        text: content,
+        timeEntities: timeEntities,
+        baseStyle: TextStyle(
+          fontSize: 16,
+          height: 1.5,
+          color: isArchived ? ext.textHint : ext.textPrimary,
+          decoration: isArchived ? TextDecoration.lineThrough : null,
+        ),
+        onTimeTap: (entity) => _handleTimeEntityTap(diaryId, entity),
+        onLinkTap: _openDiaryLink,
+        maxLines: collapsed ? kDiaryCollapseMaxLines : null,
+        overflow: collapsed ? TextOverflow.ellipsis : null,
+      );
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -3290,86 +3642,81 @@ $content
                   style: TextStyle(fontSize: 12, color: ext.textHint),
                 ),
               ],
+              // 图片附件图标：仅有图的笔记显示，点一下打开全屏图集
+              //（数量 > 1 时角标显示张数；点击不触发卡片单击复制）
+              if (hasImages) ...[
+                const SizedBox(width: 12),
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => _openDiaryImages(item),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.image_outlined,
+                          size: 15,
+                          color: ext.primary,
+                        ),
+                        if (imageCount > 1) ...[
+                          const SizedBox(width: 2),
+                          Text(
+                            '$imageCount',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: ext.primary,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              ],
             ],
           ),
         ),
-        // 笔记锁定打码（优先级最高：锁定内容绝不进清单/时间高亮/普通文本分支）
-        if (lockedHidden)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 4),
-            child: Row(
-              children: [
-                Icon(Icons.lock, size: 15, color: ext.textHint),
-                const SizedBox(width: 8),
-                Text(
-                  kLockedMaskText,
-                  style: TextStyle(
-                    fontSize: 16,
-                    height: 1.5,
-                    color: ext.textHint,
-                    letterSpacing: 2,
+        // 展开/收起高度动画：AnimatedSize 补间正文区高度，顶部锚定向下生长；
+        // 动画期间自带裁剪（clipBehavior 默认 hardEdge）把全文裁在动画窗口内——
+        // 视觉上卡片慢慢变长/收短，而非瞬时跳变。body 五分支见上方声明
+        AnimatedSize(
+          duration: kDiaryExpandAnimDuration,
+          curve: Curves.easeInOut,
+          alignment: Alignment.topCenter,
+          child: body,
+        ),
+        // 长文折叠：展开/收起按钮单独一行（折叠态第五行截断处下方的空行；
+        // 清单卡 = 前 5 条之后）。不挂震动——按下立即展开，震动被体感为延迟
+        if (needsCollapse)
+          InkWell(
+            onTap: () {
+              _updateState(() {
+                if (isExpanded) {
+                  _expandedDiaryIds.remove(diaryId);
+                } else {
+                  _expandedDiaryIds.add(diaryId);
+                }
+              });
+            },
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: Row(
+                children: [
+                  Icon(
+                    isExpanded ? Icons.unfold_less : Icons.unfold_more,
+                    size: 18,
+                    color: ext.primary,
                   ),
-                ),
-              ],
-            ),
-          )
-        // 占位日记（content='' && audio_path 文件存在）：转写未完成状态
-        // 优先级高于清单/文本渲染，避免空 content 走 Text 分支显示空文本
-        else if (_isPlaceholder(item))
-          Padding(
-            padding: const EdgeInsets.only(bottom: 4),
-            child: Row(
-              children: [
-                if (_isTranscribing(diaryId))
-                  SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: ext.primary,
-                    ),
-                  )
-                else
-                  Icon(Icons.cloud_off, size: 18, color: ext.textHint),
-                const SizedBox(width: 8),
-                Flexible(
-                  child: Text(
-                    _isTranscribing(diaryId) ? '正在转写…' : '转写未完成，点击右上角 ⟳ 重试',
-                    style: TextStyle(fontSize: 14, color: ext.textHint),
+                  const SizedBox(width: 6),
+                  Text(
+                    isExpanded ? '收起' : '展开全文',
+                    style: TextStyle(fontSize: 13, color: ext.primary),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          )
-        // 清单渲染分支：检测到 markdown 任务列表格式时使用 ChecklistWidget
-        else if (ChecklistWidget.isChecklist(content))
-          ChecklistWidget(
-            content: content,
-            onToggle: (lineIndex) =>
-                _toggleChecklistItem(diaryId, content, lineIndex),
-          )
-        // 时间高亮文本或普通文本
-        else if (timeEntities.isEmpty)
-          Text(
-            content,
-            style: TextStyle(
-              fontSize: 16,
-              height: 1.5,
-              color: isArchived ? ext.textHint : ext.textPrimary,
-              decoration: isArchived ? TextDecoration.lineThrough : null,
-            ),
-          )
-        else
-          TimeAwareText(
-            text: content,
-            timeEntities: timeEntities,
-            baseStyle: TextStyle(
-              fontSize: 16,
-              height: 1.5,
-              color: isArchived ? ext.textHint : ext.textPrimary,
-              decoration: isArchived ? TextDecoration.lineThrough : null,
-            ),
-            onTimeTap: (entity) => _handleTimeEntityTap(diaryId, entity),
           ),
         // 答案区域（仅查询类笔记显示，不修改笔记 content）
         if (answer != null)
@@ -3499,10 +3846,11 @@ $content
                 ),
               ),
             ],
-            // 锁定开关：非空内容卡都显示（占位行不可锁）。锁定态高亮锁图标；
-            // 解除锁定是内容级操作（会话外点击先认证），锁定 = 结束解锁会话
-            // 立即整体打码。会话内锁定卡可正常查看，锁图标提示该卡已锁定
-            if ((item['content'] as String).isNotEmpty) ...[
+            // 锁定开关：加锁功能开启且内容非空才显示（占位行不可锁）。锁定态
+            // 高亮锁图标；解除锁定是内容级操作（会话外点击先认证），锁定 =
+            // 结束解锁会话立即整体打码。会话内锁定卡可正常查看，锁图标提示
+            // 该卡已锁定。设置页关闭「笔记锁定」后整颗按钮隐藏
+            if (_noteLockEnabled && (item['content'] as String).isNotEmpty) ...[
               const SizedBox(width: 8),
               SizedBox(
                 width: 40,
@@ -3514,9 +3862,7 @@ $content
                     item['is_locked'] == 1 ? Icons.lock : Icons.lock_outline,
                     color: item['is_locked'] == 1 ? ext.primary : ext.textHint,
                   ),
-                  tooltip: item['is_locked'] == 1
-                      ? "解除锁定"
-                      : "锁定笔记（防锁屏偷看）",
+                  tooltip: item['is_locked'] == 1 ? "解除锁定" : "锁定笔记（防锁屏偷看）",
                   onPressed: () => _toggleDiaryLock(item),
                 ),
               ),
@@ -3775,219 +4121,269 @@ $content
                     : const SizedBox(width: double.infinity),
               ),
               const SizedBox(height: 10),
-              // 日记列表
+              // 日记列表（下拉 = WebDAV 云同步 + 本地重查）
               Expanded(
-                child: _diaryList.isEmpty
-                    ? Center(
-                        child: Text(
-                          _isLoadingList
-                              ? "加载中..."
-                              : _tagFilter != null
-                              ? "没有该标注的日记"
-                              : "还没有日记，试着说句话吧",
-                          style: TextStyle(color: ext.textHint),
-                        ),
-                      )
-                    : ListView.builder(
-                        padding: const EdgeInsets.fromLTRB(20, 10, 20, 160),
-                        itemCount: _diaryList.length,
-                        itemBuilder: (context, index) {
-                          final item = _diaryList[index];
-                          final isArchived = item['is_archived'] == 1;
-
-                          // 检测是否需要显示归档分隔线
-                          Widget? separator;
-                          if (isArchived && index > 0) {
-                            final prevItem = _diaryList[index - 1];
-                            if (prevItem['is_archived'] != 1) {
-                              separator = Container(
-                                margin: const EdgeInsets.symmetric(
-                                  vertical: 16,
-                                ),
-                                child: Row(
-                                  children: [
-                                    Expanded(
-                                      child: Divider(
-                                        color: ext.textHint,
-                                        thickness: 1,
-                                      ),
-                                    ),
-                                    Container(
-                                      margin: const EdgeInsets.symmetric(
-                                        horizontal: 12,
-                                      ),
-                                      child: Text(
-                                        '已归档',
-                                        style: TextStyle(
-                                          color: ext.textHint,
-                                          fontSize: 12,
-                                        ),
-                                      ),
-                                    ),
-                                    Expanded(
-                                      child: Divider(
-                                        color: ext.textHint,
-                                        thickness: 1,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              );
-                            }
-                          }
-
-                          return Column(
-                            key: ValueKey(item['id']),
-                            children: [
-                              if (separator != null) separator,
-                              SwipeDismissCard(
-                                icon: isArchived ? Icons.delete : Icons.archive,
-                                iconColor: ext.textSecondary,
-                                circleColor: ext.textHint,
-                                onDismissed: () {
-                                  _haptic('click');
-                                  log(
-                                    '[DiaryTab] onDismissed: id=${item['id']}, isArchived=$isArchived, 移除前列表长度=${_diaryList.length}',
-                                  );
-                                  setState(() {
-                                    _diaryList.removeWhere(
-                                      (d) => d['id'] == item['id'],
-                                    );
-                                  });
-                                  log(
-                                    '[DiaryTab] onDismissed: 移除后列表长度=${_diaryList.length}',
-                                  );
-                                  if (isArchived) {
-                                    _deleteItem(item['id']);
-                                  } else {
-                                    _archiveItem(item['id']);
-                                  }
-                                },
-                                child: GestureDetector(
-                                  // 手势矩阵（2026-10-06 改版）：长按恒 = 大爆炸
-                                  // 分词层（悬浮窗展开卡同款）；单击/双击在
-                                  // 复制↔编辑之间由 _swapTapLongPress 交换
-                                  //（开关历史名「交换单击与长按」，长按让位大
-                                  // 爆炸后交换对象变为双击）
-                                  // 占位日记 content=''：复制/大爆炸不处理空文本
-                                  //（编辑空笔记合法）
-                                  // 锁定打码卡三手势全部先过认证（内容级操作门禁）
-                                  onTap: () {
-                                    if (_isLockedHidden(item)) {
-                                      _ensureNoteUnlocked();
-                                      return;
-                                    }
-                                    if (_swapTapLongPress) {
-                                      _startEditing(
-                                        item['id'],
-                                        item['content'],
-                                      );
-                                    } else {
-                                      final c = item['content'] as String;
-                                      if (c.trim().isNotEmpty) {
-                                        _copyToClipboard(c);
-                                      }
-                                    }
-                                  },
-                                  onDoubleTap: () {
-                                    if (_isLockedHidden(item)) {
-                                      _ensureNoteUnlocked();
-                                      return;
-                                    }
-                                    if (_swapTapLongPress) {
-                                      final c = item['content'] as String;
-                                      if (c.trim().isNotEmpty) {
-                                        _copyToClipboard(c);
-                                      }
-                                    } else {
-                                      _startEditing(
-                                        item['id'],
-                                        item['content'],
-                                      );
-                                    }
-                                  },
-                                  onLongPress: () {
-                                    if (_isLockedHidden(item)) {
-                                      _ensureNoteUnlocked();
-                                      return;
-                                    }
-                                    final c = item['content'] as String;
-                                    if (c.trim().isNotEmpty) {
-                                      _openBigBang(c); // 不受交换开关影响
-                                    }
-                                  },
-                                  // 新拟物主题：实底凸起卡片（无毛玻璃/描边）；
-                                  // 其余主题保持 ClipRRect+BackdropFilter 玻璃拟态
-                                  child: ext.isNeumorphic
-                                      ? Container(
-                                          margin: const EdgeInsets.only(
-                                            bottom: 12,
-                                          ),
-                                          // 纵向 padding 收窄（上12/下8）提高整屏笔记密度，
-                                          // 横向 16 与按钮 40×40 命中区不动
-                                          padding: const EdgeInsets.fromLTRB(
-                                            16,
-                                            12,
-                                            16,
-                                            8,
-                                          ),
-                                          decoration: neuRaisedDecoration(
-                                            context,
-                                            radius: 18,
-                                          ),
-                                          child: _buildNormalCard(item),
-                                        )
-                                      : ClipRRect(
-                                          borderRadius: BorderRadius.circular(
-                                            16,
-                                          ),
-                                          child: BackdropFilter(
-                                            filter: ui.ImageFilter.blur(
-                                              sigmaX: 10,
-                                              sigmaY: 10,
-                                            ),
-                                            child: Container(
-                                              margin: const EdgeInsets.only(
-                                                bottom: 12,
-                                              ),
-                                              // 纵向 padding 收窄（上12/下8）提高整屏
-                                              // 笔记密度，横向 16 不动
-                                              padding:
-                                                  const EdgeInsets.fromLTRB(
-                                                16,
-                                                12,
-                                                16,
-                                                8,
-                                              ),
-                                              decoration: BoxDecoration(
-                                                color: ext.cardBackground
-                                                    .withValues(alpha: 0.7),
-                                                borderRadius:
-                                                    BorderRadius.circular(16),
-                                                border: Border.all(
-                                                  color: ext
-                                                      .divider, // 浅色主题=black 8%，黑金=white 25%（深底可见）
-                                                  width: 1,
-                                                ),
-                                                boxShadow: [
-                                                  BoxShadow(
-                                                    color: Colors.black
-                                                        .withValues(alpha: 0.05),
-                                                    blurRadius: 10,
-                                                    offset: const Offset(0, 4),
+                child: RefreshIndicator(
+                  onRefresh: _pullRefreshFromCloud,
+                  color: ext.primary,
+                  backgroundColor: ext.cardBackground,
+                  child: _diaryList.isEmpty
+                      ? LayoutBuilder(
+                          builder: (context, constraints) =>
+                              SingleChildScrollView(
+                                physics: const AlwaysScrollableScrollPhysics(),
+                                child: ConstrainedBox(
+                                  constraints: BoxConstraints(
+                                    minHeight: constraints.maxHeight,
+                                  ),
+                                  child: Center(
+                                    child: _listError != null
+                                        ? Column(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Padding(
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                      horizontal: 32,
+                                                    ),
+                                                child: Text(
+                                                  _listError!,
+                                                  textAlign: TextAlign.center,
+                                                  style: TextStyle(
+                                                    color: ext.textHint,
+                                                    fontSize: 13,
                                                   ),
-                                                ],
+                                                ),
                                               ),
-                                              child: _buildNormalCard(item),
+                                              const SizedBox(height: 8),
+                                              TextButton(
+                                                onPressed: _retryLoadList,
+                                                child: const Text('重试'),
+                                              ),
+                                            ],
+                                          )
+                                        : Text(
+                                            _isLoadingList
+                                                ? "加载中..."
+                                                : _tagFilter != null
+                                                ? "没有该标注的日记"
+                                                : "还没有日记，试着说句话吧",
+                                            style: TextStyle(
+                                              color: ext.textHint,
                                             ),
                                           ),
-                                        ),
+                                  ),
                                 ),
                               ),
-                            ],
-                          );
-                        },
-                      ),
+                        )
+                      : ListView.builder(
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          padding: const EdgeInsets.fromLTRB(20, 10, 20, 160),
+                          itemCount: _diaryList.length,
+                          itemBuilder: (context, index) {
+                            final item = _diaryList[index];
+                            final isArchived = item['is_archived'] == 1;
+
+                            // 检测是否需要显示归档分隔线
+                            Widget? separator;
+                            if (isArchived && index > 0) {
+                              final prevItem = _diaryList[index - 1];
+                              if (prevItem['is_archived'] != 1) {
+                                separator = Container(
+                                  margin: const EdgeInsets.symmetric(
+                                    vertical: 16,
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Expanded(
+                                        child: Divider(
+                                          color: ext.textHint,
+                                          thickness: 1,
+                                        ),
+                                      ),
+                                      Container(
+                                        margin: const EdgeInsets.symmetric(
+                                          horizontal: 12,
+                                        ),
+                                        child: Text(
+                                          '已归档',
+                                          style: TextStyle(
+                                            color: ext.textHint,
+                                            fontSize: 12,
+                                          ),
+                                        ),
+                                      ),
+                                      Expanded(
+                                        child: Divider(
+                                          color: ext.textHint,
+                                          thickness: 1,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              }
+                            }
+
+                            return Column(
+                              key: ValueKey(item['id']),
+                              children: [
+                                if (separator != null) separator,
+                                SwipeDismissCard(
+                                  icon: isArchived
+                                      ? Icons.delete
+                                      : Icons.archive,
+                                  iconColor: ext.textSecondary,
+                                  circleColor: ext.textHint,
+                                  onDismissed: () {
+                                    _haptic('click');
+                                    log(
+                                      '[DiaryTab] onDismissed: id=${item['id']}, isArchived=$isArchived, 移除前列表长度=${_diaryList.length}',
+                                    );
+                                    setState(() {
+                                      _diaryList.removeWhere(
+                                        (d) => d['id'] == item['id'],
+                                      );
+                                    });
+                                    log(
+                                      '[DiaryTab] onDismissed: 移除后列表长度=${_diaryList.length}',
+                                    );
+                                    if (isArchived) {
+                                      _deleteItem(item['id']);
+                                    } else {
+                                      _archiveItem(item['id']);
+                                    }
+                                  },
+                                  child: GestureDetector(
+                                    // 手势矩阵（2026-10-06 改版）：长按恒 = 大爆炸
+                                    // 分词层（悬浮窗展开卡同款）；单击/双击在
+                                    // 复制↔编辑之间由 _swapTapLongPress 交换
+                                    //（开关历史名「交换单击与长按」，长按让位大
+                                    // 爆炸后交换对象变为双击）
+                                    // 占位日记 content=''：复制/大爆炸不处理空文本
+                                    //（编辑空笔记合法）
+                                    // 锁定打码卡三手势全部先过认证（内容级操作门禁）
+                                    onTap: () {
+                                      if (_isLockedHidden(item)) {
+                                        _ensureNoteUnlocked();
+                                        return;
+                                      }
+                                      if (_swapTapLongPress) {
+                                        _startEditing(
+                                          item['id'],
+                                          item['content'],
+                                        );
+                                      } else {
+                                        final c = item['content'] as String;
+                                        if (c.trim().isNotEmpty) {
+                                          _copyToClipboard(c);
+                                        }
+                                      }
+                                    },
+                                    onDoubleTap: () {
+                                      if (_isLockedHidden(item)) {
+                                        _ensureNoteUnlocked();
+                                        return;
+                                      }
+                                      if (_swapTapLongPress) {
+                                        final c = item['content'] as String;
+                                        if (c.trim().isNotEmpty) {
+                                          _copyToClipboard(c);
+                                        }
+                                      } else {
+                                        _startEditing(
+                                          item['id'],
+                                          item['content'],
+                                        );
+                                      }
+                                    },
+                                    onLongPress: () {
+                                      if (_isLockedHidden(item)) {
+                                        _ensureNoteUnlocked();
+                                        return;
+                                      }
+                                      final c = item['content'] as String;
+                                      if (c.trim().isNotEmpty) {
+                                        _openBigBang(c); // 不受交换开关影响
+                                      }
+                                    },
+                                    // 新拟物：实底凸起卡片；其余主题保持玻璃拟态
+                                    child: ext.isNeumorphic
+                                        ? Container(
+                                            margin: const EdgeInsets.only(
+                                              bottom: 12,
+                                            ),
+                                            // 纵向 padding 收窄（上12/下8）提高整屏笔记密度，
+                                            // 横向 16 与按钮 40×40 命中区不动
+                                            padding: const EdgeInsets.fromLTRB(
+                                              16,
+                                              12,
+                                              16,
+                                              8,
+                                            ),
+                                            decoration: neuRaisedDecoration(
+                                              context,
+                                              radius: 18,
+                                            ),
+                                            child: _buildNormalCard(item),
+                                          )
+                                        : ClipRRect(
+                                            borderRadius: BorderRadius.circular(
+                                              16,
+                                            ),
+                                            child: BackdropFilter(
+                                              filter: ui.ImageFilter.blur(
+                                                sigmaX: 10,
+                                                sigmaY: 10,
+                                              ),
+                                              child: Container(
+                                                margin: const EdgeInsets.only(
+                                                  bottom: 12,
+                                                ),
+                                                // 纵向 padding 收窄（上12/下8）提高整屏
+                                                // 笔记密度，横向 16 不动
+                                                padding:
+                                                    const EdgeInsets.fromLTRB(
+                                                      16,
+                                                      12,
+                                                      16,
+                                                      8,
+                                                    ),
+                                                decoration: BoxDecoration(
+                                                  color: ext.cardBackground
+                                                      .withValues(alpha: 0.7),
+                                                  borderRadius:
+                                                      BorderRadius.circular(16),
+                                                  border: Border.all(
+                                                    color: ext
+                                                        .divider, // 浅色主题=black 8%，黑金=white 25%（深底可见）
+                                                    width: 1,
+                                                  ),
+                                                  boxShadow: [
+                                                    BoxShadow(
+                                                      color: Colors.black
+                                                          .withValues(
+                                                            alpha: 0.05,
+                                                          ),
+                                                      blurRadius: 10,
+                                                      offset: const Offset(
+                                                        0,
+                                                        4,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                                child: _buildNormalCard(item),
+                                              ),
+                                            ),
+                                          ),
+                                  ),
+                                ),
+                              ],
+                            );
+                          },
+                        ),
+                ),
               ),
             ],
           ),
@@ -3996,67 +4392,67 @@ $content
     );
   }
 
-  /// 标注筛选行（搜索框旁筛选图标展开后显示；单选，与搜索关键词叠加过滤）
+  /// 标注筛选行（搜索框旁筛选图标展开后显示；单选可取消，与搜索关键词叠加过滤）
   Widget _buildTagFilterRow(AppThemeExtension ext) {
-    // (tag 值, 文案, 图标, 选中色)；tag=null 即「全部」
-    final entries = <(String?, String, IconData, Color)>[
-      (null, '全部', Icons.notes_rounded, ext.primary),
-      (
-        DiaryTag.urgent,
-        '紧急',
-        Icons.priority_high_rounded,
-        DiaryTag.colors[DiaryTag.urgent]!,
-      ),
-      (
-        DiaryTag.star,
-        '收藏',
-        Icons.star_rounded,
-        DiaryTag.colors[DiaryTag.star]!,
-      ),
-      (
-        DiaryTag.idea,
-        '灵感',
-        Icons.lightbulb_rounded,
-        DiaryTag.colors[DiaryTag.idea]!,
-      ),
+    // (tag 值, tooltip 文案, 图标, 选中色)；DiaryTag.filterNormal 哨兵 =
+    // 「普通」（无标注，SQL 层翻成 tag IS NULL）。
+    // 不设「全部」芯片（2026-10-22 用户要求：中字号下行宽放不下）：
+    // 点一次芯片选中，再点已选中的芯片即取消筛选（回到全部）。
+    // 4 个槽位的图标/颜色取设置页「标签外观」配置；槽位不再有固定名字，
+    // tooltip 用「标签 N」保无障碍语义
+    final styles = DiaryTagStyles.config;
+    final entries = <(String, String, IconData, Color)>[
+      (DiaryTag.filterNormal, '普通', Icons.circle_rounded, DiaryTag.normalColor),
+      for (var i = 0; i < DiaryTag.tagIds.length; i++)
+        (
+          DiaryTag.tagIds[i],
+          '标签 ${i + 1}',
+          styles.styleOf(DiaryTag.tagIds[i]).icon,
+          styles.styleOf(DiaryTag.tagIds[i]).color,
+        ),
     ];
+    void onToggle(String tag) {
+      _updateState(() => _tagFilter = _tagFilter == tag ? null : tag);
+      // 与搜索同款：纯过滤刷新，不清解析缓存
+      refreshList(clearParseCaches: false);
+    }
+
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
-      child: Row(
-        children: [
-          for (var i = 0; i < entries.length; i++) ...[
-            if (i > 0) const SizedBox(width: 8),
-            () {
-              final (tag, label, icon, color) = entries[i];
-              final selected = _tagFilter == tag;
-              return ChoiceChip(
-                avatar: Icon(
-                  icon,
-                  size: 16,
-                  color: selected ? color : ext.textHint,
-                ),
-                label: Text(label),
-                labelStyle: TextStyle(
-                  fontSize: 13,
-                  color: selected ? color : ext.textHint,
-                  fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
-                ),
-                selected: selected,
-                selectedColor: color.withValues(alpha: 0.15),
-                backgroundColor: ext.cardBackground.withValues(alpha: 0.4),
-                side: BorderSide(
-                  color: selected ? color.withValues(alpha: 0.5) : ext.divider,
-                ),
-                visualDensity: VisualDensity.compact,
-                onSelected: (_) {
-                  _updateState(() => _tagFilter = tag);
-                  // 与搜索同款：纯过滤刷新，不清解析缓存
-                  refreshList(clearParseCaches: false);
-                },
-              );
-            }(),
+      // 外边距 16、芯片间距 6 收紧；窄屏仍超出时整行可横向滚动
+      // （不截断、不换行撑高搜索区）
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            for (var i = 0; i < entries.length; i++) ...[
+              if (i > 0) const SizedBox(width: 6),
+              () {
+                final (tag, label, icon, color) = entries[i];
+                final selected = _tagFilter == tag;
+                // 纯图标（图标常驻各自标注色，图标/颜色由「标签外观」决定，
+                // 文字省掉防挤出行宽）
+                return Tooltip(
+                  message: label,
+                  child: ChoiceChip(
+                    label: Icon(icon, size: 16, color: color),
+                    selected: selected,
+                    selectedColor: color.withValues(alpha: 0.18),
+                    backgroundColor: ext.cardBackground.withValues(alpha: 0.4),
+                    side: BorderSide(
+                      color: selected
+                          ? color.withValues(alpha: 0.6)
+                          : ext.divider,
+                      width: selected ? 1.2 : 1,
+                    ),
+                    visualDensity: VisualDensity.compact,
+                    onSelected: (_) => onToggle(tag),
+                  ),
+                );
+              }(),
+            ],
           ],
-        ],
+        ),
       ),
     );
   }

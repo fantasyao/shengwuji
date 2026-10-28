@@ -13,7 +13,8 @@
 //   f. reorderActiveDiaries：指定顺序规范重写 0..n-1 + 漏网行续排尾部
 //      + 归档行不受影响
 //   g. insertRemoteDiaries：空活跃区尊重远端 sort_order；非空活跃区
-//      远端新行堆顶部（不与本端条目交错）
+//      按 created_at 插进本机顺序（贴相邻行 sort_order，同值由
+//      created_at DESC 兜底），不整批置顶、不改既有行
 //
 // ⚠️ 独立库文件名：sqflite_common_ffi 的库文件是磁盘上共享的真实文件，
 // 多测试文件并行跑时共用 items.db 会互相撞锁（db_upgrade_v14_test 头注释）。
@@ -217,11 +218,11 @@ void main() {
     expect(activeG1.map((d) => d['content']), ['远端R2', '远端R1']);
     expect(activeG1.map((d) => d['sort_order']), [5, 10]);
 
-    // ============ g2. insertRemoteDiaries：非空活跃区堆顶部不交错 ========
+    // ============ g2. insertRemoteDiaries：非空活跃区按时间插位 ========
     await dbHelper.insertRemoteDiaries([
       // 故意按 created_at 升序传入（云端 JSON 文件序不可信），
       // 携带与本端撞值域的 sort_order（3/4 会插进 5/10 之间）——
-      // 本端活跃区非空时远端值必须被丢弃，统一堆顶部
+      // 本端活跃区非空时远端值必须被丢弃，按 created_at 落位
       {
         'content': '远端R4较旧',
         'created_at': '2026-09-28T15:00:00.000',
@@ -239,7 +240,7 @@ void main() {
     ]);
     diaries = await dbHelper.getDiaries();
     final activeG2 = diaries.where((d) => d['is_archived'] == 0).toList();
-    // 新来两条堆顶部（行间按 created_at DESC 保相对顺序），
+    // 两条都比本机新 → 贴 R2 同值落顶部，行间按 created_at DESC；
     // 本端原有两条完整跟在后面，无交错
     expect(activeG2.map((d) => d['content']), [
       '远端R3较新',
@@ -247,9 +248,40 @@ void main() {
       '远端R2',
       '远端R1',
     ]);
-    // 赋值是 min-1 递减系列且最新行最小（本端 min=5 → R4=4、R3=3），
-    // 原两行不变
-    expect(activeG2.map((d) => d['sort_order']), [3, 4, 5, 10]);
+    // 贴相邻行 sort_order（R2=5），既有行完全不动——R1 仍是 10
+    expect(activeG2.map((d) => d['sort_order']), [5, 5, 5, 10]);
+
+    // ============ g3. 新行插中间/落底部（用户反馈场景） ============
+    await dbHelper.insertRemoteDiaries([
+      {
+        // 插在 R4(15:00) 与 R2(14:00) 之间
+        'content': '远端R6中间',
+        'created_at': '2026-09-28T14:30:00.000',
+        'is_archived': 0,
+        'sort_order': 99,
+        'sync_uuid': 'uuid-remote-r6',
+      },
+      {
+        // 比本机现有都旧 → 落底部
+        'content': '远端R5最旧',
+        'created_at': '2026-09-28T12:00:00.000',
+        'is_archived': 0,
+        'sort_order': 0,
+        'sync_uuid': 'uuid-remote-r5',
+      },
+    ]);
+    diaries = await dbHelper.getDiaries();
+    final activeG3 = diaries.where((d) => d['is_archived'] == 0).toList();
+    expect(activeG3.map((d) => d['content']), [
+      '远端R3较新',
+      '远端R4较旧',
+      '远端R6中间',
+      '远端R2',
+      '远端R1',
+      '远端R5最旧',
+    ]);
+    // R6 贴 R4 同值 5；R5 贴 R1 同值 10（同值组内按 created_at DESC）
+    expect(activeG3.map((d) => d['sort_order']), [5, 5, 5, 5, 10, 10]);
 
     await db.close();
   });

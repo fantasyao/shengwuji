@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shengwuji_app/overlay/widgets/overlay_panel_header.dart';
+import 'package:shengwuji_app/theme/app_theme.dart';
 
 /// 悬浮窗面板 header 深色半透明工具条回归（2026-09-13 跨背景可读性改造：
 /// 主题浅灰图标裸放在白色背景的应用上看不清，改黑 72% 底 + 白图标——与
@@ -16,22 +17,26 @@ void main() {
     bool dockLeft = false,
     bool diariesNotEmpty = true,
     bool allExpanded = false,
+    ThemeData? theme,
     VoidCallback? onNewNote,
+    VoidCallback? onSaveClipboard,
     VoidCallback? onToggleExpandAll,
     VoidCallback? onOpenDiaryPage,
-    VoidCallback? onCollapse,
+    VoidCallback? onStartVoiceMemo,
   }) async {
     await tester.pumpWidget(
       MaterialApp(
+        theme: theme ?? AppThemes.defaultTeal.toThemeData(),
         home: Scaffold(
           body: OverlayPanelHeader(
             dockLeft: dockLeft,
             diariesNotEmpty: diariesNotEmpty,
             allExpanded: allExpanded,
             onNewNote: onNewNote ?? () {},
+            onSaveClipboard: onSaveClipboard ?? () {},
             onToggleExpandAll: onToggleExpandAll ?? () {},
             onOpenDiaryPage: onOpenDiaryPage ?? () {},
-            onCollapse: onCollapse ?? () {},
+            onStartVoiceMemo: onStartVoiceMemo ?? () {},
           ),
         ),
       ),
@@ -70,57 +75,81 @@ void main() {
         .findAncestorWidgetOfExactType<Align>()!;
   }
 
-  testWidgets('默认（右缘停靠 + 非空列表）：4 按钮渲染，黑 72% 底 + 全白图标', (
-    tester,
-  ) async {
+  testWidgets('默认（右缘停靠 + 非空列表）：5 按钮渲染，黑 72% 底 + 全白图标', (tester) async {
     await pumpBar(tester);
     expect(find.byIcon(Icons.add), findsOneWidget);
+    // 2026-10-27：新增右侧的「剪贴板存为笔记」
+    expect(find.byIcon(Icons.content_paste), findsOneWidget);
     expect(find.byIcon(Icons.unfold_more), findsOneWidget);
     expect(find.byIcon(Icons.book), findsOneWidget);
-    expect(find.byIcon(Icons.chevron_right), findsOneWidget);
+    // 末位 = 语音速记录音按钮（2026-10-19 起替代原收起 chevron）
+    expect(find.byIcon(Icons.mic), findsOneWidget);
+    expect(find.byIcon(Icons.chevron_right), findsNothing);
     // 家族配色：黑 72% 半透明底（跨背景对比度的根）+ 图标全白
     expect(barContainer(tester).decoration, isA<BoxDecoration>());
-    final decoration =
-        barContainer(tester).decoration! as BoxDecoration;
+    final decoration = barContainer(tester).decoration! as BoxDecoration;
     expect(decoration.color, familyColor);
     expect(tester.widget<Icon>(find.byIcon(Icons.add)).color, Colors.white);
-    expect(tester.widget<Icon>(find.byIcon(Icons.book)).color, Colors.white);
     expect(
-      tester.widget<Icon>(find.byIcon(Icons.chevron_right)).color,
+      tester.widget<Icon>(find.byIcon(Icons.content_paste)).color,
       Colors.white,
     );
+    expect(tester.widget<Icon>(find.byIcon(Icons.book)).color, Colors.white);
+    expect(tester.widget<Icon>(find.byIcon(Icons.mic)).color, Colors.white);
   });
 
-  testWidgets('空列表：不渲染全部展开按钮，其余 3 个保留（历史行为）', (tester) async {
+  testWidgets('按钮顺序：新增 → 剪贴板 → 全部展开 → 打开随手记 → 语音速记', (tester) async {
+    await pumpBar(tester);
+    final addX = tester.getCenter(find.byIcon(Icons.add)).dx;
+    final pasteX = tester.getCenter(find.byIcon(Icons.content_paste)).dx;
+    final expandX = tester.getCenter(find.byIcon(Icons.unfold_more)).dx;
+    final bookX = tester.getCenter(find.byIcon(Icons.book)).dx;
+    final micX = tester.getCenter(find.byIcon(Icons.mic)).dx;
+    expect(addX, lessThan(pasteX));
+    expect(pasteX, lessThan(expandX));
+    expect(expandX, lessThan(bookX));
+    expect(bookX, lessThan(micX));
+  });
+
+  testWidgets('空列表：不渲染全部展开按钮，其余 4 个保留（历史行为）', (tester) async {
     await pumpBar(tester, diariesNotEmpty: false);
     expect(find.byIcon(Icons.unfold_more), findsNothing);
     expect(find.byIcon(Icons.unfold_less), findsNothing);
     expect(find.byIcon(Icons.add), findsOneWidget);
+    expect(find.byIcon(Icons.content_paste), findsOneWidget);
     expect(find.byIcon(Icons.book), findsOneWidget);
-    expect(find.byIcon(Icons.chevron_right), findsOneWidget);
+    expect(find.byIcon(Icons.mic), findsOneWidget);
   });
 
-  testWidgets('点击接线：四个回调各自触发', (tester) async {
-    var newNote = false, toggleAll = false, openDiary = false, collapse = false;
+  testWidgets('点击接线：五个回调各自触发', (tester) async {
+    var newNote = false;
+    var saveClipboard = false;
+    var toggleAll = false;
+    var openDiary = false;
+    var record = false;
     await pumpBar(
       tester,
       onNewNote: () => newNote = true,
+      onSaveClipboard: () => saveClipboard = true,
       onToggleExpandAll: () => toggleAll = true,
       onOpenDiaryPage: () => openDiary = true,
-      onCollapse: () => collapse = true,
+      onStartVoiceMemo: () => record = true,
     );
     await tester.tap(find.byIcon(Icons.add));
     await tester.pumpAndSettle();
     expect(newNote, true);
+    await tester.tap(find.byIcon(Icons.content_paste));
+    await tester.pumpAndSettle();
+    expect(saveClipboard, true);
     await tester.tap(find.byIcon(Icons.unfold_more));
     await tester.pumpAndSettle();
     expect(toggleAll, true);
     await tester.tap(find.byIcon(Icons.book));
     await tester.pumpAndSettle();
     expect(openDiary, true);
-    await tester.tap(find.byIcon(Icons.chevron_right));
+    await tester.tap(find.byIcon(Icons.mic));
     await tester.pumpAndSettle();
-    expect(collapse, true);
+    expect(record, true);
   });
 
   testWidgets('全部展开态：图标切 unfold_less，tooltip 切「全部收起」', (tester) async {
@@ -130,19 +159,17 @@ void main() {
     expect(find.byTooltip('全部收起'), findsOneWidget);
   });
 
-  testWidgets('停靠右缘：贴右对齐、chevron 朝右、阴影朝屏幕内侧（-x）', (tester) async {
+  testWidgets('停靠右缘：贴右对齐、阴影朝屏幕内侧（-x）', (tester) async {
     await pumpBar(tester, dockLeft: false);
     expect(barAlign(tester).alignment, Alignment.centerRight);
-    expect(find.byIcon(Icons.chevron_right), findsOneWidget);
     final shadow =
         (barContainer(tester).decoration! as BoxDecoration).boxShadow!;
     expect(shadow.first.offset.dx, -2);
   });
 
-  testWidgets('停靠左缘镜像：贴左对齐、chevron 朝左、阴影朝屏幕内侧（+x）', (tester) async {
+  testWidgets('停靠左缘镜像：贴左对齐、阴影朝屏幕内侧（+x）', (tester) async {
     await pumpBar(tester, dockLeft: true);
     expect(barAlign(tester).alignment, Alignment.centerLeft);
-    expect(find.byIcon(Icons.chevron_left), findsOneWidget);
     final shadow =
         (barContainer(tester).decoration! as BoxDecoration).boxShadow!;
     expect(shadow.first.offset.dx, 2);

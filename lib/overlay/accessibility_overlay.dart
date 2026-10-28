@@ -63,6 +63,10 @@ class AccessibilityOverlay {
   /// 会话（松手即停，Kotlin 在 UP 时发 stopVoiceMemo），Dart 据此切停止提示
   /// 文案「松开音量键」（旧版本 Kotlin 不带此 key 按 false 兼容）
   /// [onNewNote]：悬浮窗新增笔记（overlay_new_note 手势动作），payload null
+  /// [onSaveClipboardNote]：音量键「剪贴板笔记」动作（overlay_clipboard_note）
+  /// → 读系统剪贴板最后一条文本直接存成随笔，不展开面板；payload
+  /// {ephemeral: bool}——true = 浮窗当时不存在，原生只为本次读剪贴板直建了一个
+  /// 不可见的临时隐藏窗，回调处理完必须调 [clipboardNoteDone] 让原生收窗
   /// [onShowProLockedHint]：Pro 门禁拦截按键后请求渲染「暂未解锁」提示胶囊
   ///（窗口为 312×84 隐藏直建，渲染首帧后本侧发 voiceMemoUiReady 揭示，
   /// Kotlin 3 秒后收窗），payload null
@@ -80,6 +84,7 @@ class AccessibilityOverlay {
     required void Function(bool hiddenReveal, bool ptt) onStartVoiceMemo,
     required VoidCallback onStopVoiceMemo,
     VoidCallback? onNewNote,
+    void Function(bool ephemeral)? onSaveClipboardNote,
     VoidCallback? onShowProLockedHint,
     VoidCallback? onRelockNotes,
     void Function(bool success)? onNoteUnlockResult,
@@ -104,6 +109,11 @@ class AccessibilityOverlay {
           onStopVoiceMemo();
         case 'newNote':
           onNewNote?.call();
+        case 'saveClipboardNote':
+          // Kotlin 携带 ephemeral 负载（map）；旧版本 Kotlin 不带此 key 按
+          // false 兼容（不会误收用户已显示的浮窗）
+          final args = call.arguments;
+          onSaveClipboardNote?.call(args is Map && args['ephemeral'] == true);
         case 'showProLockedHint':
           onShowProLockedHint?.call();
         case 'relockNotes':
@@ -116,6 +126,16 @@ class AccessibilityOverlay {
       }
       return null;
     });
+  }
+
+  /// 请求原生开始语音速记录音（面板 header 录音按钮，2026-10-19 起）。
+  /// 原生 handler 直调 triggerVoiceMemoOverlay——与音量键「悬浮窗录音」动作
+  /// 同一入口：Pro 门禁 / 主 App 麦克风互斥 / 四级 watchdog / toggle 状态机
+  /// 全部复用（Dart 私自调 controller.start 会让 Kotlin 侧状态机失联）。
+  /// 原生随后经 startVoiceMemo 消息回到 Dart onStartVoiceMemo handler 开录。
+  /// 调用方：OverlayHome._startVoiceMemoFromHeader
+  static Future<void> startVoiceMemo() async {
+    await _channel.invokeMethod('startVoiceMemo');
   }
 
   /// 握手：原生收到后若挂起 pendingAutoExpand 会立即补发 expand。
@@ -234,6 +254,72 @@ class AccessibilityOverlay {
   static Future<bool> copyText(String text) async {
     final ok = await _channel.invokeMethod('copyText', {'text': text});
     return ok == true;
+  }
+
+  /// 读取系统剪贴板最后一条纯文本（展开面板 header「剪贴板存为笔记」按钮，
+  /// 2026-10-27）。返回 null = 无文本（空/图片等非文本/系统拒绝）。
+  ///
+  /// Android 10+ 只允许有输入焦点的应用读剪贴板，而展开面板刻意是
+  /// NOT_FOCUSABLE 窗口（不抢用户当前 App 的焦点/键盘）：原生在需要时临时让
+  /// 浮窗拿到焦点、读完立即还原（详见 Kotlin readClipboardWithFocus）。
+  /// 调用方：OverlayHome._saveClipboardToNote
+  static Future<String?> readClipboard() async {
+    try {
+      final raw = await _channel.invokeMethod('readClipboard');
+      return raw is String ? raw : null;
+    } catch (e) {
+      print('❌ [AccessibilityOverlay] 读取剪贴板失败: $e');
+      return null;
+    }
+  }
+
+  /// 回执：剪贴板笔记处理完毕（音量键「剪贴板笔记」动作，2026-10-28）。
+  /// 原生收到后收掉本次为读剪贴板直建的临时隐藏窗（ephemeral=true 时）——
+  /// 成功/失败/空剪贴板都要发，否则一个 alpha=0 的窗口会一直挂着。
+  /// 收窗以原生侧 View 身份比对为准（等待期间用户可能重建了浮窗，不能误关）。
+  /// 调用方：OverlayHome._onSaveClipboardNoteFromGesture 的 finally
+  static Future<void> clipboardNoteDone() async {
+    try {
+      await _channel.invokeMethod('clipboardNoteDone');
+    } catch (e) {
+      // 服务被系统回收等：窗口随之消失，无需补救
+      print('⚠️ [AccessibilityOverlay] 剪贴板笔记回执失败: $e');
+    }
+  }
+
+  /// 截屏并保存为 JPEG（展开卡长按复制按钮，2026-10-21）。
+  ///
+  /// [path] 为 Dart 侧生成的绝对路径（应用私有目录 diary_images/ 下）。
+  /// 原生在截图前把浮窗 alpha 置 0（收起后把手仍会在屏上）、截图后恢复，
+  /// 解码/压缩/写盘在后台线程完成。返回 map：
+  /// - `{success: true, path, width, height, bytes}`
+  /// - `{success: false, error: '<code>'}`；通道异常返回 null
+  ///
+  /// 错误码语义（Dart 侧映射成用户提示）：
+  /// `unsupported_os`（Android <11）/ `no_capability`（无障碍服务需重新开启）
+  /// `/ interval_time_short`（系统截图限频）/ 其余为内部失败。
+  /// 调用方：OverlayHome._onCardCopyLongPress
+  static Future<Map<dynamic, dynamic>?> captureScreenshot(String path) async {
+    try {
+      final raw = await _channel.invokeMethod('captureScreenshot', {
+        'path': path,
+      });
+      return raw is Map ? raw : null;
+    } catch (e) {
+      print('❌ [AccessibilityOverlay] 调用截图通道失败: $e');
+      return null;
+    }
+  }
+
+  /// 系统 Toast 轻提示。悬浮窗收起后窗口只剩把手，Flutter 侧 snackbar 没有
+  /// 可见载体，收起后才完成的结果反馈（截图附件成功/失败）走原生 Toast。
+  /// 失败静默（提示本身不应打断主流程）
+  static Future<void> showToast(String text) async {
+    try {
+      await _channel.invokeMethod('showToast', {'text': text});
+    } catch (e) {
+      print('⚠️ [AccessibilityOverlay] 原生 Toast 失败: $e');
+    }
   }
 
   /// 删除按钮震动反馈：走原生 EFFECT_TICK，对齐复制按钮反馈。

@@ -430,10 +430,7 @@ class ListTabState extends State<ListTab> {
             padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
             // 新拟物主题：三层硬边凹陷（NeuInset，圆角档 24）；其余主题保持白卡+软阴影
             child: ext.isNeumorphic
-                ? NeuInset(
-                    radius: 24,
-                    child: _buildSearchField(),
-                  )
+                ? NeuInset(radius: 24, child: _buildSearchField())
                 : Container(
                     decoration: BoxDecoration(
                       color: ext.cardBackground,

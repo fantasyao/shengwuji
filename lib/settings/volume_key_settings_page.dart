@@ -29,7 +29,8 @@ class _VolumeKeySettingsPageState extends State<VolumeKeySettingsPage>
   bool _keepMutedOnVolumeDownEnabled = true; // 按音量减保持静音开关，默认开启
   bool _singleClickStopEnabled = false; // 录音中单击键结束录音开关，默认关（与上面互斥二选一）
   bool _quickRecordAutoStopEnabled = false; // 说完自动停止开关，默认关
-  int _quickRecordAutoStopSeconds = quickRecordAutoStopDefaultSeconds; // 静音等待秒数（3/5/8 档）
+  int _quickRecordAutoStopSeconds =
+      quickRecordAutoStopDefaultSeconds; // 静音等待秒数（3/5/8 档）
   // 音量键手势槽位 → 动作映射（key 为 VolumeGestureSlot.* 常量；
   // 写入方 _loadVolumeGestureActions/_saveGestureAction，读取方本页 4 行槽位选择器）
   Map<String, String> _gestureActions = {};
@@ -272,8 +273,8 @@ class _VolumeKeySettingsPageState extends State<VolumeKeySettingsPage>
       final seconds =
           prefs.getInt(quickRecordAutoStopSecondsPrefKey) ??
           quickRecordAutoStopDefaultSeconds;
-      _quickRecordAutoStopSeconds = quickRecordAutoStopSecondsChoices
-          .contains(seconds)
+      _quickRecordAutoStopSeconds =
+          quickRecordAutoStopSecondsChoices.contains(seconds)
           ? seconds
           : quickRecordAutoStopDefaultSeconds;
     });
@@ -415,7 +416,10 @@ class _VolumeKeySettingsPageState extends State<VolumeKeySettingsPage>
                 children: [
                   buildSettingsSwitchTile(
                     context,
-                    title: const Text('单击键结束录音', style: TextStyle(fontSize: 13)),
+                    title: const Text(
+                      '单击键结束录音',
+                      style: TextStyle(fontSize: 13),
+                    ),
                     subtitle: Text(
                       '录音中单击音量键/耳机线控键/相机键立即停止并转写，无需再长按；与「按音量减保持静音」二选一',
                       style: TextStyle(fontSize: 11, color: ext.textHint),
@@ -470,10 +474,7 @@ class _VolumeKeySettingsPageState extends State<VolumeKeySettingsPage>
                 children: [
                   buildSettingsSwitchTile(
                     context,
-                    title: const Text(
-                      '说完自动停止',
-                      style: TextStyle(fontSize: 13),
-                    ),
+                    title: const Text('说完自动停止', style: TextStyle(fontSize: 13)),
                     subtitle: Text(
                       '快速录音（音量键/悬浮窗速记）检测到说完话后静音，自动停止并转写；一次都没说话不自动停',
                       style: TextStyle(fontSize: 11, color: ext.textHint),
@@ -492,29 +493,18 @@ class _VolumeKeySettingsPageState extends State<VolumeKeySettingsPage>
             const SizedBox(height: 24),
           ],
 
-          ElevatedButton.icon(
+          buildSettingsPrimaryButton(
+            context,
+            icon: _isAccessibilityEnabled == true
+                ? Icons.settings
+                : Icons.launch,
+            label: _isAccessibilityEnabled == true
+                ? "已开启，前往系统设置"
+                : _isAccessibilityEnabled == null
+                ? "前往系统设置确认"
+                : "前往系统设置开启",
+            minHeight: 50,
             onPressed: openAccessibilitySettings,
-            icon: Icon(
-              _isAccessibilityEnabled == true ? Icons.settings : Icons.launch,
-              size: 20,
-            ),
-            label: Text(
-              _isAccessibilityEnabled == true
-                  ? "已开启，前往系统设置"
-                  : _isAccessibilityEnabled == null
-                  ? "前往系统设置确认"
-                  : "前往系统设置开启",
-              style: const TextStyle(fontWeight: FontWeight.bold),
-            ),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: ext.primary,
-              foregroundColor: ext.textOnPrimary,
-              elevation: 0,
-              minimumSize: const Size.fromHeight(50),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
-              ),
-            ),
           ),
           const SizedBox(height: 6),
           Text(
@@ -529,7 +519,6 @@ class _VolumeKeySettingsPageState extends State<VolumeKeySettingsPage>
   // --- 音量键手势槽位动作选择器行（原 settings_tab._buildGestureSelectorRow 搬入：
   // 标题 Text + 6 间距 + Wrap ChoiceChip）---
   Widget _buildGestureSelectorRow(String title, String slot) {
-    final ext = AppThemeExtension.of(context);
     // 按住说话只在长按两行提供：松开停录的语义依附「按住中态」，双击槽位
     // 触发即抬手、没有按住中态，绑了也无法停录（实验分支 ptt_record）
     final isLongPressSlot =
@@ -542,6 +531,8 @@ class _VolumeKeySettingsPageState extends State<VolumeKeySettingsPage>
       (VolumeGestureAction.quickRecord, 'APP内录音', Icons.fiber_manual_record),
       (VolumeGestureAction.quickTextNote, 'APP内笔记', Icons.edit_note),
       (VolumeGestureAction.overlayNewNote, '悬浮窗笔记', Icons.note_add_outlined),
+      // 2026-10-28：读系统剪贴板最后一条文本直接存成随手记（不展开面板）
+      (VolumeGestureAction.overlayClipboardNote, '剪贴板笔记', Icons.content_paste),
       if (isLongPressSlot)
         (VolumeGestureAction.pttRecord, '按住说话', Icons.record_voice_over),
     ];
@@ -566,15 +557,13 @@ class _VolumeKeySettingsPageState extends State<VolumeKeySettingsPage>
                 action == VolumeGestureAction.showOverlay ||
                 action == VolumeGestureAction.overlayRecord ||
                 action == VolumeGestureAction.overlayNewNote ||
+                action == VolumeGestureAction.overlayClipboardNote ||
                 action == VolumeGestureAction.pttRecord;
-            return ChoiceChip(
+            return buildSettingsChoiceChip(
+              context,
               // ⚠️ ChoiceChip 的 avatar 槽位固定 24×24（M3 Container 定宽高居中），
               // 塞 Row 会溢出压到 label（防再犯：徽章必须放 label 侧）
-              avatar: Icon(
-                icon,
-                size: 16,
-                color: selected ? ext.textOnPrimary : ext.primary,
-              ),
+              icon: icon,
               label: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -586,12 +575,7 @@ class _VolumeKeySettingsPageState extends State<VolumeKeySettingsPage>
                 ],
               ),
               selected: selected,
-              selectedColor: ext.primary,
-              labelStyle: TextStyle(
-                color: selected ? ext.textOnPrimary : ext.textPrimary,
-                fontSize: 13,
-              ),
-              onSelected: (_) async {
+              onTap: () async {
                 if (isOverlayAction && !await _ensureOverlayPro()) return;
                 _saveGestureAction(slot, action);
               },
@@ -630,41 +614,25 @@ class _VolumeKeySettingsPageState extends State<VolumeKeySettingsPage>
             ...options.map((opt) {
               final (ms, label) = opt;
               final selected = _longPressMs == ms;
-              return ChoiceChip(
-                avatar: Icon(
-                  Icons.timer_outlined,
-                  size: 16,
-                  color: selected ? ext.textOnPrimary : ext.primary,
-                ),
+              return buildSettingsChoiceChip(
+                context,
+                icon: Icons.timer_outlined,
                 label: Text(label),
                 selected: selected,
-                selectedColor: ext.primary,
-                labelStyle: TextStyle(
-                  color: selected ? ext.textOnPrimary : ext.textPrimary,
-                  fontSize: 13,
-                ),
-                onSelected: (_) => _saveLongPressMs(ms),
+                onTap: () => _saveLongPressMs(ms),
               );
             }),
             // 自定义档：未设置时显示占位「自定义…」；已设置显示当前值。
             // 再点已选中的 chip 重新打开输入框微调（值等于某预设时 UI 归位
             // 到该预设 chip，属预期）
-            ChoiceChip(
-              avatar: Icon(
-                Icons.tune,
-                size: 16,
-                color: isCustom ? ext.textOnPrimary : ext.primary,
-              ),
+            buildSettingsChoiceChip(
+              context,
+              icon: Icons.tune,
               label: Text(
                 isCustom ? '自定义 · ${_formatSeconds(_longPressMs)}秒' : '自定义…',
               ),
               selected: isCustom,
-              selectedColor: ext.primary,
-              labelStyle: TextStyle(
-                color: isCustom ? ext.textOnPrimary : ext.textPrimary,
-                fontSize: 13,
-              ),
-              onSelected: (_) => _showCustomLongPressDialog(),
+              onTap: _showCustomLongPressDialog,
             ),
           ],
         ),
@@ -688,26 +656,17 @@ class _VolumeKeySettingsPageState extends State<VolumeKeySettingsPage>
 
   // --- 快速录音静音等待秒数选择器（原 settings_tab 搬入；非悬浮窗 Pro 功能，无门禁）---
   Widget _buildQuickRecordAutoStopSecondsSelector() {
-    final ext = AppThemeExtension.of(context);
     return Wrap(
       spacing: 8,
       runSpacing: 6,
       children: quickRecordAutoStopSecondsChoices.map((seconds) {
         final selected = _quickRecordAutoStopSeconds == seconds;
-        return ChoiceChip(
-          avatar: Icon(
-            Icons.timer_outlined,
-            size: 16,
-            color: selected ? ext.textOnPrimary : ext.primary,
-          ),
+        return buildSettingsChoiceChip(
+          context,
+          icon: Icons.timer_outlined,
           label: Text('$seconds 秒'),
           selected: selected,
-          selectedColor: ext.primary,
-          labelStyle: TextStyle(
-            color: selected ? ext.textOnPrimary : ext.textPrimary,
-            fontSize: 13,
-          ),
-          onSelected: (_) => _saveQuickRecordAutoStopSeconds(seconds),
+          onTap: () => _saveQuickRecordAutoStopSeconds(seconds),
         );
       }).toList(),
     );

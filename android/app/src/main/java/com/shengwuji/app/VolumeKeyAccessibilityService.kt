@@ -1,6 +1,7 @@
 package com.shengwuji.app
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.KeyguardManager
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -19,14 +20,19 @@ import android.os.PowerManager
 import android.content.Context
 import android.content.IntentFilter
 import android.content.SharedPreferences
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.util.TypedValue
+import android.view.Display
 import android.view.Gravity
 import android.view.View
 import android.view.ViewTreeObserver
 import android.view.WindowManager
 import android.widget.Toast
+import java.io.File
+import java.io.FileOutputStream
+import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.roundToInt
 import io.flutter.FlutterInjector
@@ -103,7 +109,7 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
         private const val LEGACY_KEY_OVERLAY_ACTION = "flutter.overlay_volume_up_action"
         private const val LEGACY_KEY_DOUBLE_CLICK = "flutter.double_click_text_note"
 
-        // 6 个手势槽位动作常量（与 Dart 侧严格一致；写入方：Flutter 设置页；读取方：onKeyEvent 状态机 / executeGestureAction）
+        // 8 个手势动作取值（与 Dart 侧严格一致；写入方：Flutter 设置页；读取方：onKeyEvent 状态机 / executeGestureAction）
         private const val ACTION_NONE = "none"
         private const val ACTION_SHOW_OVERLAY = "show_overlay"
         private const val ACTION_OVERLAY_RECORD = "overlay_record"
@@ -112,6 +118,12 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
         // 悬浮窗新增笔记：显示浮窗（若未显示）并自动展开面板 + 新增一条空白笔记进入编辑态
         //（Kotlin 只发 newNote 消息，expand + 新增由 Dart 侧 handler 完成；已显示时不 toggle 隐藏，直接再发一次）
         private const val ACTION_OVERLAY_NEW_NOTE = "overlay_new_note"
+        // 剪贴板存为笔记（2026-10-28）：读系统剪贴板最后一条纯文本直接落库，不展开
+        // 面板、不切前台。浮窗不存在时为读剪贴板（Android 10+ 需输入焦点）直建一个
+        // alpha=0 的临时隐藏窗，落库后由 Dart 回执 clipboardNoteDone 收窗——用户全程
+        // 看不到浮窗，只有一条「已保存到随手记」Toast。
+        // ⚠️ 与 Dart 侧 VolumeGestureAction.overlayClipboardNote 严格一致（跨端硬编码副本）
+        private const val ACTION_OVERLAY_CLIPBOARD_NOTE = "overlay_clipboard_note"
         // 按住说话（实验分支 2026-09-21）：长按槽位专属动作——按住达阈值即开录，
         // 松开同一键立即停录转写（与 toggle 制「松手后继续录、再长按才停」的根本
         // 差异）。复用悬浮窗语音速记整条链路（隐藏窗直建 / pendingVoiceMemoStart
@@ -119,6 +131,9 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
         // 会话跟踪见 pttHold* 系列。⚠️ 与 Dart 侧 VolumeGestureAction.pttRecord
         // 严格一致（跨端硬编码副本，改值必须双侧同步）
         private const val ACTION_PTT_RECORD = "ptt_record"
+        // 剪贴板笔记超时兜底（ms）：Dart 未就绪/卡死时防止 alpha=0 的临时窗
+        // 永远挂在屏幕上。正常路径由 clipboardNoteDone 回执立即收窗，走不到这里
+        private const val CLIPBOARD_NOTE_TIMEOUT_MS = 10000L
         // stopVoiceMemo 回执超时（毫秒）：Dart 卡死时防 toggle 死锁的最简兜底
         // （完整四级 watchdog 见 voiceMemoWatchdog* 系列——本超时只负责 stop 消息的回执兜底）
         private const val VOICE_MEMO_STOP_TIMEOUT_MS = 3000L
@@ -213,6 +228,10 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
     private val longPressRunnable = Runnable {
         if (!isLongPressTriggered) {
             isLongPressTriggered = true
+            NativeRuntimeLog.log(
+                "🔑 [Accessibility] 长按计时到期触发: action=$currentLongPressAction, " +
+                    "keyCode=$currentLongPressKeyCode"
+            )
             currentLongPressAction?.let { executeGestureAction(it, "长按") }
         }
     }
@@ -249,6 +268,10 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
     private var overlayView: FlutterView? = null
     private var overlayMethodChannel: MethodChannel? = null
 
+    // 截图附件（长按展开卡复制按钮，2026-10-21）：同一时刻只允许一次截图，
+    // 防长按/连点并发把浮窗 alpha 状态搅乱（成功/失败/超时三条路径都会复位）
+    private val screenshotBusy = AtomicBoolean(false)
+
     // 锁屏即重锁 + 息屏隐藏：监听屏幕熄灭/点亮。
     // - SCREEN_OFF：直接清零笔记解锁会话（flutter.notes_unlock_until_ms，不依赖
     //   Dart isolate 存活）+ 通知悬浮窗 Dart 打码已展开的锁定卡片 + 把悬浮窗
@@ -281,6 +304,24 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
     // Dart 未就绪时挂起的新增笔记请求（dartReady 握手到达后补发，与 pendingAutoExpand 同机制；
     // 生命周期清理严格镜像 pendingAutoExpand：仅 destroyOverlayEngine 清零 + 握手分支补发后复位）
     private var pendingNewNote = false
+
+    // ===== 剪贴板笔记（overlay_clipboard_note，2026-10-28）=====
+    // Dart 未就绪时挂起的保存请求（dartReady 握手到达后补发，与 pendingNewNote 同机制）
+    private var pendingClipboardNote = false
+    // 挂起请求的 ephemeral 负载：true = 浮窗当时不存在，本次为读剪贴板建了临时隐藏窗，
+    // 处理完要收窗（补发时原样带给 Dart）
+    private var pendingClipboardNoteEphemeral = false
+    // 本次临时隐藏窗的 View 身份（null = 没有待收的临时窗）。⚠️ 不能只凭
+    // clipboardNoteDone 就 hideOverlay：等待 Dart 的这段时间里用户可能触发了别的
+    // 动作把浮窗重建（showOverlay 先 hide 再 add），直接 hide 会关掉用户的新浮窗
+    private var clipboardNoteView: FlutterView? = null
+    private val clipboardNoteHandler = Handler(Looper.getMainLooper())
+    private val clipboardNoteTimeoutRunnable = Runnable {
+        val ephemeralView = clipboardNoteView ?: return@Runnable
+        clipboardNoteView = null
+        println("⚠️ [Accessibility] 剪贴板笔记等待 Dart 超时，收掉临时隐藏窗")
+        if (overlayView === ephemeralView) hideOverlay()
+    }
 
     // 语音速记（音量上键长按直接录音，action=record）的 toggle 状态。
     // 写入方：triggerVoiceMemoOverlay(启动置 true) / voiceMemoStopped·voiceMemoFailed 回执
@@ -381,13 +422,13 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
         }
     }
 
-    // 通用读取：新 key 的值为 7 个合法动作之一则直接用，否则（不存在/非法值）走迁移推导
+    // 通用读取：新 key 的值为 8 个合法动作之一则直接用，否则（不存在/非法值）走迁移推导
     private fun getGestureAction(prefs: SharedPreferences, newKey: String, migrate: () -> String): String {
         val action = prefs.getString(newKey, null)
         return when (action) {
             ACTION_NONE, ACTION_SHOW_OVERLAY, ACTION_OVERLAY_RECORD,
             ACTION_QUICK_RECORD, ACTION_QUICK_TEXT_NOTE, ACTION_OVERLAY_NEW_NOTE,
-            ACTION_PTT_RECORD -> action!!
+            ACTION_PTT_RECORD, ACTION_OVERLAY_CLIPBOARD_NOTE -> action!!
             else -> migrate()
         }
     }
@@ -571,6 +612,12 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
 
         // 两槽都无动作 → 键完全还给系统（等价旧 mode=off）
         if (longAction == ACTION_NONE && doubleAction == ACTION_NONE) {
+            // 落盘证据：若用户明明绑了动作这里却是 none/none，就是配置读取问题
+            //（prefs 未落盘/键码映射错），而非事件流问题（2026-10-17 vivo 排查埋点）
+            NativeRuntimeLog.log(
+                "🔑 [Accessibility] 音量键放行(两槽均 none): ${KeyEvent.keyCodeToString(keyCode)}, " +
+                    "action=${event.action}, repeat=${event.repeatCount}"
+            )
             return false
         }
 
@@ -612,6 +659,12 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
             }
             // longAction==none：不启动长按计时，按住归「按住连调」接管（上方），UP 走调音量路径
             println("🔑 [Accessibility] 按键按下(已拦截): keyCode=${event.keyCode}, longAction=$longAction, doubleAction=$doubleAction")
+            NativeRuntimeLog.log(
+                "🔑 [Accessibility] DOWN 已拦截: ${KeyEvent.keyCodeToString(event.keyCode)}, " +
+                    "repeat=${event.repeatCount}, eventTime=${event.eventTime}, deviceId=${event.deviceId}, " +
+                    "long=$longAction, double=$doubleAction, 阈值=${getLongPressDurationMs()}ms, " +
+                    "录音中=${isRecordingActive()}"
+            )
             return true
         } else if (event.action == KeyEvent.ACTION_UP) {
             // 取消长按计时
@@ -636,6 +689,10 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
                     stopPttHold()
                 }
                 println("🔑 [Accessibility] 按键抬起: 长按已处理")
+                NativeRuntimeLog.log(
+                    "🔑 [Accessibility] UP: ${KeyEvent.keyCodeToString(keyCode)}, 长按已触发" +
+                        "(pttHold=$pttHoldActive, 本键=$wasPttKeyCode)，不进单击/双击"
+                )
                 return true // 长按已处理，不进双击
             }
 
@@ -643,6 +700,7 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
                 // 按住连调已生效：意图就是调音量，不进单击/双击状态机——否则抬起
                 // 被当第一次单击，300ms 后白跳一格音量，还污染双击计时
                 println("🔑 [Accessibility] 按键抬起: 按住连调已处理")
+                NativeRuntimeLog.log("🔑 [Accessibility] UP: ${KeyEvent.keyCodeToString(keyCode)}, 按住连调已处理")
                 return true
             }
 
@@ -664,19 +722,29 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
                     // 双击确认
                     lastClickTime = 0L
                     lastClickKeyCode = 0
+                    NativeRuntimeLog.log(
+                        "🔑 [Accessibility] UP: ${KeyEvent.keyCodeToString(keyCode)}, 双击确认 → $doubleAction" +
+                            "(间隔=${timeSinceLastClick}ms)"
+                    )
                     executeGestureAction(doubleAction, "双击")
                 } else {
                     // 第一次点击或超时 → 延迟确认不是双击后再执行单击语义
                     lastClickTime = now
                     lastClickKeyCode = event.keyCode
 
+                    NativeRuntimeLog.log(
+                        "🔑 [Accessibility] UP: ${KeyEvent.keyCodeToString(keyCode)}, 首次单击，" +
+                            "排定 ${DOUBLE_CLICK_THRESHOLD_MS}ms 双击窗口（间隔=${timeSinceLastClick}ms）"
+                    )
                     pendingSingleClick = Runnable {
                         // 执行时实时判定（而非排定单击时）：开关/录音状态在 300ms
                         // 窗口内可能变化（说完自动停等），非录音中回落调音量——
                         // 与「每次按键实时读落盘」的惯例一致
                         if (isSingleClickStopEnabled() && isRecordingActive()) {
+                            NativeRuntimeLog.log("🔑 [Accessibility] 双击窗口超时：录音中单击 → 停录")
                             stopActiveRecording()
                         } else {
+                            NativeRuntimeLog.log("🔑 [Accessibility] 双击窗口超时：执行单击调音量")
                             adjustVolume(keyCode)
                         }
                         pendingSingleClick = null
@@ -687,8 +755,10 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
                 // 双击槽=无动作：无需等双击窗口，立即执行（本次重构的体验优化）——
                 // 录音中+单击结束开 → 立即停录；否则立即调音量
                 if (isSingleClickStopEnabled() && isRecordingActive()) {
+                    NativeRuntimeLog.log("🔑 [Accessibility] UP: ${KeyEvent.keyCodeToString(keyCode)}, 双击槽 none + 录音中 → 立即停录")
                     stopActiveRecording()
                 } else {
+                    NativeRuntimeLog.log("🔑 [Accessibility] UP: ${KeyEvent.keyCodeToString(keyCode)}, 双击槽 none → 立即调音量")
                     adjustVolume(event.keyCode)
                 }
             }
@@ -712,11 +782,24 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
         // HyperOS「媒体音量控制」权限为「仅在使用中允许」：熄屏态被判非使用中而拦截，
         // 改「始终允许」即愈（2026-09-20）；回退链保留作其他 ROM/权限受限时的兜底
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        // 回读媒体/铃声两路音量做生效证据（2026-10-17 vivo 单击失效排查埋点）：
+        // adjustVolume(USE_DEFAULT_STREAM_TYPE) 的目标流由系统按场景解析，只回读
+        // MUSIC 会把「调到铃声音量」误判成未生效，两路都记才能区分「没生效」与
+        // 「生效在了别的流上」
+        val musicBefore = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+        val ringBefore = audioManager.getStreamVolume(AudioManager.STREAM_RING)
         if (powerManager.isInteractive) {
             audioManager.adjustVolume(direction, AudioManager.FLAG_SHOW_UI)
         } else {
             adjustVolumeInDoze(audioManager, direction)
         }
+        val musicAfter = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+        val ringAfter = audioManager.getStreamVolume(AudioManager.STREAM_RING)
+        NativeRuntimeLog.log(
+            "🔑 [Accessibility] adjustVolume: dir=$direction, 交互态=${powerManager.isInteractive}, " +
+                "媒体 $musicBefore→$musicAfter, 铃声 $ringBefore→$ringAfter" +
+                if (musicAfter == musicBefore && ringAfter == ringBefore) "（⚠️ 两路均未变化）" else ""
+        )
         // 如果正在录音静音中，用户按了音量减，标记为保持静音
         if (direction == AudioManager.ADJUST_LOWER) {
             val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
@@ -875,6 +958,7 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
             ACTION_SHOW_OVERLAY -> triggerShowOverlay()
             ACTION_OVERLAY_RECORD -> triggerVoiceMemoOverlay()
             ACTION_OVERLAY_NEW_NOTE -> triggerOverlayNewNote()
+            ACTION_OVERLAY_CLIPBOARD_NOTE -> triggerOverlayClipboardNote()
             ACTION_PTT_RECORD -> triggerPttVoiceMemo()
             else -> println("⚠️ [Accessibility] 未知手势动作: $action")
         }
@@ -1030,6 +1114,22 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
     }
 
     /**
+     * 设置页「立即启动悬浮窗」入口（MainActivity 通道转发）。
+     * 与音量键 triggerShowOverlay 的差异：不做 toggle——按钮语义是「启动」，
+     * 已显示时重建并展开面板（showOverlay 内部会先 hideOverlay 再重建），
+     * 而非把已显示的浮窗关掉。Pro 未解锁直接拒绝返回 false（设置页 Dart 侧
+     * 已有 ProGate 弹窗门禁，此处是第二层兜底，不弹提示胶囊避免打扰 App 内用户）。
+     */
+    fun showOverlayFromSettings(): Boolean {
+        if (!isProUnlocked()) {
+            println("🔒 [Accessibility] 设置页启动悬浮窗被拦截：Pro 未解锁")
+            return false
+        }
+        println("🪟 [Accessibility] 设置页启动悬浮窗")
+        return showOverlay(autoExpand = true)
+    }
+
+    /**
      * 悬浮窗新增笔记（action=overlay_new_note）：显示浮窗（若未显示）并通知 Dart 新增一条
      * 空白笔记进入编辑态。与 triggerShowOverlay 的关键差异：**不做 toggle 隐藏**——
      * 浮窗已显示时重复触发 = 再新增一条（产品已定语义）；展开 + 新增由 Dart 侧
@@ -1056,6 +1156,96 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
         }
         notifyDartNewNote()
         println("✅ [Accessibility] 悬浮窗新增笔记已触发")
+    }
+
+    /**
+     * 剪贴板存为笔记（action=overlay_clipboard_note，2026-10-28）：
+     * 读系统剪贴板最后一条纯文本直接落库成随手记，**不展开面板、不切前台**。
+     *
+     * 浮窗不存在时为一个看起来奇怪的动作建——读剪贴板要窗口：
+     * Android 10+ 只允许持有输入焦点的应用读剪贴板（见 readClipboardWithFocus），
+     * 本服务在没有浮窗时没有任何窗口可借焦点，因此直建一个 alpha=0 + NOT_TOUCHABLE
+     * 的临时隐藏窗（复用语音速记冷启动机制，312×84 直建），只用于这次读取；
+     * Dart 处理完回执 clipboardNoteDone / 10s 超时后收窗，用户全程看不到浮窗。
+     * 浮窗已显示时（把手/竖线/面板）直接复用现有窗口，不收。
+     *
+     * 与 triggerOverlayNewNote 的差异：不 autoExpand、不进入编辑态、不 toggle。
+     */
+    private fun triggerOverlayClipboardNote() {
+        // 锁屏状态下先点亮屏幕（对齐 triggerOverlayNewNote）
+        wakeScreenIfLocked()
+
+        // 语音速记进行中：窗口是录音胶囊、Dart 侧 handler 也会忽略（voice memo
+        // 非 idle），直接提示而不建窗。⚠️ 必须放在 Pro 门禁之前：录音中但试用
+        // 已过期的用户不该被提示胶囊顶掉正在录的那条胶囊
+        if (voiceMemoActive) {
+            Toast.makeText(this, "录音中，先结束录音再存剪贴板", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        // Pro 门禁：与其余悬浮窗系动作同一闸（都依赖无障碍浮窗，属 Pro 能力）
+        if (blockOverlayIfProLocked()) return
+
+        // 震动反馈：与语音速记开始同款轻嗡（一次手势只震一下；Dart 落库成功
+        // 不再震——haptic:false，防两次震动贴脸）
+        vibrateOneShot(50, 50)
+
+        val ephemeral = overlayView == null
+        if (ephemeral) {
+            // hidden=true + revealOnUiReady=false：alpha=0 + NOT_TOUCHABLE 的临时窗，
+            // 不置 pendingVoiceMemoReveal（本次没有"待揭示的 UI"，永远不会发
+            // voiceMemoUiReady；置了会让后续触发显示悬浮窗误判隐藏窗在场）
+            val shown = showOverlay(
+                autoExpand = false,
+                hidden = true,
+                revealOnUiReady = false
+            )
+            if (!shown) {
+                println("❌ [Accessibility] 剪贴板笔记：临时隐藏窗创建失败，放弃")
+                Toast.makeText(this, "保存失败，请重试", Toast.LENGTH_SHORT).show()
+                return
+            }
+            clipboardNoteView = overlayView
+            clipboardNoteHandler.removeCallbacks(clipboardNoteTimeoutRunnable)
+            clipboardNoteHandler.postDelayed(
+                clipboardNoteTimeoutRunnable,
+                CLIPBOARD_NOTE_TIMEOUT_MS
+            )
+        }
+        notifyDartSaveClipboardNote(ephemeral)
+        println("✅ [Accessibility] 剪贴板笔记已触发（ephemeral=$ephemeral）")
+    }
+
+    /**
+     * 通知 Dart 侧「读剪贴板存为笔记」。与 notifyDartNewNote 同一握手机制：
+     * dartReady=true 直接发；否则挂起 pendingClipboardNote，dartReady 后补发。
+     * ephemeral 负载透传给 Dart（只用于日志——收窗判断在本侧按 View 身份比对）。
+     */
+    private fun notifyDartSaveClipboardNote(ephemeral: Boolean) {
+        if (dartReady) {
+            overlayMethodChannel?.invokeMethod(
+                "saveClipboardNote",
+                mapOf("ephemeral" to ephemeral)
+            )
+        } else {
+            pendingClipboardNote = true
+            pendingClipboardNoteEphemeral = ephemeral
+            println("⏳ [Accessibility] Dart 未就绪，剪贴板笔记请求已挂起")
+        }
+    }
+
+    /**
+     * Dart 回执「剪贴板笔记处理完毕」（成功/失败/空剪贴板都发）：
+     * 只有本次确实是临时隐藏窗（clipboardNoteView 非空）且窗口还是那一个时才收窗——
+     * 等待期间用户可能用别的动作重建了浮窗，不能把新浮窗关掉。
+     */
+    private fun onClipboardNoteDone() {
+        clipboardNoteHandler.removeCallbacks(clipboardNoteTimeoutRunnable)
+        val ephemeralView = clipboardNoteView
+        clipboardNoteView = null
+        if (ephemeralView != null && overlayView === ephemeralView) {
+            hideOverlay()
+        }
     }
 
     /**
@@ -1187,6 +1377,7 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
         pttHoldKeyCode = currentLongPressKeyCode
         notifyDartStartVoiceMemo()
         println("✅ [Accessibility] 按住说话已启动（keyCode=$pttHoldKeyCode，等待松手停录）")
+        NativeRuntimeLog.log("✅ [Accessibility] 按住说话已启动（keyCode=$pttHoldKeyCode）")
     }
 
     /**
@@ -1208,10 +1399,12 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
             cancelVoiceMemoWatchdog()
             hideOverlay()
             println("✅ [Accessibility] 按住说话：松手于 Dart 就绪前，已取消挂起的启动")
+            NativeRuntimeLog.log("✅ [Accessibility] 按住说话：松手于 Dart 就绪前，取消挂起启动并收窗")
             return
         }
         if (!voiceMemoActive) {
             println("ℹ️ [Accessibility] 按住说话：会话已不在场，松手无需停录")
+            NativeRuntimeLog.log("ℹ️ [Accessibility] 按住说话：会话已不在场，松手 no-op")
             return
         }
         pttReleasePending = true
@@ -1219,6 +1412,7 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
         overlayMethodChannel?.invokeMethod("stopVoiceMemo", null)
         scheduleVoiceMemoStopTimeout()
         println("✅ [Accessibility] 按住说话：松手，请求停止录音")
+        NativeRuntimeLog.log("✅ [Accessibility] 按住说话：松手请求停录（等 voiceMemoStarted/Stopped 回执）")
     }
 
     /**
@@ -1303,6 +1497,11 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
         pendingNewNote = false
         pendingVoiceMemoStart = false
         pendingVoiceMemoReveal = false
+        // 剪贴板笔记的临时窗/挂起请求随 engine 一并作废（窗口已不存在，收窗无意义）
+        pendingClipboardNote = false
+        pendingClipboardNoteEphemeral = false
+        clipboardNoteView = null
+        clipboardNoteHandler.removeCallbacks(clipboardNoteTimeoutRunnable)
     }
 
     /**
@@ -1318,8 +1517,15 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
      *               窗口 alpha=0 + FLAG_NOT_TOUCHABLE（不可见、不挡触摸），置 pendingVoiceMemoReveal；
      *               直建胶囊尺寸 = 无 resize、无把手帧，把手像素物理上不可能出现；
      *               Dart 录音态首帧渲染完发 voiceMemoUiReady 才 alpha=1 揭示——首帧即正确尺寸胶囊
+     * @param revealOnUiReady hidden=true 时是否置「等 voiceMemoUiReady 揭示」标记（默认 true：
+     *               语音速记 / 按住说话 / Pro 提示胶囊都要揭示）。剪贴板笔记的临时窗传
+     *               false——它只为拿焦点读剪贴板而存在，永不揭示，处理完由 clipboardNoteDone 收窗
      */
-    fun showOverlay(autoExpand: Boolean = false, hidden: Boolean = false): Boolean {
+    fun showOverlay(
+        autoExpand: Boolean = false,
+        hidden: Boolean = false,
+        revealOnUiReady: Boolean = true
+    ): Boolean {
         // 如果已有浮窗，先强制重建，避免旧 View 处于僵尸状态导致看不见
         if (overlayView != null) {
             println("🔄 [Accessibility] 浮窗已存在，先关闭再重建")
@@ -1367,6 +1573,12 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
                             hideOverlay()
                             result.success(true)
                         }
+                        // 剪贴板笔记回执（Dart → Kotlin，2026-10-28）：本次动作处理完
+                        // （含空剪贴板/失败），收掉为读剪贴板直建的临时隐藏窗（若有）
+                        "clipboardNoteDone" -> {
+                            onClipboardNoteDone()
+                            result.success(true)
+                        }
                         // 设备诊断信息（悬浮窗把手/竖线不出现定位用）：overlay
                         // engine 够不着 MainActivity 通道，走服务侧同名采集
                         //（⚠️ 此处 this 是 apply 的 MethodChannel，须带标签取服务）
@@ -1383,6 +1595,16 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
                         "performHaptic" -> {
                             val type = call.argument<String>("type") ?: "heavy"
                             performHaptic(type)
+                            result.success(true)
+                        }
+                        // 面板 header 录音按钮（Dart → Kotlin，2026-10-19 起）：
+                        // 直调 triggerVoiceMemoOverlay——与音量键「悬浮窗录音」动作同一
+                        // 入口，Pro 门禁 / 主 App 麦克风互斥 / 四级 watchdog / toggle
+                        // 状态机全部复用。此时浮窗在屏（overlayView != null），走非隐藏
+                        // 窗的暖路径：voiceMemoActive 置位 + watchdog 排定 +
+                        // notifyDartStartVoiceMemo（dartReady 必为 true，handler 已注册）
+                        "startVoiceMemo" -> {
+                            triggerVoiceMemoOverlay()
                             result.success(true)
                         }
                         // 语音速记录音回执（Dart → Kotlin）：录音已真正开始 → 取消 stop 超时兜底（如有）
@@ -1450,6 +1672,36 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
                                 println("❌ [Accessibility] 写剪贴板失败: $e")
                                 result.success(false)
                             }
+                        }
+                        // 面板 header 剪贴板按钮（Dart → Kotlin，2026-10-27）：读系统
+                        // 剪贴板最后一条纯文本，落库成笔记由 Dart 侧完成。Android 10+
+                        // 只有持有输入焦点的应用能读剪贴板，而展开面板刻意是
+                        // NOT_FOCUSABLE（不抢用户当前 App 的焦点/键盘），焦点处理见
+                        // readClipboardWithFocus
+                        "readClipboard" -> {
+                            readClipboardWithFocus { text -> result.success(text) }
+                        }
+                        // 通用轻提示（Dart → Kotlin）：悬浮窗收起后窗口只剩把手，
+                        // Flutter 侧 snackbar/toast 没有可见载体，截图附件等“收起后
+                        // 才完成”的结果反馈统一走系统 Toast（不占浮窗窗口）
+                        "showToast" -> {
+                            val text = call.argument<String>("text") ?: ""
+                            if (text.isNotEmpty()) {
+                                Toast.makeText(
+                                    this@VolumeKeyAccessibilityService,
+                                    text,
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                            result.success(true)
+                        }
+                        // 截图附件（Dart → Kotlin，2026-10-21）：长按展开卡复制按钮
+                        // → Dart 先收起浮窗，再把 diary_images/ 绝对路径传进来；
+                        // 原生隐藏浮窗（避免把手入镜）→ takeScreenshot → JPEG 写盘。
+                        // API <30 或未声明 canTakeScreenshot 时返回错误码由 Dart 降级提示
+                        "captureScreenshot" -> {
+                            val path = call.argument<String>("path") ?: ""
+                            captureScreenshot(path, result)
                         }
                         // 悬浮窗删除按钮二次确认震动：EFFECT_TICK，与复制按钮反馈一致
                         "vibrateTick" -> {
@@ -1777,6 +2029,16 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
                                 pendingNewNote = false
                                 overlayMethodChannel?.invokeMethod("newNote", null)
                             }
+                            // 挂起的剪贴板笔记请求同样补发（ephemeral 原样带给 Dart）
+                            if (pendingClipboardNote) {
+                                pendingClipboardNote = false
+                                val ephemeral = pendingClipboardNoteEphemeral
+                                pendingClipboardNoteEphemeral = false
+                                overlayMethodChannel?.invokeMethod(
+                                    "saveClipboardNote",
+                                    mapOf("ephemeral" to ephemeral)
+                                )
+                            }
                             // 挂起的 Pro 提示渲染请求同样补发（与 pendingAutoExpand 同一握手机制）
                             if (pendingProHint) {
                                 pendingProHint = false
@@ -1869,10 +2131,14 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
                 // FlutterView 必须 attach 到窗口，否则 AccessibilityBridge NPE → SIGABRT），
                 // 但窗口直接以胶囊尺寸 312×84 创建 + alpha=0 + FLAG_NOT_TOUCHABLE——
                 // 不可见也不挡用户触摸，且把手尺寸的窗口在此路径中不存在（无 resize、
-                // 无把手帧）；揭示时机：Dart 录音态首帧构建完发 voiceMemoUiReady（见 channel 分支）
-                pendingVoiceMemoReveal = true
+                // 无把手帧）；揭示时机：Dart 录音态首帧构建完发 voiceMemoUiReady（见 channel 分支）。
+                // revealOnUiReady=false 的剪贴板临时窗永不揭示，只借焦点读剪贴板
+                if (revealOnUiReady) pendingVoiceMemoReveal = true
                 wm.addView(flutterView, buildOverlayParams(VOICE_MEMO_OVERLAY_WIDTH_DP, VOICE_MEMO_OVERLAY_HEIGHT_DP, hidden = true))
-                println("⏳ [Accessibility] 浮窗已创建（隐藏模式，胶囊尺寸直建，等 Dart 录音首帧揭示）")
+                println(
+                    if (revealOnUiReady) "⏳ [Accessibility] 浮窗已创建（隐藏模式，胶囊尺寸直建，等 Dart 录音首帧揭示）"
+                    else "⏳ [Accessibility] 浮窗已创建（剪贴板临时窗，alpha=0 只为读剪贴板）"
+                )
             } else {
                 wm.addView(flutterView, buildOverlayParams(28, 88))
                 println("✅ [Accessibility] 无障碍浮窗已显示 (TYPE_ACCESSIBILITY_OVERLAY + Flutter)")
@@ -1932,6 +2198,12 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
             proHintActive = false
             proHintHandler.removeCallbacks(proHintDismissRunnable)
         }
+        // 剪贴板笔记的临时窗与挂起请求随任意移窗路径作废（窗口已移走，收窗/补发都无意义；
+        // 残留 View 引用会让下一次 clipboardNoteDone 误判）
+        clipboardNoteHandler.removeCallbacks(clipboardNoteTimeoutRunnable)
+        clipboardNoteView = null
+        pendingClipboardNote = false
+        pendingClipboardNoteEphemeral = false
         // 语音速记临时静音兜底：录音中浮窗被原生强制移除（T3 Dart 无响应 /
         // service onDestroy）时 Dart 侧 restoreMedia 不会执行，同 destroyOverlayEngine
         // 的兜底；正常收起路径 is_recording=false 直接跳过（幂等，Dart 已恢复过也无妨）
@@ -2157,6 +2429,101 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
     // 不再存活，监听自然失效，仅超时 Runnable 兜底
     private val overlayFlagReplyHandler = Handler(Looper.getMainLooper())
 
+    /**
+     * 读取系统剪贴板文本（面板 header「剪贴板」按钮，2026-10-27）。
+     *
+     * Android 10+ 只允许持有输入焦点（或默认输入法）的应用读剪贴板，而展开面板
+     * 常态是 FLAG_NOT_FOCUSABLE 窗口——刻意不抢用户当前 App 的焦点与键盘。因此
+     * 非聚焦时做一次「临时提权」：摘掉 NOT_FOCUSABLE 等窗口拿到焦点 → 读剪贴板
+     * → 立即还原原 flags。编辑态窗口本就可聚焦（focuspointer），直接读；焦点最多
+     * 等 500ms（同 awaitWindowFocusThenReply 的兜底），超时按读不到处理，不会把
+     * 窗口留在可聚焦态。
+     *
+     * ⚠️ 还原前必须比对当前 flags：等待期间 Dart 可能已进入编辑态（focuspointer）、
+     * 开始语音速记（叠 KEEP_SCREEN_ON）或隐藏窗口重设 flags，此时写回旧值会把
+     * 编辑态窗口踢回不可聚焦（有光标无键盘）。
+     *
+     * @param callback 主线程回调，null = 剪贴板为空/非文本/读不到
+     */
+    private fun readClipboardWithFocus(callback: (String?) -> Unit) {
+        val view = overlayView
+        val wm = overlayWindowManager
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        val params = view?.layoutParams as? WindowManager.LayoutParams
+        if (view == null || wm == null || cm == null || params == null) {
+            callback(null)
+            return
+        }
+        // API <29 无焦点限制；已聚焦（卡片编辑态窗口）直接读
+        val needsFocusDance =
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && !view.hasWindowFocus()
+        if (!needsFocusDance) {
+            callback(readClipText(cm))
+            return
+        }
+
+        val originalFlags = params.flags
+        val focusedFlags =
+            originalFlags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
+        try {
+            params.flags = focusedFlags
+            wm.updateViewLayout(view, params)
+        } catch (e: Exception) {
+            println("❌ [Accessibility] 读剪贴板临时提权失败: $e")
+            callback(null)
+            return
+        }
+
+        val handler = Handler(Looper.getMainLooper())
+        val replied = AtomicBoolean(false)
+        val observer = view.viewTreeObserver
+        lateinit var listener: ViewTreeObserver.OnWindowFocusChangeListener
+        lateinit var timeout: Runnable
+
+        fun finish() {
+            if (!replied.compareAndSet(false, true)) return
+            // 必须在还原 flags 之前读：还原会立刻失去焦点
+            val text = readClipText(cm)
+            if (observer.isAlive) {
+                observer.removeOnWindowFocusChangeListener(listener)
+            }
+            handler.removeCallbacks(timeout)
+            // 只在窗口仍是本次提权后的 flags 时才还原（等待期间可能已切编辑态等）
+            try {
+                val latest = view.layoutParams as? WindowManager.LayoutParams
+                if (latest != null && latest.flags == focusedFlags) {
+                    latest.flags = originalFlags
+                    wm.updateViewLayout(view, latest)
+                }
+            } catch (e: Exception) {
+                println("⚠️ [Accessibility] 读剪贴板后还原窗口 flags 失败: $e")
+            }
+            callback(text)
+        }
+
+        timeout = Runnable { finish() }
+        listener = ViewTreeObserver.OnWindowFocusChangeListener { hasFocus ->
+            if (hasFocus) finish()
+        }
+        observer.addOnWindowFocusChangeListener(listener)
+        handler.postDelayed(timeout, 500)
+        // 监听器注册前焦点可能已到位（updateViewLayout 异步生效，极窄窗口）：
+        // 补一次当前态检查，避免白等 500ms 超时
+        if (view.hasWindowFocus()) finish()
+    }
+
+    /** 取剪贴板首条纯文本；空/非文本/异常一律 null（悬浮窗只存文字笔记） */
+    private fun readClipText(cm: ClipboardManager): String? {
+        return try {
+            val clip = cm.primaryClip ?: return null
+            if (clip.itemCount == 0) return null
+            clip.getItemAt(0).text?.toString()?.takeIf { it.isNotEmpty() }
+        } catch (e: Exception) {
+            println("❌ [Accessibility] 读取剪贴板失败: $e")
+            null
+        }
+    }
+
     private fun awaitWindowFocusThenReply(view: FlutterView, result: MethodChannel.Result) {
         val observer = view.viewTreeObserver
         if (!observer.isAlive) {
@@ -2278,6 +2645,7 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
+        NativeRuntimeLog.init(this)
         // 三星等 ROM 可能忽略 XML 中的 flagRequestFilterKeyEvents，需代码中再次请求
         serviceInfo = serviceInfo.apply {
             flags = flags or android.accessibilityservice.AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS
@@ -2326,6 +2694,22 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
             })
         }
         println("✅ [Accessibility] 无障碍服务已连接，按键过滤已启用")
+        // 配置快照落盘：按键异常排查时先对账「服务实际读到的配置」与「用户以为
+        // 的配置」是否一致（prefs 未落盘/迁移推导意外命中都会在这里现形）
+        try {
+            NativeRuntimeLog.log(
+                "✅ [Accessibility] 服务已连接。配置快照: " +
+                    "长加上=${getLongPressAction(KeyEvent.KEYCODE_VOLUME_UP)}, " +
+                    "长加减=${getLongPressAction(KeyEvent.KEYCODE_VOLUME_DOWN)}, " +
+                    "双击上=${getDoubleClickAction(KeyEvent.KEYCODE_VOLUME_UP)}, " +
+                    "双击减=${getDoubleClickAction(KeyEvent.KEYCODE_VOLUME_DOWN)}, " +
+                    "长按阈值=${getLongPressDurationMs()}ms, " +
+                    "单击停录=${isSingleClickStopEnabled()}, " +
+                    "Pro=${isProUnlocked()}"
+            )
+        } catch (e: Exception) {
+            println("⚠️ [Accessibility] 配置快照日志失败: ${e.message}")
+        }
     }
 
     /**
@@ -2366,6 +2750,219 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
         } catch (e: Exception) {
             println("⚠️ [Accessibility] 悬浮窗透明度切换失败: ${e.message}")
         }
+    }
+
+    /**
+     * 截屏并保存为 JPEG（展开卡长按复制按钮，2026-10-21）。
+     *
+     * 能力来源：AccessibilityService.takeScreenshot（Android 11 / API 30+），
+     * 需 accessibility_service_config.xml 声明 android:canTakeScreenshot="true"。
+     * 相比 MediaProjection 无需每次出示授权弹窗，适合悬浮窗内的轻交互。
+     *
+     * 入镜规避：Dart 已先收起面板，但 28×88 把手仍在屏上——截图前把浮窗整体
+     * alpha 置 0，等 64ms（≈3 帧）让合成器吃下透明度再捕获，回调里立即恢复
+     * 原 alpha；3 秒超时兜底同样恢复，避免窗口永久隐形。解码/压缩/写盘在后台
+     * 线程，不阻塞主线程。成功/失败/超时三条路径统一经 [complete] 复位
+     * screenshotBusy，防并发截图把 alpha 状态搅乱。
+     *
+     * @param path Dart 侧生成的绝对路径（应用私有目录 diary_images/ 下）；
+     *   父目录不存在时原生自动创建，写盘失败会删掉半成品文件
+     */
+    private fun captureScreenshot(path: String, result: MethodChannel.Result) {
+        if (path.isBlank()) {
+            result.success(mapOf("success" to false, "error" to "bad_path"))
+            return
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            println("⚠️ [Accessibility] 截图附件不支持：系统版本低于 Android 11")
+            result.success(mapOf("success" to false, "error" to "unsupported_os"))
+            return
+        }
+        // 能力位（canTakeScreenshot → CAPABILITY_CAN_TAKE_SCREENSHOT）：
+        // 不是 flags 位。服务配置更新后若 ROM 未重新绑定，这里会是 0
+        val hasCapability = try {
+            serviceInfo.capabilities and
+                AccessibilityServiceInfo.CAPABILITY_CAN_TAKE_SCREENSHOT != 0
+        } catch (e: Exception) {
+            false
+        }
+        if (!hasCapability) {
+            println("⚠️ [Accessibility] 截图能力未生效（canTakeScreenshot 未声明或服务未重新绑定）")
+            result.success(mapOf("success" to false, "error" to "no_capability"))
+            return
+        }
+        if (!screenshotBusy.compareAndSet(false, true)) {
+            result.success(mapOf("success" to false, "error" to "busy"))
+            return
+        }
+
+        val mainHandler = Handler(Looper.getMainLooper())
+        val view = overlayView
+        val wm = overlayWindowManager
+        val originalAlpha = try {
+            (view?.layoutParams as? WindowManager.LayoutParams)?.alpha ?: 1f
+        } catch (e: Exception) {
+            1f
+        }
+        var restored = false
+        fun restoreOverlay() {
+            if (restored) return
+            restored = true
+            try {
+                val params = view?.layoutParams as? WindowManager.LayoutParams ?: return
+                params.alpha = originalAlpha
+                wm?.updateViewLayout(view, params)
+            } catch (e: Exception) {
+                println("⚠️ [Accessibility] 截图后恢复浮窗透明度失败: ${e.message}")
+            }
+        }
+
+        var settled = false
+        var timeout: Runnable? = null
+        fun complete(payload: Map<String, Any?>) {
+            if (settled) return
+            settled = true
+            timeout?.let { mainHandler.removeCallbacks(it) }
+            screenshotBusy.set(false)
+            result.success(payload)
+        }
+
+        timeout = Runnable {
+            if (settled) return@Runnable
+            restoreOverlay()
+            println("⚠️ [Accessibility] 截图超时（3s），已恢复浮窗")
+            complete(mapOf("success" to false, "error" to "timeout"))
+        }
+        mainHandler.postDelayed(timeout, 3000)
+
+        // 1. 隐藏浮窗（面板已由 Dart 收起，此处只挡把手/竖线）
+        if (view != null && wm != null) {
+            try {
+                val params = view.layoutParams as WindowManager.LayoutParams
+                params.alpha = 0f
+                wm.updateViewLayout(view, params)
+            } catch (e: Exception) {
+                println("⚠️ [Accessibility] 截图前隐藏浮窗失败（继续截图）: ${e.message}")
+            }
+        }
+
+        // 2. 等合成器把 alpha=0 落帧后再捕获
+        mainHandler.postDelayed({
+            if (settled) {
+                restoreOverlay()
+                return@postDelayed
+            }
+            try {
+                takeScreenshot(
+                    Display.DEFAULT_DISPLAY,
+                    Executor { runnable -> mainHandler.post(runnable) },
+                    object : TakeScreenshotCallback {
+                        override fun onSuccess(screenshot: ScreenshotResult) {
+                            if (settled) {
+                                try {
+                                    screenshot.hardwareBuffer.close()
+                                } catch (_: Exception) {
+                                }
+                                return
+                            }
+                            mainHandler.removeCallbacks(timeout)
+                            // 先恢复浮窗再解码/写盘：隐形窗口时间越短越好
+                            restoreOverlay()
+                            val buffer = screenshot.hardwareBuffer
+                            var software: Bitmap? = null
+                            try {
+                                val wrapped = Bitmap.wrapHardwareBuffer(
+                                    buffer,
+                                    screenshot.colorSpace
+                                )
+                                software = wrapped?.copy(Bitmap.Config.ARGB_8888, false)
+                            } catch (e: Exception) {
+                                println("❌ [Accessibility] 截图位图转换失败: ${e.message}")
+                            } finally {
+                                try {
+                                    buffer.close()
+                                } catch (_: Exception) {
+                                }
+                            }
+                            val bitmap = software
+                            if (bitmap == null) {
+                                complete(mapOf("success" to false, "error" to "empty_bitmap"))
+                                return
+                            }
+                            val width = bitmap.width
+                            val height = bitmap.height
+                            Thread {
+                                var ok = false
+                                var bytes = 0L
+                                var error: String? = null
+                                try {
+                                    val file = File(path)
+                                    file.parentFile?.mkdirs()
+                                    FileOutputStream(file).use { out ->
+                                        ok = bitmap.compress(Bitmap.CompressFormat.JPEG, 85, out)
+                                    }
+                                    if (ok) {
+                                        bytes = file.length()
+                                    } else {
+                                        file.delete()
+                                        error = "encode_failed"
+                                    }
+                                } catch (e: Exception) {
+                                    error = "save_failed"
+                                    try {
+                                        File(path).delete()
+                                    } catch (_: Exception) {
+                                    }
+                                    println("❌ [Accessibility] 截图写盘失败: ${e.message}")
+                                } finally {
+                                    bitmap.recycle()
+                                }
+                                mainHandler.post {
+                                    if (ok) {
+                                        println("📷 [Accessibility] 截图已保存: $path (${width}x${height}, ${bytes}B)")
+                                        complete(
+                                            mapOf(
+                                                "success" to true,
+                                                "path" to path,
+                                                "width" to width,
+                                                "height" to height,
+                                                "bytes" to bytes
+                                            )
+                                        )
+                                    } else {
+                                        complete(
+                                            mapOf(
+                                                "success" to false,
+                                                "error" to (error ?: "encode_failed")
+                                            )
+                                        )
+                                    }
+                                }
+                            }.start()
+                        }
+
+                        override fun onFailure(errorCode: Int) {
+                            if (settled) return
+                            mainHandler.removeCallbacks(timeout)
+                            restoreOverlay()
+                            val code = when (errorCode) {
+                                ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR -> "internal_error"
+                                ERROR_TAKE_SCREENSHOT_NO_ACCESSIBILITY_ACCESS -> "no_accessibility_access"
+                                ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT -> "interval_time_short"
+                                ERROR_TAKE_SCREENSHOT_INVALID_DISPLAY -> "invalid_display"
+                                else -> "unknown_$errorCode"
+                            }
+                            println("❌ [Accessibility] 截图失败: code=$errorCode ($code)")
+                            complete(mapOf("success" to false, "error" to code))
+                        }
+                    }
+                )
+            } catch (e: Exception) {
+                restoreOverlay()
+                println("❌ [Accessibility] 调用截图 API 异常: ${e.message}")
+                complete(mapOf("success" to false, "error" to "exception"))
+            }
+        }, 64L)
     }
 
     /**

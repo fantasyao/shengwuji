@@ -2,7 +2,7 @@
 
 ## 概述
 
-声物记支持 4 套 Android 桌面图标包，用户可在设置页"外观"分区一键切换。实现基于 `activity-alias`，无需创建真实 Activity 类，由系统 `ComponentEnabledSetting` 持久化状态。
+声物记支持 4 套 Android 桌面图标包，用户可在设置页「外观」二级页一键切换。实现基于 `activity-alias`，无需创建真实 Activity 类，由系统 `ComponentEnabledSetting` 持久化状态。
 
 | ID | 名称 | 背景色 | Pro |
 |---|---|---|---|

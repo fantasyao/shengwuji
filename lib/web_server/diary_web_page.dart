@@ -56,9 +56,9 @@ const String diaryWebPageHtml = r'''
     color: #9aa093; margin-bottom: 8px; flex-wrap: wrap;
   }
   .chip { background: #f0f2ea; border-radius: 6px; padding: 1px 7px; }
-  .chip.tag-urgent { background: #fdecec; color: #c0392b; }
-  .chip.tag-star { background: #fdf3d7; color: #a97b00; }
-  .chip.tag-idea { background: #e7f0fd; color: #2563c4; }
+  /* 标签芯片：图标由 App 的 4 槽位外观配置投影（codePoint + 颜色） */
+  .tag-chip { display: inline-flex; align-items: center; padding: 2px 7px; }
+  .tag-ico { font-family: 'MaterialIcons'; font-size: 15px; line-height: 1; }
   .content { font-size: 14.5px; line-height: 1.75; word-break: break-word; white-space: pre-wrap; }
   .checkline { display: flex; gap: 7px; align-items: baseline; }
   .checkline input { accent-color: #2E9F5C; position: relative; top: 2px; }
@@ -106,6 +106,13 @@ const String diaryWebPageHtml = r'''
   }
   #toast.show { opacity: 1; }
   .stamp { font-size: 11px; color: #b3b8ac; text-align: center; margin-top: 6px; }
+  /* 标签图标字体：服务端 /tag-icons.otf（Flutter 打包的 MaterialIcons，
+     经 tree-shake 后仍含全部可选标签图标，codePoint 与 App 内一致） */
+  @font-face {
+    font-family: 'MaterialIcons';
+    src: url('/tag-icons.otf') format('opentype');
+    font-weight: normal; font-style: normal; font-display: block;
+  }
 </style>
 </head>
 <body>
@@ -137,7 +144,7 @@ const String diaryWebPageHtml = r'''
 
 <script>
 'use strict';
-const state = { notes: [], editingId: null };
+const state = { notes: [], editingId: null, tagConfig: {} };
 const $ = (id) => document.getElementById(id);
 
 function escapeHtml(s) {
@@ -162,8 +169,6 @@ function formatDuration(sec) {
   return m + ':' + String(s).padStart(2, '0');
 }
 
-const TAG_LABEL = { urgent: '⚠ 紧急', star: '★ 收藏', idea: '💡 灵感' };
-
 function renderContent(text) {
   // 清单行 `- [ ]` / `- [x]` 渲染成勾选框（展示用，不可改——清单在手机端语音维护）
   return text.split('\n').map((line) => {
@@ -182,7 +187,15 @@ function cardHtml(n) {
   const chips = [];
   const dur = formatDuration(n.duration);
   if (dur) chips.push('<span class="chip">▶ ' + dur + '</span>');
-  if (n.tag && TAG_LABEL[n.tag]) chips.push('<span class="chip tag-' + escapeHtml(n.tag) + '">' + TAG_LABEL[n.tag] + '</span>');
+  // 标签芯片：图标 codePoint 用服务端下发的 MaterialIcons 字体渲染，
+  // 底色/字色取「标签外观」配置（不显示旧版固定文字标签）
+  const tagStyle = n.tag ? state.tagConfig[n.tag] : null;
+  if (tagStyle) {
+    chips.push('<span class="chip tag-chip" style="background:' +
+      escapeHtml(tagStyle.bg) + ';color:' + escapeHtml(tagStyle.fg) + '">' +
+      '<span class="tag-ico">' + String.fromCodePoint(tagStyle.codePoint) +
+      '</span></span>');
+  }
   return '<div class="card" data-id="' + n.id + '">' +
     '<div class="meta"><span>' + formatTime(n.createdAt) + '</span>' + chips.join('') + '</div>' +
     '<div class="content">' + renderContent(n.content) + '</div>' +
@@ -219,6 +232,8 @@ async function load(silent) {
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
     state.notes = data.notes || [];
+    state.tagConfig = {};
+    for (const t of (data.tagConfig || [])) state.tagConfig[t.tag] = t;
     render();
     updateStamp();
     if (!silent) setConn('live');

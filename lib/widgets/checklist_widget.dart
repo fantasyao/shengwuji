@@ -15,11 +15,16 @@ class ChecklistWidget extends StatelessWidget {
   /// 可选的文字样式覆盖
   final TextStyle? textStyle;
 
+  /// 可选渲染条数上限（长清单折叠用）：非 null 时只渲染前 N 条。
+  /// 折叠判定与渲染同源——都用 [itemCount]，不硬编码高度。
+  final int? maxItems;
+
   const ChecklistWidget({
     super.key,
     required this.content,
     required this.onToggle,
     this.textStyle,
+    this.maxItems,
   });
 
   // 匹配 `- [ ] xxx` 或 `- [x] xxx` 格式
@@ -34,6 +39,16 @@ class ChecklistWidget extends StatelessWidget {
       }
     }
     return false;
+  }
+
+  /// 清单条目数（折叠判定用：条目数 > 阈值才折叠）
+  static int itemCount(String content) {
+    final lines = content.split('\n');
+    int count = 0;
+    for (final line in lines) {
+      if (_checklistLineRegex.hasMatch(line.trim())) count++;
+    }
+    return count;
   }
 
   @override
@@ -57,7 +72,9 @@ class ChecklistWidget extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
-      children: checklistItems.map((item) {
+      children: checklistItems
+          .take(maxItems ?? checklistItems.length)
+          .map((item) {
         final (lineIndex, checked, text) = item;
         return Padding(
           padding: const EdgeInsets.symmetric(vertical: 3),

@@ -271,6 +271,33 @@ void main() {
         VolumeGestureAction.pttRecord,
       );
     });
+
+    test('新 key 值为 overlay_clipboard_note（剪贴板笔记动作）→ 合法值原样生效，不走推导', () async {
+      // 2026-10-28：该动作只会由设置页写入，迁移推导永不产出；旧 key 配 off
+      // 确保"合法新值不被迁移覆盖"（双击槽位也提供此动作）
+      SharedPreferences.setMockInitialValues({
+        'volume_key_mode': 'off',
+        'volume_gesture_double_click_down':
+            VolumeGestureAction.overlayClipboardNote,
+      });
+      final prefs = await SharedPreferences.getInstance();
+
+      final result = await loadVolumeGestureActions(prefs);
+
+      expect(
+        result[VolumeGestureSlot.doubleClickDown],
+        VolumeGestureAction.overlayClipboardNote,
+      );
+      // 与 Kotlin 侧 ACTION_OVERLAY_CLIPBOARD_NOTE 是跨端硬编码副本
+      expect(
+        VolumeGestureAction.overlayClipboardNote,
+        'overlay_clipboard_note',
+      );
+      expect(
+        VolumeGestureAction.isValid(VolumeGestureAction.overlayClipboardNote),
+        isTrue,
+      );
+    });
   });
 
   // ============================================================

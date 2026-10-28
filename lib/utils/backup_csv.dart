@@ -49,7 +49,7 @@ String generateDiaryCsv(List<Map<String, dynamic>> diaries) {
           ? p.basename(diary['audio_path'].toString())
           : '',
       diary['duration']?.toString() ?? '',
-      // 标注（'urgent'/'star'/'idea'），无标注导出为空串
+      // 标注（'urgent'/'star'/'idea'/'task'），无标注导出为空串
       diary['tag']?.toString() ?? '',
       // 归档位（'1'/'0'）：随备份走，换机恢复才能保持归档区不变
       diary['is_archived']?.toString() ?? '0',
@@ -110,7 +110,7 @@ List<Map<String, dynamic>> parseDiaryCsv(String csvContent) {
         'audio_path': audioPath,
         'duration': parts[4].isNotEmpty ? int.tryParse(parts[4]) : null,
         // 标注列（v10 新增，放最后）：旧备份没有第 6 列 → 容忍缺列置 null；
-        // 有列但值非法（非 urgent/star/idea）同样按无标注处理
+        // 有列但值非法（非 urgent/star/idea/task）同样按无标注处理
         'tag': parts.length > 5 && DiaryTag.isValid(parts[5])
             ? parts[5]
             : null,

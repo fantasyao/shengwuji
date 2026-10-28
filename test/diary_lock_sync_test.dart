@@ -94,4 +94,23 @@ void main() {
     expect(unlocked['isLocked'], isFalse);
     expect(unlocked['audioUrl'], '/audio/2');
   });
+
+  test('局域网服务 JSON：加锁总开关关闭时锁定行按明文返回（标记仍保留在库）', () {
+    final json = diaryNoteToJson(
+      {
+        'id': 3,
+        'content': '关开关后可见的隐私',
+        'created_at': '2026-09-22T10:00:00.000',
+        'duration': 5,
+        'is_archived': 0,
+        'is_locked': 1,
+        'tag': null,
+        'audio_path': '/x/diary_audio/c.wav',
+      },
+      lockEnabled: false,
+    );
+    expect(json['content'], '关开关后可见的隐私');
+    expect(json['isLocked'], isFalse);
+    expect(json['audioUrl'], '/audio/3');
+  });
 }

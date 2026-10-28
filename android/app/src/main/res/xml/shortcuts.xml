@@ -44,4 +44,19 @@
             android:targetPackage="com.shengwuji.app" />
         <categories android:name="android.shortcut.conversation" />
     </shortcut>
+    <!-- 显示悬浮窗（toggle）：与语音速记同款分发链路，转交无障碍服务
+         executeGestureAction(ACTION_SHOW_OVERLAY)——按一下显示并展开面板，
+         再按一下隐藏（toggle/Pro 门禁/震动反馈复用音量键手势链路），
+         主 App 不被拉到前台。前置条件：无障碍服务已启用。 -->
+    <shortcut
+        android:shortcutId="show_overlay"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_show_overlay"
+        android:shortcutShortLabel="@string/show_overlay_short"
+        android:shortcutLongLabel="@string/show_overlay_long">
+        <intent
+            android:action="com.shengwuji.app.ACTION_SHOW_OVERLAY"
+            android:targetPackage="com.shengwuji.app" />
+        <categories android:name="android.shortcut.conversation" />
+    </shortcut>
 </shortcuts>

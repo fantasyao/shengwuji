@@ -11,12 +11,13 @@ import android.widget.Toast
  * 外部快捷动作的透明分发层（无 UI、无 Flutter 引擎，冷启动极轻）。
  *
  * 背景：努比亚 Z60S Pro 等机型的侧边滑动键（以及灵动键类硬件）只能映射到
- * 「应用快捷方式」。悬浮窗语音速记此前只有音量键手势一个入口，无法被这类
+ * 「应用快捷方式」。悬浮窗动作此前只有音量键手势一个入口，无法被这类
  * 硬件触发。本 Activity 作为静态快捷方式「悬浮窗语音速记」（shortcuts.xml
- * 的 overlay_record）的落地组件，把动作直接转交给无障碍服务——与音量键
- * 手势完全同一执行链路（executeGestureAction → triggerVoiceMemoOverlay：
- * toggle 语义 / Pro 门禁 / 麦克风互斥让位 / 震动反馈 / 四级 watchdog 全部
- * 复用），全程不把主 App 拉到前台。
+ * 的 overlay_record）与「显示悬浮窗」（show_overlay）的落地组件，把动作
+ * 直接转交给无障碍服务——与音量键
+ * 手势完全同一执行链路（executeGestureAction → triggerVoiceMemoOverlay /
+ * triggerShowOverlay：toggle 语义 / Pro 门禁 / 麦克风互斥让位 / 震动反馈 /
+ * 四级 watchdog 全部复用），全程不把主 App 拉到前台。
  *
  * 为什么不落在 MainActivity 上：快捷方式 Intent 启动 Activity 必然前台化，
  * 主 App 会整个弹出来盖住当前场景，违背"快捷呼出"的初衷；透明分发层
@@ -33,9 +34,10 @@ class ShortcutDispatchActivity : Activity() {
         super.onCreate(savedInstanceState)
 
         val gestureAction = when (intent?.action) {
-            // 与 VolumeKeyAccessibilityService.ACTION_OVERLAY_RECORD 字符串严格一致
-            //（服务侧常量为 private，沿用仓库「双侧常量 + 注释钉同步」惯例）
+            // 与 VolumeKeyAccessibilityService.ACTION_OVERLAY_RECORD / ACTION_SHOW_OVERLAY
+            // 字符串严格一致（服务侧常量为 private，沿用仓库「双侧常量 + 注释钉同步」惯例）
             ACTION_OVERLAY_RECORD -> "overlay_record"
+            ACTION_SHOW_OVERLAY -> "show_overlay"
             else -> null
         }
 
@@ -53,6 +55,7 @@ class ShortcutDispatchActivity : Activity() {
     companion object {
         // 与 AndroidManifest 的 intent-filter / shortcuts.xml 的 intent action 严格一致
         private const val ACTION_OVERLAY_RECORD = "com.shengwuji.app.ACTION_OVERLAY_RECORD"
+        private const val ACTION_SHOW_OVERLAY = "com.shengwuji.app.ACTION_SHOW_OVERLAY"
 
         // 服务实例不可达时的重试次数（间隔 RETRY_INTERVAL_MS，总计约 2s）：
         // 覆盖"进程刚被拉起、已启用的无障碍服务尚在绑定中"的竞态窗口
@@ -77,7 +80,7 @@ class ShortcutDispatchActivity : Activity() {
                 println("❌ [ShortcutDispatch] 无障碍服务不可达，无法执行: $gestureAction")
                 Toast.makeText(
                     context,
-                    "悬浮窗录音需要先在系统设置中开启声物记的无障碍服务",
+                    "悬浮窗功能需要先在系统设置中开启声物记的无障碍服务",
                     Toast.LENGTH_LONG
                 ).show()
                 return

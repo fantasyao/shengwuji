@@ -20,8 +20,10 @@ import 'package:shengwuji_app/overlay/accessibility_overlay.dart';
 import 'package:shengwuji_app/overlay/overlay_constants.dart';
 import 'package:shengwuji_app/recognizer_singleton.dart';
 import 'package:shengwuji_app/text_processor.dart';
+import 'package:shengwuji_app/utils/big_bang_search.dart';
 import 'package:shengwuji_app/utils/diary_sync_bridge.dart';
 import 'package:shengwuji_app/utils/quick_record_auto_stop.dart';
+import 'package:shengwuji_app/utils/search_command_detector.dart';
 import 'package:shengwuji_app/utils/volume_gesture_config.dart';
 import 'package:shengwuji_app/utils/wav_file.dart';
 
@@ -129,6 +131,12 @@ class OverlayVoiceMemoController extends ChangeNotifier {
   /// 停止并转写」——PTT 的停录主路径是松开按键（Kotlin UP 分支发 stop），
   /// 文案优先级高于单击停录
   bool isPttSession = false;
+
+  /// 转写完成「不切面板」标志（语音搜索跳转）：_transcribeAndSave 在转写
+  /// 收尾成功拉起浏览器搜索时置位，读取方 OverlayHome._onVoiceMemoChanged
+  /// 的 transcribing→idle 分支——读即清并跳过切面板（用户已被带去浏览器，
+  /// 面板不该再弹出抢焦点）；读即清防残留影响下一次速记
+  bool consumeExpandOnFinish = false;
 
   /// 是否展示停止提示（纯函数可测）：已展示次数未达上限
   static bool shouldShowStopHint(int shownCount) =>
@@ -615,6 +623,44 @@ class OverlayVoiceMemoController extends ChangeNotifier {
       }
     } catch (e) {
       print('⚠️ [OverlayVoiceMemo] 上下文纠错失败(跳过): $e');
+    }
+
+    // 3.4c 语音搜索跳转（说完「搜索 xxx」自动拉起浏览器搜索关键词，白名单
+    //     前缀触发词同清单提取「代办/待办」思路）。判定放在纠错之后——原始
+    //     识别文本里「搜索」可能被识别错，纠错后判定减少误判。日记照常回填
+    //     原文（3.5 不变），只影响转写完成后是否切面板。
+    //     ⚠️ 开关读取/reload 异常按「关闭」兜底——宁不跳，也不误跳浏览器打扰
+    var searchJumped = false;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.reload(); // 设置页在主 App engine 写，跨 engine 必须 reload
+      final jumpEnabled = prefs.getBool(kVoiceSearchJumpEnabledKey) ?? true;
+      if (jumpEnabled) {
+        // 触发词可在设置页配置（prefs voice_search_triggers，跨 engine 刚
+        // reload 过；空/非法由 parseTriggers 回落默认白名单）
+        final triggers = SearchCommandDetector.parseTriggers(
+          prefs.getString(kVoiceSearchTriggersKey),
+        );
+        final cmd = SearchCommandDetector.detect(corrected, triggers: triggers);
+        if (cmd.isSearchCommand) {
+          final cfg = await loadSearchConfig();
+          searchJumped = await AccessibilityOverlay.openUrl(
+            url: buildSearchUrl(cfg.engine, cmd.keyword),
+            packageName: cfg.browserPackage,
+          );
+          print(
+            searchJumped
+                ? '🔍 [OverlayVoiceMemo] 语音搜索跳转: "${cmd.keyword}"（不切面板）'
+                : '⚠️ [OverlayVoiceMemo] 语音搜索拉起浏览器失败，回落正常切面板',
+          );
+        }
+      }
+    } catch (e) {
+      print('⚠️ [OverlayVoiceMemo] 语音搜索跳转判定失败(按不跳处理): $e');
+    }
+    // 只有拉起成功才置「不切面板」标志；失败/未命中/开关关闭都走正常链路
+    if (searchJumped) {
+      consumeExpandOnFinish = true;
     }
 
     // 3.5 回填 content（占位 id 就在手，非空必达）

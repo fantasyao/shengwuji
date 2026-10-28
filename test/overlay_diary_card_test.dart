@@ -2,6 +2,8 @@ import 'package:flutter/gestures.dart' show HitTestResult;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shengwuji_app/overlay/widgets/overlay_diary_card.dart';
+import 'package:shengwuji_app/theme/app_theme.dart';
+import 'package:shengwuji_app/utils/diary_tag.dart';
 
 /// 悬浮窗胶囊卡片展开态布局回归：
 /// 展开应显示全部文本（多行撑高），收起回单行省略。
@@ -16,6 +18,7 @@ void main() {
     ValueChanged<bool>? onCheckChanged,
     bool dockLeft = false,
   }) => MaterialApp(
+    theme: AppThemes.defaultTeal.toThemeData(),
     home: Scaffold(
       body: SizedBox(
         width: 296, // 模拟面板宽（OverlayHome._buildPanel 的 panelWidth 量级）
@@ -407,16 +410,18 @@ void main() {
   });
 
   // ── 标注（标签换色）──
-  // 标注三色按钮一级直出展开卡时间行（2026-09-22 用户要求从二级标注选择态
-  // 上提，二级菜单机制已删除）：时间文本后紧凑排列 32×32 命中区按钮，点按即
-  // 回调换色/取消；取色：无标注=固定默认色 #6F9AF0，标注=整卡换标注色，
-  // 归档恒灰
+  // 4 槽位标注按钮一级直出展开卡时间行（2026-09-22 从二级选择态上提；
+  // 2026-10-22 扩成 4 槽位并可换图标/颜色）：时间文本后紧凑排列命中区按钮
+  // 28×32、相邻 2dp，点按即回调换色/取消；取色：无标注=固定默认色
+  // #6F9AF0，标注=槽位配置色，归档恒灰
 
   Widget wrapTag({
     String? tag,
     bool isArchived = false,
     ValueChanged<String?>? onTagToggle,
+    DiaryTagStyleConfig? tagStyles,
   }) => MaterialApp(
+    theme: AppThemes.defaultTeal.toThemeData(),
     home: Scaffold(
       body: SizedBox(
         width: 296,
@@ -433,6 +438,7 @@ void main() {
               expanded: true,
               onCheckChanged: (_) {},
               onTagToggle: onTagToggle ?? (_) {},
+              tagStyles: tagStyles,
             ),
           ],
         ),
@@ -469,15 +475,16 @@ void main() {
     expect(cardBgColor(tester, const Color(0xFFFF6B6B)), isNull);
   });
 
-  testWidgets('时间行一级直出三色标注按钮：点 tag / 点已选 tag 取消', (tester) async {
+  testWidgets('时间行 4 槽位标注按钮：点 tag / 点已选 tag 取消', (tester) async {
     final toggled = <String?>[];
     await tester.pumpWidget(wrapTag(onTagToggle: toggled.add));
     await tester.pumpAndSettle();
 
-    // 三个标注按钮常驻时间行（无需先点入口进选择态）
+    // 4 个标注按钮常驻时间行（无需先点入口进选择态）
     expect(find.byIcon(Icons.priority_high), findsOneWidget);
     expect(find.byIcon(Icons.star_rounded), findsOneWidget);
     expect(find.byIcon(Icons.lightbulb_outline), findsOneWidget);
+    expect(find.byIcon(Icons.task_alt), findsOneWidget);
     // 二级菜单机制已删除：底条不再有标注入口与 ✗ 返回
     expect(find.byIcon(Icons.label_outline), findsNothing);
 
@@ -494,11 +501,38 @@ void main() {
     expect(toggled, ['star', null]);
   });
 
-  testWidgets('时间格式为横杠 yyyy-MM-dd HH:mm（替代「年月日」省时间行横向空间）', (
-    tester,
-  ) async {
+  testWidgets('标签外观配置生效：自定义图标/颜色 + 第 4 槽位换色换图', (tester) async {
+    final styles = DiaryTagStyleConfig.defaults
+        .replace(
+          const DiaryTagStyle(
+            tag: DiaryTag.urgent,
+            iconId: 'heart',
+            color: Color(0xFF2E9F5C),
+          ),
+        )
+        .replace(
+          const DiaryTagStyle(
+            tag: DiaryTag.task,
+            iconId: 'flight',
+            color: Color(0xFF5B5BC9),
+          ),
+        );
+    await tester.pumpWidget(wrapTag(tag: DiaryTag.task, tagStyles: styles));
+    await tester.pumpAndSettle();
+
+    // 第 4 槽位（task）标注 → 整卡换配置色
+    expect(cardBgColor(tester, const Color(0xFF5B5BC9)), isNotNull);
+    // 图标随配置替换（urgent→心形、task→飞机），默认图标不再出现
+    expect(find.byIcon(Icons.favorite_border), findsOneWidget);
+    expect(find.byIcon(Icons.flight_takeoff), findsOneWidget);
+    expect(find.byIcon(Icons.priority_high), findsNothing);
+    expect(find.byIcon(Icons.task_alt), findsNothing);
+  });
+
+  testWidgets('时间格式为横杠 yyyy-MM-dd HH:mm（替代「年月日」省时间行横向空间）', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
+        theme: AppThemes.defaultTeal.toThemeData(),
         home: Scaffold(
           body: SizedBox(
             width: 296,
@@ -536,6 +570,7 @@ void main() {
   // ③ 同倍率收起态视觉圆 = 20dp，两态一致（用户诉求：展开不比收起大）
   testWidgets('系统字体放大 1.3 时展开态勾选框仍渲染 20dp（WidgetSpan 反缩放补偿）', (tester) async {
     Widget scaledWrap({required bool expanded}) => MaterialApp(
+      theme: AppThemes.defaultTeal.toThemeData(),
       home: Scaffold(
         body: SizedBox(
           width: 296,
@@ -656,6 +691,7 @@ void main() {
   testWidgets('展开态重放行：点「重放录音」文字/钮文字间隙都触发 onPlayToggle', (tester) async {
     var playCount = 0;
     Widget playWrap() => MaterialApp(
+      theme: AppThemes.defaultTeal.toThemeData(),
       home: Scaffold(
         body: SizedBox(
           width: 296,

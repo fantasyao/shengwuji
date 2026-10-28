@@ -29,8 +29,7 @@ class _CustomThemePageState extends State<CustomThemePage> {
   /// 首次进入的默认主色 = 默认青主色（推荐色系观感与出厂主题衔接）
   static const _fallbackSeedValue = 0xFF009688;
 
-  CustomThemeConfig _config =
-      const CustomThemeConfig(seed: _fallbackSeedValue);
+  CustomThemeConfig _config = const CustomThemeConfig(seed: _fallbackSeedValue);
   bool _savedBefore = false; // prefs 里是否已有保存的配置（控制"删除自定义主题"显隐）
   bool _loaded = false;
 
@@ -107,8 +106,9 @@ class _CustomThemePageState extends State<CustomThemePage> {
       AppRoot.themeNotifier.value = AppThemes.defaultTheme;
     }
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(const SnackBar(content: Text('已删除自定义主题')));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('已删除自定义主题')));
     Navigator.of(context).pop(false);
   }
 
@@ -245,7 +245,8 @@ class _CustomThemePageState extends State<CustomThemePage> {
                     style: OutlinedButton.styleFrom(
                       foregroundColor: ext.dangerAccent,
                       side: BorderSide(
-                          color: ext.dangerAccent.withValues(alpha: 0.4)),
+                        color: ext.dangerAccent.withValues(alpha: 0.4),
+                      ),
                       padding: const EdgeInsets.symmetric(vertical: 12),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12),
@@ -307,11 +308,14 @@ class _CustomThemePageState extends State<CustomThemePage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('页面标题',
-              style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  color: e.textPrimary)),
+          Text(
+            '页面标题',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+              color: e.textPrimary,
+            ),
+          ),
           const SizedBox(height: 12),
           // 一张内容卡片
           Container(
@@ -325,38 +329,48 @@ class _CustomThemePageState extends State<CustomThemePage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('卡片内容 · 正文文字',
-                    style: TextStyle(fontSize: 14, color: e.textPrimary)),
+                Text(
+                  '卡片内容 · 正文文字',
+                  style: TextStyle(fontSize: 14, color: e.textPrimary),
+                ),
                 const SizedBox(height: 4),
-                Text('次要说明文字',
-                    style: TextStyle(fontSize: 12, color: e.textSecondary)),
+                Text(
+                  '次要说明文字',
+                  style: TextStyle(fontSize: 12, color: e.textSecondary),
+                ),
                 const SizedBox(height: 10),
                 Row(
                   children: [
                     // 选中态 chip（选中背景色 + 主色文字）
                     Container(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 5),
+                        horizontal: 12,
+                        vertical: 5,
+                      ),
                       decoration: BoxDecoration(
                         color: e.primaryLight,
                         borderRadius: BorderRadius.circular(14),
                       ),
-                      child: Text('已选中',
-                          style: TextStyle(
-                              fontSize: 12, color: e.primaryDark)),
+                      child: Text(
+                        '已选中',
+                        style: TextStyle(fontSize: 12, color: e.primaryDark),
+                      ),
                     ),
                     const SizedBox(width: 8),
                     // 未选中 chip
                     Container(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 5),
+                        horizontal: 12,
+                        vertical: 5,
+                      ),
                       decoration: BoxDecoration(
                         borderRadius: BorderRadius.circular(14),
                         border: Border.all(color: e.divider),
                       ),
-                      child: Text('未选中',
-                          style: TextStyle(
-                              fontSize: 12, color: e.textSecondary)),
+                      child: Text(
+                        '未选中',
+                        style: TextStyle(fontSize: 12, color: e.textSecondary),
+                      ),
                     ),
                   ],
                 ),
@@ -378,9 +392,10 @@ class _CustomThemePageState extends State<CustomThemePage> {
               children: [
                 Icon(Icons.mic, size: 18, color: e.textOnPrimary),
                 const SizedBox(width: 6),
-                Text('主按钮',
-                    style:
-                        TextStyle(fontSize: 14, color: e.textOnPrimary)),
+                Text(
+                  '主按钮',
+                  style: TextStyle(fontSize: 14, color: e.textOnPrimary),
+                ),
               ],
             ),
           ),
@@ -424,20 +439,21 @@ class _CustomThemePageState extends State<CustomThemePage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(label,
-                      style: TextStyle(
-                          fontSize: 15, color: ext.textPrimary)),
+                  Text(
+                    label,
+                    style: TextStyle(fontSize: 15, color: ext.textPrimary),
+                  ),
                   const SizedBox(height: 2),
-                  Text(subtitle,
-                      style: TextStyle(
-                          fontSize: 12, color: ext.textSecondary)),
+                  Text(
+                    subtitle,
+                    style: TextStyle(fontSize: 12, color: ext.textSecondary),
+                  ),
                 ],
               ),
             ),
             if (badge != null)
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                 decoration: BoxDecoration(
                   color: badge == '已自定义'
                       ? ext.primaryLight
@@ -445,8 +461,10 @@ class _CustomThemePageState extends State<CustomThemePage> {
                   borderRadius: BorderRadius.circular(8),
                   border: Border.all(color: ext.divider),
                 ),
-                child: Text(badge,
-                    style: TextStyle(fontSize: 11, color: ext.primaryDark)),
+                child: Text(
+                  badge,
+                  style: TextStyle(fontSize: 11, color: ext.primaryDark),
+                ),
               ),
             if (onReset != null) ...[
               const SizedBox(width: 8),
@@ -455,8 +473,11 @@ class _CustomThemePageState extends State<CustomThemePage> {
                 borderRadius: BorderRadius.circular(8),
                 child: Padding(
                   padding: const EdgeInsets.all(4),
-                  child: Icon(Icons.restart_alt,
-                      size: 20, color: ext.textSecondary),
+                  child: Icon(
+                    Icons.restart_alt,
+                    size: 20,
+                    color: ext.textSecondary,
+                  ),
                 ),
               ),
             ],
@@ -543,7 +564,9 @@ class _ColorPickerSheetState extends State<_ColorPickerSheet> {
             const SizedBox(height: 12),
             ScrollConfiguration(
               // 色轮外圈拖动会触发页面滚动抢手势（桌面/大屏溢出场景），禁掉
-              behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
+              behavior: ScrollConfiguration.of(
+                context,
+              ).copyWith(scrollbars: false),
               child: SingleChildScrollView(
                 child: ColorPicker(
                   pickerColor: _color,
@@ -555,7 +578,9 @@ class _ColorPickerSheetState extends State<_ColorPickerSheet> {
                   displayThumbColor: true,
                   hexInputBar: true,
                   labelTypes: const [ColorLabelType.hex],
-                  pickerAreaBorderRadius: const BorderRadius.all(Radius.circular(8)),
+                  pickerAreaBorderRadius: const BorderRadius.all(
+                    Radius.circular(8),
+                  ),
                   colorPickerWidth: width < 360 ? width - 64 : 300,
                 ),
               ),
@@ -565,11 +590,14 @@ class _ColorPickerSheetState extends State<_ColorPickerSheet> {
               width: double.infinity,
               child: TextButton(
                 onPressed: () => Navigator.of(context).pop(),
-                child: Text('完成',
-                    style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.bold,
-                        color: ext.primary)),
+                child: Text(
+                  '完成',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                    color: ext.primary,
+                  ),
+                ),
               ),
             ),
           ],

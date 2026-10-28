@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'app_font.dart';
 import 'app_theme_extension.dart';
 
 /// 单套主题的定义数据
@@ -37,42 +38,44 @@ class AppThemeDefinition {
     required this.extension,
   });
 
-  /// 构建 ThemeData（保留霞鹜文楷字体配置）
-  ThemeData toThemeData() {
+  /// 构建 ThemeData
+  ///
+  /// [font] 由设置页「字体」选项驱动（默认霞鹜文楷）。系统默认档传
+  /// fontFamily=null——Flutter 的两个字体层级（ThemeData.fontFamily 与
+  /// TextTheme 各 style）必须同时置空，见 CLAUDE.md「主题字体配置陷阱」。
+  ThemeData toThemeData({AppFontChoice font = kDefaultAppFontChoice}) {
     final colorScheme = ColorScheme.fromSeed(
       seedColor: seedColor,
       brightness: brightness,
     );
+    final family = font.fontFamily;
 
     return ThemeData(
-      fontFamily: _kFontFamily,
-      textTheme: _kTextTheme,
+      fontFamily: family,
+      textTheme: _buildTextTheme(family),
       colorScheme: colorScheme,
       useMaterial3: true,
       extensions: [extension],
     );
   }
 
-  /// 全部主题共用的字体名（霞鹜文楷等宽屏幕版）
-  static const _kFontFamily = 'LXGWWenKaiMonoGBScreen';
-
-  /// 全部主题共用的 TextTheme（显式配置所有 14 种文本样式避免 Roboto 回退）
-  static const TextTheme _kTextTheme = TextTheme(
-    bodyLarge: TextStyle(fontFamily: _kFontFamily),
-    bodyMedium: TextStyle(fontFamily: _kFontFamily),
-    bodySmall: TextStyle(fontFamily: _kFontFamily),
-    displayLarge: TextStyle(fontFamily: _kFontFamily),
-    displayMedium: TextStyle(fontFamily: _kFontFamily),
-    displaySmall: TextStyle(fontFamily: _kFontFamily),
-    headlineLarge: TextStyle(fontFamily: _kFontFamily),
-    headlineMedium: TextStyle(fontFamily: _kFontFamily),
-    headlineSmall: TextStyle(fontFamily: _kFontFamily),
-    titleLarge: TextStyle(fontFamily: _kFontFamily),
-    titleMedium: TextStyle(fontFamily: _kFontFamily),
-    titleSmall: TextStyle(fontFamily: _kFontFamily),
-    labelLarge: TextStyle(fontFamily: _kFontFamily),
-    labelMedium: TextStyle(fontFamily: _kFontFamily),
-    labelSmall: TextStyle(fontFamily: _kFontFamily),
+  /// 生成 TextTheme（显式配置所有 15 种文本样式避免 Roboto 回退）
+  static TextTheme _buildTextTheme(String? family) => TextTheme(
+    bodyLarge: TextStyle(fontFamily: family),
+    bodyMedium: TextStyle(fontFamily: family),
+    bodySmall: TextStyle(fontFamily: family),
+    displayLarge: TextStyle(fontFamily: family),
+    displayMedium: TextStyle(fontFamily: family),
+    displaySmall: TextStyle(fontFamily: family),
+    headlineLarge: TextStyle(fontFamily: family),
+    headlineMedium: TextStyle(fontFamily: family),
+    headlineSmall: TextStyle(fontFamily: family),
+    titleLarge: TextStyle(fontFamily: family),
+    titleMedium: TextStyle(fontFamily: family),
+    titleSmall: TextStyle(fontFamily: family),
+    labelLarge: TextStyle(fontFamily: family),
+    labelMedium: TextStyle(fontFamily: family),
+    labelSmall: TextStyle(fontFamily: family),
   );
 }
 
@@ -81,7 +84,13 @@ class AppThemeDefinition {
 /// 新增主题只需在 `_all` 里加一项即可，设置页会自动遍历显示。
 class AppThemes {
   /// 所有预设主题列表（顺序即设置页显示顺序）
-  static const all = [defaultTeal, warmOrange, forestGreen, skyBlue, neumorphism];
+  static const all = [
+    defaultTeal,
+    warmOrange,
+    forestGreen,
+    skyBlue,
+    neumorphism,
+  ];
 
   /// 默认主题（应用首次启动时使用）
   static const defaultTheme = defaultTeal;
@@ -363,8 +372,9 @@ class AppThemes {
 
 /// 深色模式档位的 prefs key（string：'system' / 'light' / 'dark'）。
 /// 写入方：设置页外观区「深色模式」选择器；读取方：main() 启动预读。
-/// 悬浮窗是独立 engine 且固定浅色视觉（跨背景对比度设计，不做深色系），
-/// 不消费本 key。
+/// 悬浮窗是独立 engine 且面板固定浅色视觉（跨背景对比度设计，不做深色系），
+/// 仅大爆炸分词层（全屏白底模态，深色下刺眼）消费本 key——唤起时由
+/// overlay_home._openBigBang reload 后解析，system 档按系统亮度裁决
 const kThemeModePrefKey = 'theme_mode';
 
 /// 解析深色模式档位：null/旧版本值/坏串一律兜底跟随系统

@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.app.AlarmManager
+import android.app.ActivityManager
 import android.app.KeyguardManager
 import android.app.PendingIntent
 import android.content.pm.PackageManager
@@ -107,6 +108,26 @@ class MainActivity: FlutterActivity() {
             }
         }
         registerReceiver(screenOffReceiver, IntentFilter(Intent.ACTION_SCREEN_OFF))
+
+        // 🙈 后台隐藏（防误杀）：设置页开关开启时，本任务不出现在多任务页
+        // （prefs 即真值源——每次冷启动按落盘值重放；运行期热切换走
+        //  setExcludeFromRecents 通道方法）
+        applyExcludeFromRecentsIfEnabled()
+    }
+
+    /// 后台隐藏：读落盘 prefs「flutter.exclude_from_recents」，开启则应用
+    private fun applyExcludeFromRecentsIfEnabled() {
+        val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+        if (prefs.getBoolean("flutter.exclude_from_recents", false)) {
+            setExcludeFromRecents(true)
+            println("🙈 [MainActivity] 后台隐藏已开启：本任务不出现在多任务页")
+        }
+    }
+
+    /// GKD 同款方案：对本进程全部任务设置 excludeFromRecents（Android 标准 API，无需权限）
+    private fun setExcludeFromRecents(enable: Boolean) {
+        val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        am.appTasks.forEach { it.setExcludeFromRecents(enable) }
     }
 
     override fun onDestroy() {
@@ -316,6 +337,24 @@ class MainActivity: FlutterActivity() {
                 // 引导用户去系统「安全」设置页设锁屏密码（加锁引导对话框「去设置」）
                 "openSecuritySettings" -> {
                     result.success(openSecuritySettings())
+                }
+                // 后台隐藏（防误杀）：设置页开关切换时实时生效
+                // （冷启动按 prefs 重放在 onCreate 的 applyExcludeFromRecentsIfEnabled）
+                "setExcludeFromRecents" -> {
+                    val enable = call.argument<Boolean>("enable") ?: false
+                    setExcludeFromRecents(enable)
+                    println("🙈 [MainActivity] setExcludeFromRecents: $enable")
+                    result.success(true)
+                }
+                // 设置页「立即启动悬浮窗」（2026-10-19）：经无障碍服务同进程静态实例
+                // 转发（ShortcutDispatchActivity 同款链路），服务未运行返回 false
+                "showOverlay" -> {
+                    val service = VolumeKeyAccessibilityService.instance
+                    if (service == null) {
+                        result.success(false)
+                    } else {
+                        result.success(service.showOverlayFromSettings())
+                    }
                 }
                 // 图标按需懒加载（列表接口不带图标，避免一次性传几百张图）
                 "getAppIcon" -> {

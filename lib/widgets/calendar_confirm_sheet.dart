@@ -120,6 +120,14 @@ class _CalendarConfirmSheetState extends State<CalendarConfirmSheet> {
   /// 上下结构（窄屏回落）时时间轮的固定高度：显示约 3 行刻度
   static const double _stackedTimeWheelHeight = 106;
 
+  /// 月视图网格行高压紧目标（dp）：SDK 行高硬编码 48（M3 竖屏），限高后
+  /// 网格委托把 6 行日期 + 1 行周表头等比压到本值（见 _buildCalendarPicker）
+  static const double _compactDayRowHeight = 40;
+
+  /// 月视图头部（年月标题 + 翻月箭头）高度，与 SDK _subHeaderHeight 同值；
+  /// Flutter 升级后若头部高度变动需同步核对
+  static const double _calendarHeaderHeight = 52;
+
   /// 时间拨轮宽度按制式给足（why 见文件头 ⚠️ 段）：24h 两列（时|分）需求
   /// 约 167dp 给 176；12h 三列（时|分|上午/下午，中文 dayPeriod 两字约 34dp）
   /// 需求约 225dp 给 240。宁可阈值联动抬高回落上下结构，不可窄容器压缩列
@@ -204,46 +212,12 @@ class _CalendarConfirmSheetState extends State<CalendarConfirmSheet> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // 标题行 + 响铃开关（日记页原 AlarmDialog 的「响铃闹钟」开关语义，
-              // 该对话框已删除、两入口共用本弹层）
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      '添加日历提醒',
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                  Text(
-                    '响铃闹钟',
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: _enableAlarm
-                          ? colorScheme.onSurfaceVariant
-                          : colorScheme.outline,
-                    ),
-                  ),
-                  const SizedBox(width: 4),
-                  // 新拟物主题：凹槽轨道+凸滑块开关（主 App 侧；悬浮窗已降级
-                  // 默认青，不会走到拟物分支）；其余主题保持 M3 Switch
-                  if (isNeu)
-                    NeuSwitch(
-                      value: _enableAlarm,
-                      onChanged: widget.alarmAvailable
-                          ? (v) => setState(() => _enableAlarm = v)
-                          : null,
-                    )
-                  else
-                    Switch(
-                      value: _enableAlarm,
-                      // 通知权限缺失时禁用（悬浮窗无法请求权限，降级仅日历事件）
-                      onChanged: widget.alarmAvailable
-                          ? (v) => setState(() => _enableAlarm = v)
-                          : null,
-                    ),
-                ],
+              // 标题行（响铃开关已内嵌月视图右下角，见 _buildInlineAlarmToggle）
+              Text(
+                '添加日历提醒',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                ),
               ),
               // 提示行：识别到的时间原文 / 响铃不可用说明（可同时出现）
               if (widget.recognizedPhrase != null)
@@ -270,9 +244,9 @@ class _CalendarConfirmSheetState extends State<CalendarConfirmSheet> {
               // 纯 Flutter 组件，悬浮窗 engine 可直接渲染；中文文案来自两侧
               // MaterialApp 的 GlobalMaterialLocalizations/CupertinoLocalizations）
               if (wide)
-                _buildSideBySidePickers(colorScheme, now, is24h)
+                _buildSideBySidePickers(colorScheme, now, is24h, isNeu)
               else
-                _buildStackedPickers(colorScheme, now),
+                _buildStackedPickers(colorScheme, now, isNeu),
               const SizedBox(height: 12),
               Row(
                 children: [
@@ -312,12 +286,13 @@ class _CalendarConfirmSheetState extends State<CalendarConfirmSheet> {
     ColorScheme colorScheme,
     DateTime now,
     bool is24h,
+    bool isNeu,
   ) {
     return IntrinsicHeight(
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Expanded(child: _buildCalendarPicker(colorScheme, now)),
+          Expanded(child: _buildCalendarPicker(colorScheme, now, isNeu)),
           const SizedBox(width: 10),
           SizedBox(
             width: _timeWheelWidth(is24h),
@@ -329,10 +304,10 @@ class _CalendarConfirmSheetState extends State<CalendarConfirmSheet> {
   }
 
   /// 窄屏回落：日历全宽在上、时间轮固定高在下
-  Widget _buildStackedPickers(ColorScheme colorScheme, DateTime now) {
+  Widget _buildStackedPickers(ColorScheme colorScheme, DateTime now, bool isNeu) {
     return Column(
       children: [
-        _buildCalendarPicker(colorScheme, now),
+        _buildCalendarPicker(colorScheme, now, isNeu),
         const SizedBox(height: 10),
         SizedBox(
           height: _stackedTimeWheelHeight,
@@ -343,17 +318,105 @@ class _CalendarConfirmSheetState extends State<CalendarConfirmSheet> {
   }
 
   /// 月视图日历容器（M3 CalendarDatePicker：选中日实心圆、今天描边圆、
-  /// 非本月置灰；头部点按切年份网格，‹ › 与横滑翻月组件自带）
-  Widget _buildCalendarPicker(ColorScheme colorScheme, DateTime now) {
+  /// 非本月置灰；头部点按切年份网格，‹ › 与横滑翻月组件自带）。
+  /// 网格行高压紧到 [_compactDayRowHeight]（大字体档不限高退回自然高度，
+  /// 保可读性）；右下角叠放内嵌响铃开关（见 [_buildInlineAlarmToggle]）
+  Widget _buildCalendarPicker(ColorScheme colorScheme, DateTime now, bool isNeu) {
+    // 行高压紧原理：SDK 行高硬编码 48（M3 竖屏）无主题入口，但其网格委托
+    // 取 min(48, 网格视口高/7)（SDK _DayPickerGridDelegate）——给日历限高
+    // 即可把 6 行日期 + 1 行周表头等比压到目标行高。
+    // 大字体档（textScale>1.3，SDK 此时放大行高保可读）不限高，退回自然高度
+    final textScale =
+        MediaQuery.textScalerOf(context).clamp(maxScaleFactor: 3.0).scale(14) /
+        14;
+    final compact = textScale <= 1.3;
     return Container(
       decoration: _pickerBoxDecoration(colorScheme),
       clipBehavior: Clip.antiAlias,
-      child: CalendarDatePicker(
-        key: const ValueKey('calendar_confirm_calendar'),
-        initialDate: _clampedInitialDate,
-        firstDate: DateTime(now.year - 1),
-        lastDate: DateTime(now.year + 5),
-        onDateChanged: _applyDate,
+      child: Stack(
+        children: [
+          SizedBox(
+            height: compact
+                ? _calendarHeaderHeight + _compactDayRowHeight * 7
+                : null,
+            child: CalendarDatePicker(
+              key: const ValueKey('calendar_confirm_calendar'),
+              initialDate: _clampedInitialDate,
+              firstDate: DateTime(now.year - 1),
+              lastDate: DateTime(now.year + 5),
+              onDateChanged: _applyDate,
+            ),
+          ),
+          Positioned(
+            right: 14,
+            bottom: 0,
+            height: _compactDayRowHeight,
+            child: _buildInlineAlarmToggle(colorScheme, isNeu),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 月视图右下角内嵌响铃开关（2026-10-18 自标题行右上角迁来——底部弹层的
+  /// 顶部单手够不着）：叠在日历网格最后一行右侧。该行右侧 5 格数学上恒空
+  /// ——任一月首日偏移 ≤6、最多 31 天，最高只占 index 36，index 37~41
+  /// 永不落日期，不遮任何日期。
+  /// ⚠️ 切到年份网格时会遮住右下角年份：该网格可滚动且选年即回日视图，可接受
+  ///（日记页原 AlarmDialog 的「响铃闹钟」开关语义，该对话框已删除、
+  /// 两入口共用本弹层）
+  Widget _buildInlineAlarmToggle(ColorScheme colorScheme, bool isNeu) {
+    final enabled = widget.alarmAvailable;
+    return GestureDetector(
+      // 整片（含标签透明区）可点，补足缩小开关的命中面积；点开关本体时手势
+      // 竞技场子级（Switch/NeuSwitch）胜出只触发一次，父级识别器不会双触发
+      behavior: HitTestBehavior.opaque,
+      onTap: enabled
+          ? () => setState(() => _enableAlarm = !_enableAlarm)
+          : null,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(left: 6, right: 4),
+            child: Text(
+              '响铃',
+              style: TextStyle(
+                fontSize: 12,
+                color: _enableAlarm
+                    ? colorScheme.onSurfaceVariant
+                    : colorScheme.outline,
+              ),
+            ),
+          ),
+          // 新拟物主题：凹槽轨道+凸滑块开关（主 App 侧；悬浮窗已降级
+          // 默认青，不会走到拟物分支），46×26 天然收进 40dp 行高；
+          // 其余主题保持 M3 Switch：自然尺寸 60×48 溢出行高，缩 0.75 并用
+          // Align 尺寸因子把布局/命中框同步收小，防命中区侵入上一行日期格
+          if (isNeu)
+            NeuSwitch(
+              value: _enableAlarm,
+              onChanged: enabled
+                  ? (v) => setState(() => _enableAlarm = v)
+                  : null,
+            )
+          else
+            Align(
+              widthFactor: 0.75,
+              heightFactor: 0.75,
+              child: Transform.scale(
+                scale: 0.75,
+                child: Switch(
+                  value: _enableAlarm,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  // 通知权限缺失时禁用（悬浮窗无法请求权限，降级仅日历事件）
+                  onChanged: enabled
+                      ? (v) => setState(() => _enableAlarm = v)
+                      : null,
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }

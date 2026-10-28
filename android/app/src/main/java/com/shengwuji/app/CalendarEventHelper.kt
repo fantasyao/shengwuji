@@ -20,7 +20,10 @@ import java.util.TimeZone
  * 逻辑与原 MainActivity 实现逐行等价（仅 this → context 参数化）：
  * - 必须查询有效 CALENDAR_ID（优先同步账户，其次本地账户）
  * - EVENT_TIMEZONE 必填；事件默认 30 分钟时长、非全天
- * - 不插 Reminders 表——响铃由 AlarmReceiver 控制，避免日历 App 弹自己的通知
+ * - enableAlarm=true 时不插 Reminders 表——响铃由 AlarmReceiver 控制，避免日历
+ *   App 弹自己的通知（双提醒）；enableAlarm=false 时插一条 minutes=0 的
+ *   「开始时」提醒，系统日历到点弹通知（对齐第三方日历创建的事件形态，
+ *   2026-10-18 用户反馈「无提醒」事件到点不弹通知）
  *
  * addCalendarEvent 返回 String 结果码而非 Boolean（2026-09-23）：摩托罗拉用户
  * 反馈"添加提醒后日历里没有"，根因是系统日历 app 被卸载/停用后手机上没有任何
@@ -60,7 +63,8 @@ object CalendarEventHelper {
      * 注意事项：
      * 1. 必须获取有效的 CALENDAR_ID（不能硬编码 1）
      * 2. EVENT_TIMEZONE 是必填字段
-     * 3. 提醒必须单独插入 Reminders 表（本项目不插，响铃走 AlarmReceiver）
+     * 3. 提醒必须单独插入 Reminders 表：enableAlarm=true 不插（响铃走 AlarmReceiver，
+     *    防日历 App 重复弹通知），enableAlarm=false 插 minutes=0 的「开始时」提醒
      */
     fun addCalendarEvent(
         context: Context,
@@ -94,8 +98,10 @@ object CalendarEventHelper {
                 put(CalendarContract.Events.EVENT_TIMEZONE, timeZone)
                 // 全天事件为 0，非全天为 1（默认）
                 put(CalendarContract.Events.ALL_DAY, 0)
-                // 闹钟提醒相关的字段设为默认值
-                put(CalendarContract.Events.HAS_ALARM, if (enableAlarm) 1 else 0)
+                // 两种路径都会带提醒（enableAlarm 走 AlarmReceiver 响铃、否则走日历
+                // 「开始时」通知），HAS_ALARM 恒 1——置 0 事件在系统日历里显示为
+                // 「无提醒」，到点不弹通知
+                put(CalendarContract.Events.HAS_ALARM, 1)
             }
 
             val eventUri = context.contentResolver.insert(CalendarContract.Events.CONTENT_URI, values)
@@ -118,7 +124,10 @@ object CalendarEventHelper {
             if (enableAlarm) {
                 scheduleAlarm(context, timestamp, title, eventId.toInt())
             } else {
-                println("📅 [Calendar] 响铃闹钟已跳过 (enableAlarm=false)")
+                // 不开响铃闹钟时插一条「开始时」日历提醒（minutes=0, METHOD_ALERT），
+                // 系统日历到点弹通知——对齐第三方日历创建的事件形态；提醒写失败
+                // 不影响事件本身（事件已创建成功）
+                insertStartReminder(context, eventId)
             }
 
             return RESULT_OK
@@ -129,6 +138,25 @@ object CalendarEventHelper {
         } catch (e: Exception) {
             println("❌ [Calendar] 写入失败: ${e.message}")
             return RESULT_WRITE_FAILED
+        }
+    }
+
+    /**
+     * 插入「开始时」日历提醒（minutes=0, METHOD_ALERT）。
+     * 系统日历把它显示为「提醒-开始时」，到点弹通知；enableAlarm=true 的路径不调用
+     * （响铃走 AlarmReceiver，插了会双提醒）。
+     */
+    private fun insertStartReminder(context: Context, eventId: Long) {
+        try {
+            val values = android.content.ContentValues().apply {
+                put(CalendarContract.Reminders.EVENT_ID, eventId)
+                put(CalendarContract.Reminders.MINUTES, 0)
+                put(CalendarContract.Reminders.METHOD, CalendarContract.Reminders.METHOD_ALERT)
+            }
+            context.contentResolver.insert(CalendarContract.Reminders.CONTENT_URI, values)
+            println("📅 [Calendar] 「开始时」提醒已写入 (eventId=$eventId, minutes=0)")
+        } catch (e: Exception) {
+            println("⚠️ [Calendar] 写入「开始时」提醒失败: ${e.message}")
         }
     }
 

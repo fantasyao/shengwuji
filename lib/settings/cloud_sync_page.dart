@@ -1,28 +1,38 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../db_helper.dart';
 import '../sync/cloud_sync_service.dart';
+import '../sync/webdav_request_counter.dart';
 import '../text_processor.dart';
 import '../theme/app_theme_extension.dart';
 import '../utils/cloud_sync_data_version.dart'; // 待同步检测
+import '../widgets/neu_widgets.dart';
 import 'settings_widgets.dart';
+import 'webdav_budget_line.dart';
 
 /// 「云端同步」二级页（设置 → 云端同步）。
 ///
-/// WebDAV 手动同步：日记（文字）/物品记录/热词/修正对 新增条目双向合并。
-/// 边界：手动触发、编辑与删除不跨端；录音文件走独立开关默认不同步
+/// WebDAV 手动同步：日记走 v2 三方合并（编辑与删除跨端传播）；物品记录/
+/// 热词/修正对仍是新增条目双向合并。
+/// 边界：手动触发；录音文件走独立开关默认不同步
 /// （见页内说明与 docs/architecture/cloud-sync.md）。
 class CloudSyncPage extends StatefulWidget {
   const CloudSyncPage({
     super.key,
     required this.processor,
     required this.dbHelper,
+    this.requestCounter,
   });
 
   final TextProcessor processor;
   final DbHelper dbHelper;
+
+  /// WebDAV 请求预算；为空时用本 engine 的单例（单测可注入假计数）。
+  final WebDavRequestCounter? requestCounter;
 
   @override
   State<CloudSyncPage> createState() => _CloudSyncPageState();
@@ -43,9 +53,13 @@ class _CloudSyncPageState extends State<CloudSyncPage> {
   bool _resultOk = false;
   List<String> _resultDetails = const [];
 
+  late final WebDavRequestCounter? _requestCounter =
+      widget.requestCounter ?? WebDavRequestCounter.instanceOrNull;
+
   late final CloudSyncService _service = CloudSyncService(
     dbHelper: widget.dbHelper,
     processor: widget.processor,
+    requestCounter: _requestCounter,
   );
 
   @override
@@ -53,6 +67,9 @@ class _CloudSyncPageState extends State<CloudSyncPage> {
     super.initState();
     _loadConfig();
     _loadLastSync();
+    // 悬浮窗 engine 的请求不在本 isolate 的内存里：进页读一次它的日志
+    final counter = _requestCounter;
+    if (counter != null) unawaited(counter.refreshOtherEngine());
   }
 
   @override
@@ -152,14 +169,18 @@ class _CloudSyncPageState extends State<CloudSyncPage> {
     setState(() {
       _busy = false;
       _resultOk = result.ok;
-      _resultMessage = result.ok ? '✅ ${result.message}' : '❌ ${result.message}';
+      _resultMessage = result.ok
+          ? '✅ ${result.message}'
+          : '❌ ${result.message}';
       _resultDetails = result.details;
     });
     _loadLastSync();
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(result.ok ? '✅ ${result.message}' : '❌ ${result.message}'),
+          content: Text(
+            result.ok ? '✅ ${result.message}' : '❌ ${result.message}',
+          ),
         ),
       );
     }
@@ -208,33 +229,21 @@ class _CloudSyncPageState extends State<CloudSyncPage> {
                   hint: '登录账号（如邮箱）',
                 ),
                 const SizedBox(height: 12),
-                TextField(
+                _buildField(
+                  ext,
                   controller: _passwordController,
+                  label: '应用密码',
+                  hint: '坚果云在「账户信息 → 安全选项」生成',
                   obscureText: _obscurePassword,
-                  autocorrect: false,
-                  enableSuggestions: false,
-                  decoration: InputDecoration(
-                    filled: true,
-                    fillColor: ext.cardBackground,
-                    labelText: '应用密码',
-                    labelStyle: TextStyle(color: ext.textSecondary, fontSize: 13),
-                    hintText: '坚果云在「账户信息 → 安全选项」生成',
-                    hintStyle: TextStyle(color: ext.textHint, fontSize: 13),
-                    suffixIcon: IconButton(
-                      icon: Icon(
-                        _obscurePassword
-                            ? Icons.visibility_off_outlined
-                            : Icons.visibility_outlined,
-                        size: 20,
-                      ),
-                      onPressed: () =>
-                          setState(() => _obscurePassword = !_obscurePassword),
+                  suffixIcon: IconButton(
+                    icon: Icon(
+                      _obscurePassword
+                          ? Icons.visibility_off_outlined
+                          : Icons.visibility_outlined,
+                      size: 20,
                     ),
-                    contentPadding: const EdgeInsets.all(16),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(15),
-                      borderSide: BorderSide.none,
-                    ),
+                    onPressed: () =>
+                        setState(() => _obscurePassword = !_obscurePassword),
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -245,22 +254,11 @@ class _CloudSyncPageState extends State<CloudSyncPage> {
                   hint: CloudSyncConfig.defaultRemotePath,
                 ),
                 const SizedBox(height: 14),
-                ElevatedButton.icon(
+                buildSettingsPrimaryButton(
+                  context,
+                  icon: Icons.save_rounded,
+                  label: '保存配置',
                   onPressed: _busy ? null : _saveConfig,
-                  icon: const Icon(Icons.save_rounded, size: 20),
-                  label: const Text(
-                    '保存配置',
-                    style: TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: ext.primary,
-                    foregroundColor: ext.textOnPrimary,
-                    elevation: 0,
-                    minimumSize: const Size.fromHeight(46),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
                 ),
               ],
             ),
@@ -272,9 +270,7 @@ class _CloudSyncPageState extends State<CloudSyncPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  _lastSyncText == null
-                      ? '尚未同步过'
-                      : '上次同步：$_lastSyncText',
+                  _lastSyncText == null ? '尚未同步过' : '上次同步：$_lastSyncText',
                   style: TextStyle(fontSize: 13, color: ext.textSecondary),
                 ),
                 if (_hasPending) ...[
@@ -284,51 +280,29 @@ class _CloudSyncPageState extends State<CloudSyncPage> {
                     style: TextStyle(fontSize: 12, color: ext.warningText),
                   ),
                 ],
+                if (_requestCounter != null) ...[
+                  const SizedBox(height: 10),
+                  WebDavBudgetLine(counter: _requestCounter),
+                ],
                 const SizedBox(height: 12),
                 Row(
                   children: [
                     Expanded(
-                      child: OutlinedButton.icon(
+                      child: buildSettingsSecondaryButton(
+                        context,
+                        icon: Icons.wifi_tethering_rounded,
+                        label: '测试连接',
                         onPressed: _busy ? null : _testConnection,
-                        icon: const Icon(Icons.wifi_tethering_rounded, size: 20),
-                        label: const Text('测试连接'),
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: ext.primary,
-                          side: BorderSide(color: ext.primary),
-                          minimumSize: const Size.fromHeight(46),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                        ),
                       ),
                     ),
                     const SizedBox(width: 12),
                     Expanded(
-                      child: ElevatedButton.icon(
+                      child: buildSettingsPrimaryButton(
+                        context,
+                        icon: Icons.sync_rounded,
+                        label: '立即同步',
+                        busy: _busy,
                         onPressed: _busy || !_formConfigured ? null : _runSync,
-                        icon: _busy
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : const Icon(Icons.sync_rounded, size: 20),
-                        label: const Text(
-                          '立即同步',
-                          style: TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: ext.primary,
-                          foregroundColor: ext.textOnPrimary,
-                          disabledBackgroundColor:
-                              ext.primary.withValues(alpha: 0.4),
-                          disabledForegroundColor: ext.textOnPrimary,
-                          elevation: 0,
-                          minimumSize: const Size.fromHeight(46),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                        ),
                       ),
                     ),
                   ],
@@ -348,7 +322,10 @@ class _CloudSyncPageState extends State<CloudSyncPage> {
                       padding: const EdgeInsets.only(left: 12, top: 4),
                       child: Text(
                         '· $d',
-                        style: TextStyle(fontSize: 12, color: ext.textSecondary),
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: ext.textSecondary,
+                        ),
                       ),
                     ),
                 ],
@@ -359,29 +336,53 @@ class _CloudSyncPageState extends State<CloudSyncPage> {
           // 录音同步开关：独立于「保存配置」按钮即时生效。默认关——WAV
           // 约 2MB/分钟，开启意味着用户显式接受网盘流量与空间的占用
           SettingsCard(
-            child: SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              value: _syncAudio,
-              onChanged: (v) {
-                setState(() => _syncAudio = v);
-                CloudSyncConfig.saveSyncAudio(v);
-              },
-              activeColor: ext.primary,
-              title: Text(
-                '同步录音文件',
-                style: TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.w600,
-                  color: ext.textPrimary,
-                ),
-              ),
-              subtitle: Text(
-                '关闭时只同步文字。开启后录音分批上传/下载'
-                '（每次最多 80 条，其余下次同步续传）；'
-                'WAV 约 2MB/分钟，注意网盘流量与空间',
-                style: TextStyle(fontSize: 12, color: ext.textSecondary),
-              ),
-            ),
+            child: ext.isNeumorphic
+                // 拟物主题：凹槽开关（与设置页其他开关同款）；其余主题保持
+                // 历史 SwitchListTile（开关在右）布局，渲染路径零变化
+                ? NeuSwitchTile(
+                    title: Text(
+                      '同步录音文件',
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                        color: ext.textPrimary,
+                      ),
+                    ),
+                    subtitle: Text(
+                      '关闭时只同步文字。开启后录音分批上传/下载'
+                      '（每次最多 80 条，其余下次同步续传）；'
+                      'WAV 约 2MB/分钟，注意网盘流量与空间',
+                      style: TextStyle(fontSize: 12, color: ext.textSecondary),
+                    ),
+                    value: _syncAudio,
+                    onChanged: (v) {
+                      setState(() => _syncAudio = v);
+                      CloudSyncConfig.saveSyncAudio(v);
+                    },
+                  )
+                : SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: _syncAudio,
+                    onChanged: (v) {
+                      setState(() => _syncAudio = v);
+                      CloudSyncConfig.saveSyncAudio(v);
+                    },
+                    activeColor: ext.primary,
+                    title: Text(
+                      '同步录音文件',
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                        color: ext.textPrimary,
+                      ),
+                    ),
+                    subtitle: Text(
+                      '关闭时只同步文字。开启后录音分批上传/下载'
+                      '（每次最多 80 条，其余下次同步续传）；'
+                      'WAV 约 2MB/分钟，注意网盘流量与空间',
+                      style: TextStyle(fontSize: 12, color: ext.textSecondary),
+                    ),
+                  ),
           ),
           const SizedBox(height: 24),
           const SettingsSectionTitle("说明"),
@@ -389,12 +390,15 @@ class _CloudSyncPageState extends State<CloudSyncPage> {
             child: Text(
               '· 支持任何 WebDAV 网盘：坚果云（网页端「账户信息 → 安全选项」'
               '生成应用密码）、Nextcloud、Alist 等\n'
-              '· 同步内容：日记文字、物品记录、热词、修正对；两台设备各自'
+              '· 同步内容：日记文字与截图附件、物品记录、热词、修正对；两台设备各自'
               '新增的内容会互相补齐\n'
               '· 录音文件默认不同步，打开「同步录音文件」开关后两台设备'
               '的录音会互相补齐（新设备恢复时逐条下载）\n'
-              '· 手动触发：进入本页点「立即同步」才会同步，App 不会自动联网\n'
-              '· 本机删除过的记录不会被云端拉回；编辑内容暂不同步\n'
+              '· 手动触发：本页点「立即同步」，或在随手记列表、悬浮窗面板下拉刷新；'
+              'App 不会自动联网同步\n'
+              '· 日记的修改与删除会同步到其他设备；同一条两端同时改过会保留'
+              '两份（多出的那份带「冲突」标记）\n'
+              '· 物品记录只补齐新增，本机删除过的不会被云端拉回\n'
               '· 密码保存在系统安全存储中，不上传到任何服务器',
               style: TextStyle(fontSize: 12, color: ext.textHint, height: 1.6),
             ),
@@ -409,22 +413,33 @@ class _CloudSyncPageState extends State<CloudSyncPage> {
     required TextEditingController controller,
     required String label,
     required String hint,
+    bool obscureText = false,
+    Widget? suffixIcon,
   }) {
-    return TextField(
-      controller: controller,
-      autocorrect: false,
-      enableSuggestions: false,
-      decoration: InputDecoration(
-        filled: true,
-        fillColor: ext.cardBackground,
-        labelText: label,
-        labelStyle: TextStyle(color: ext.textSecondary, fontSize: 13),
-        hintText: hint,
-        hintStyle: TextStyle(color: ext.textHint, fontSize: 13),
-        contentPadding: const EdgeInsets.all(16),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(15),
-          borderSide: BorderSide.none,
+    final neu = ext.isNeumorphic;
+    return buildSettingsFieldShell(
+      context,
+      // 拟物：标签画在凹陷外（浮动标签会压在上沿、被内阴影切半截）
+      label: neu ? label : null,
+      field: TextField(
+        controller: controller,
+        obscureText: obscureText,
+        autocorrect: false,
+        enableSuggestions: false,
+        decoration: InputDecoration(
+          // 拟物主题由外层 NeuInset 提供同色凹陷底，填充会盖住内阴影
+          filled: !neu,
+          fillColor: ext.cardBackground,
+          labelText: neu ? null : label,
+          labelStyle: TextStyle(color: ext.textSecondary, fontSize: 13),
+          hintText: hint,
+          hintStyle: TextStyle(color: ext.textHint, fontSize: 13),
+          suffixIcon: suffixIcon,
+          contentPadding: const EdgeInsets.all(16),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(15),
+            borderSide: BorderSide.none,
+          ),
         ),
       ),
     );

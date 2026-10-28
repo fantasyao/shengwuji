@@ -3,12 +3,15 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../app_logger.dart';
 import '../db_helper.dart';
 import '../utils/diary_sync_bridge.dart';
+import '../utils/diary_tag.dart';
+import '../utils/note_lock_settings.dart';
 import '../utils/note_unlock_session.dart' show kLockedMaskText;
 import 'diary_web_page.dart';
 
@@ -136,12 +139,17 @@ class DiaryServerStartResult {
 /// 服务的日记 JSON 行（⚠️ 不暴露文件系统绝对路径，录音只给 /audio/{id} 相对地址）。
 /// 锁定笔记（is_locked=1）：content 脱敏为固定星号、音频 URL 不给——局域网
 /// 是悬浮窗/锁屏之外的第三个泄露面，锁定即全链路脱敏；电脑端要编辑/收听
-/// 需先在手机上解除锁定
-Map<String, Object?> diaryNoteToJson(Map<String, dynamic> row) {
+/// 需先在手机上解除锁定。
+/// [lockEnabled] 对应设置页「笔记锁定」总开关：关闭时 is_locked 标记视为
+/// 未启用，按明文返回（标记保留在库，重新开启即恢复脱敏）
+Map<String, Object?> diaryNoteToJson(
+  Map<String, dynamic> row, {
+  bool lockEnabled = true,
+}) {
   final audioPath = row['audio_path'] as String?;
   final hasAudio = audioPath != null && audioPath.isNotEmpty;
   final archived = row['is_archived'];
-  final locked = row['is_locked'] == 1;
+  final locked = lockEnabled && row['is_locked'] == 1;
   return {
     'id': row['id'],
     'content': locked
@@ -154,6 +162,26 @@ Map<String, Object?> diaryNoteToJson(Map<String, dynamic> row) {
     'tag': row['tag'],
     'hasAudio': hasAudio,
     'audioUrl': hasAudio && !locked ? '/audio/${row['id']}' : null,
+  };
+}
+
+/// 标签外观的网页投影（2026-10-22）：图标 codePoint + 浅底/深字色。
+/// 网页用 /tag-icons.otf（Flutter 打包的 MaterialIcons 字体）渲染 codePoint，
+/// 增删可选图标时网页无需改代码；颜色由设置页「标签外观」决定
+Map<String, Object?> tagStyleToWebJson(DiaryTagStyle style) {
+  final argb = style.color.toARGB32();
+  final r = (argb >> 16) & 0xFF;
+  final g = (argb >> 8) & 0xFF;
+  final b = argb & 0xFF;
+  // 背景 = 标注色 14% 叠白（与 App 内选中芯片的淡色底同观感）
+  int tint(int c) => (c * 0.14 + 255 * 0.86).round().clamp(0, 255);
+  String hex(int c) => c.toRadixString(16).padLeft(2, '0');
+  return {
+    'tag': style.tag,
+    'codePoint': style.icon.codePoint,
+    'fontFamily': style.icon.fontFamily ?? 'MaterialIcons',
+    'bg': '#${hex(tint(r))}${hex(tint(g))}${hex(tint(b))}',
+    'fg': '#${hex(r)}${hex(g)}${hex(b)}',
   };
 }
 
@@ -408,6 +436,10 @@ class DiaryWebServer {
       if (method == 'GET' && path == '/') {
         return await _replyHtml(req);
       }
+      // 标签图标字体（网页按 codePoint 渲染；见 tagStyleToWebJson）
+      if (method == 'GET' && path == '/tag-icons.otf') {
+        return await _replyTagIconFont(req);
+      }
 
       // --- API ---
       if (method == 'GET' && path == '/api/notes') {
@@ -465,6 +497,26 @@ class DiaryWebServer {
     await req.response.close();
   }
 
+  /// MaterialIcons 字体（标签图标用）。Flutter 的图标字体经 tree-shake 后仍
+  /// 保留所有被 const 引用的图标（[kTagIconChoices] 全量引用），codePoint
+  /// 与 App 内一致；字体随 App 资源包同机，读不到时回 404（网页侧图标留白）
+  Future<void> _replyTagIconFont(HttpRequest req) async {
+    try {
+      final data = await rootBundle.load('fonts/MaterialIcons-Regular.otf');
+      final bytes = data.buffer.asUint8List(
+        data.offsetInBytes,
+        data.lengthInBytes,
+      );
+      req.response.headers.set('Content-Type', 'font/otf');
+      req.response.headers.set('Cache-Control', 'public, max-age=86400');
+      req.response.add(bytes);
+      await req.response.close();
+    } catch (e) {
+      log('💻 [WebServer] MaterialIcons 字体不可用: $e');
+      await _replyJson(req, {'error': 'font unavailable'}, status: 404);
+    }
+  }
+
   /// JSON 响应统一出口
   Future<void> _replyJson(
     HttpRequest req,
@@ -482,9 +534,17 @@ class DiaryWebServer {
   }
 
   Future<void> _replyNotes(HttpRequest req) async {
+    final lockEnabled = await NoteLockSettings.isEnabled();
     final rows = await _repo!.getAllNotes();
     await _replyJson(req, {
-      'notes': [for (final r in rows) diaryNoteToJson(r)],
+      'notes': [
+        for (final r in rows) diaryNoteToJson(r, lockEnabled: lockEnabled),
+      ],
+      // 4 槽位标签外观：网页标签芯片的图标/颜色与手机端一致
+      'tagConfig': [
+        for (final style in DiaryTagStyles.config.styles)
+          tagStyleToWebJson(style),
+      ],
     });
   }
 
@@ -495,7 +555,7 @@ class DiaryWebServer {
     if (row == null) {
       return await _replyJson(req, {'error': 'not found'}, status: 404);
     }
-    if (row['is_locked'] == 1) {
+    if (row['is_locked'] == 1 && await NoteLockSettings.isEnabled()) {
       return await _replyJson(
         req,
         {'error': 'note is locked, unlock it on the phone first'},
@@ -533,7 +593,7 @@ class DiaryWebServer {
     if (row == null) {
       return await _replyJson(req, {'error': 'not found'}, status: 404);
     }
-    if (row['is_locked'] == 1) {
+    if (row['is_locked'] == 1 && await NoteLockSettings.isEnabled()) {
       return await _replyJson(
         req,
         {'error': 'note is locked, unlock it on the phone first'},
@@ -542,6 +602,7 @@ class DiaryWebServer {
     }
     await _repo!.deleteById(id);
     await _deleteAudioFileSafely(row['audio_path'] as String?);
+    await _deleteImageFileSafely(row['image_path'] as String?);
     log('💻 [WebServer] 电脑端删除日记 id=$id');
     await _afterMutation();
     await _replyJson(req, {'ok': true});
@@ -554,7 +615,8 @@ class DiaryWebServer {
     final row = await _repo!.getNoteById(id);
     final audioPath = row?['audio_path'] as String?;
     // 锁定笔记的录音同属锁定内容：JSON 不给 audioUrl 之外，直构 URL 也拦截
-    if (row?['is_locked'] == 1) {
+    //（设置页关闭「笔记锁定」总开关后 is_locked 视为未启用，正常放行）
+    if (row?['is_locked'] == 1 && await NoteLockSettings.isEnabled()) {
       return await _replyJson(req, {'error': 'note is locked'}, status: 403);
     }
     if (audioPath == null || audioPath.isEmpty) {
@@ -694,6 +756,40 @@ class DiaryWebServer {
       }
     } catch (e) {
       log('💻 [WebServer] ⚠️ 删除录音文件失败（不影响数据删除）: $e');
+    }
+  }
+
+  Future<Directory?> _resolveImageDir() async {
+    try {
+      final docs = await getApplicationDocumentsDirectory();
+      return Directory(p.join(docs.path, 'diary_images'));
+    } catch (e) {
+      log('💻 [WebServer] 解析截图附件目录失败: $e');
+      return null;
+    }
+  }
+
+  /// 截图附件路径是否落在 diary_images/ 内（同录音目录守护：备份导入可能
+  /// 带来任意路径，删除只能作用于本 App 的附件目录）
+  Future<bool> _isInsideImageDir(String filePath) async {
+    final dir = await _resolveImageDir();
+    if (dir == null) return false;
+    return p.isWithin(p.canonicalize(dir.path), p.canonicalize(filePath));
+  }
+
+  /// 删除截图附件（best-effort）：电脑端删除笔记时与录音一起清掉，
+  /// 失败不影响数据删除
+  Future<void> _deleteImageFileSafely(String? imagePath) async {
+    if (imagePath == null || imagePath.isEmpty) return;
+    if (!await _isInsideImageDir(imagePath)) return;
+    try {
+      final file = File(imagePath);
+      if (await file.exists()) {
+        await file.delete();
+        log('💻 [WebServer] 已删除截图附件: $imagePath');
+      }
+    } catch (e) {
+      log('💻 [WebServer] ⚠️ 删除截图附件失败（不影响数据删除）: $e');
     }
   }
 }

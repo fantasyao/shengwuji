@@ -204,4 +204,122 @@ void main() {
       expect(results.single.dateTime!.minute, 5);
     });
   });
+
+  group('DartChronoParser 月日与"下个月"（2026-10-18 用户反馈）', () {
+    final parser = DartChronoParser();
+    // 固定参考时间：2026-10-18（周日）10:00
+    const ref = '2026-10-18T10:00:00';
+
+    test('"21号9点提醒我开会"：裸日号 + 裸钟点合并为本月21日 9:00', () async {
+      final results = await parser.parseDateTimeEntities(
+        '21号9点提醒我开会',
+        refDate: ref,
+      );
+      expect(results.length, 1);
+      expect(results[0].text, '21号9点');
+      final dt = results[0].dateTime!;
+      expect(dt.year, 2026);
+      expect(dt.month, 10);
+      expect(dt.day, 21);
+      expect(dt.hour, 9);
+    });
+
+    test('裸"21号"：本月未过 → 本月21日', () async {
+      final results = await parser.parseDateTimeEntities('21号交房租', refDate: ref);
+      expect(results.single.dateTime!.month, 10);
+      expect(results.single.dateTime!.day, 21);
+    });
+
+    test('裸"3号"：本月已过 → 滚到下月3日', () async {
+      final results = await parser.parseDateTimeEntities('3号交房租', refDate: ref);
+      expect(results.single.dateTime!.month, 11);
+      expect(results.single.dateTime!.day, 3);
+    });
+
+    test('裸"18号"：当天 → 今天', () async {
+      final results = await parser.parseDateTimeEntities('18号有安排', refDate: ref);
+      expect(results.single.dateTime!.month, 10);
+      expect(results.single.dateTime!.day, 18);
+    });
+
+    test('"下个月21号下午3点"：月词 + 日号 + 时段合并为 11-21 15:00', () async {
+      final results = await parser.parseDateTimeEntities(
+        '下个月21号下午3点复诊',
+        refDate: ref,
+      );
+      expect(results.length, 1);
+      expect(results[0].text, '下个月21号下午3点');
+      final dt = results[0].dateTime!;
+      expect(dt.year, 2026);
+      expect(dt.month, 11);
+      expect(dt.day, 21);
+      expect(dt.hour, 15);
+    });
+
+    test('裸"下个月"（无日号）：指向次月1日', () async {
+      final results = await parser.parseDateTimeEntities('下个月再说', refDate: ref);
+      expect(results.single.text, '下个月');
+      expect(results.single.dateTime!.month, 11);
+      expect(results.single.dateTime!.day, 1);
+    });
+
+    test('"下下个月5号"：偏移两个月（不被"下个月"吃掉前缀）', () async {
+      final results = await parser.parseDateTimeEntities('下下个月5号到期', refDate: ref);
+      expect(results.single.text, '下下个月5号');
+      expect(results.single.dateTime!.month, 12);
+      expect(results.single.dateTime!.day, 5);
+    });
+
+    test('12 月说"下个月5号"：跨年落到次年1月', () async {
+      final results = await parser.parseDateTimeEntities(
+        '下个月5号还款',
+        refDate: '2026-12-10T10:00:00',
+      );
+      expect(results.single.dateTime!.year, 2027);
+      expect(results.single.dateTime!.month, 1);
+      expect(results.single.dateTime!.day, 5);
+    });
+
+    test('2 月说"31号"：本月没有31日 → 顺延到3月31日', () async {
+      final results = await parser.parseDateTimeEntities(
+        '31号截止',
+        refDate: '2026-02-10T10:00:00',
+      );
+      expect(results.single.dateTime!.month, 3);
+      expect(results.single.dateTime!.day, 31);
+    });
+
+    test('"下个月31号"遇30天的月份：收拢到该月最后一天（11-30）', () async {
+      final results = await parser.parseDateTimeEntities('下个月31号结账', refDate: ref);
+      expect(results.single.dateTime!.month, 11);
+      expect(results.single.dateTime!.day, 30);
+    });
+
+    test('中文数字："十月五号"与"二十一号晚上八点"', () async {
+      // 10-18 说"十月五号"：已过 → 既有规则指向明年
+      final r1 = await parser.parseDateTimeEntities('十月五号是生日', refDate: ref);
+      expect(r1.single.text, '十月五号');
+      expect(r1.single.dateTime!.year, 2027);
+      expect(r1.single.dateTime!.month, 10);
+      expect(r1.single.dateTime!.day, 5);
+
+      final r2 = await parser.parseDateTimeEntities('二十一号晚上八点聚餐', refDate: ref);
+      expect(r2.single.text, '二十一号晚上八点');
+      final dt = r2.single.dateTime!;
+      expect(dt.month, 10);
+      expect(dt.day, 21);
+      expect(dt.hour, 20);
+    });
+
+    test('物品场景不误伤："3号电池""3号楼""21号线""第21号""5日后"', () async {
+      expect(await parser.parseDateTimeEntities('我把3号电池放在抽屉里'), isEmpty);
+      expect(await parser.parseDateTimeEntities('住在3号楼302'), isEmpty);
+      expect(await parser.parseDateTimeEntities('坐21号线上班'), isEmpty);
+      expect(await parser.parseDateTimeEntities('第21号台风'), isEmpty);
+      // "5日后"归 _parseOffset（5天后语义），裸日号不得重复命中"5日"
+      final r = await parser.parseDateTimeEntities('5日后联系');
+      expect(r.length, 1);
+      expect(r.single.text, '5日后');
+    });
+  });
 }

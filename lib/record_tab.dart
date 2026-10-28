@@ -482,9 +482,9 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
           // 检查加载是否成功
           if (!_isReady) {
             if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text("⚠️ 模型加载失败，请检查设置")),
-              );
+              ScaffoldMessenger.of(
+                context,
+              ).showSnackBar(const SnackBar(content: Text("⚠️ 模型加载失败，请检查设置")));
               setState(() {
                 _isProcessing = false;
                 _statusText = "录音已停止";
@@ -597,7 +597,10 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
           });
           // 「错误-修正」命中检测：识别结果里有学过的错误片段 → 提示一键修正；
           // 修正对没提示时，音素热词相似命中兜底提示
-          final offered = await _offerCorrectionFix(res['item']!, res['location']!);
+          final offered = await _offerCorrectionFix(
+            res['item']!,
+            res['location']!,
+          );
           if (!offered) {
             await _offerPhonemeSimilarFix(res['item']!, res['location']!);
           }
@@ -722,9 +725,7 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
             contexts[PairContextGate.keyOfPair(p)] ?? const [],
           );
       final itemMatches = pairs.where((p) => hitWithGate(item, p)).toList();
-      final locMatches = pairs
-          .where((p) => hitWithGate(location, p))
-          .toList();
+      final locMatches = pairs.where((p) => hitWithGate(location, p)).toList();
       if (itemMatches.isEmpty && locMatches.isEmpty) return false;
       // 双钥匙对（整词+短核）同时命中时文案只展示长钥匙，计数不虚高；
       // 下方替换仍用全集：长钥匙先应用，短钥匙只兜底残余位置
@@ -777,7 +778,8 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
               }
             },
           ),
-          persist: false, // ⚠️ Flutter 的 SnackBar 带 action 时 persist 默认 true=永不超时消失，必须显式关
+          persist:
+              false, // ⚠️ Flutter 的 SnackBar 带 action 时 persist 默认 true=永不超时消失，必须显式关
           duration: const Duration(seconds: 6),
           behavior: SnackBarBehavior.floating,
           backgroundColor: ext.primaryDark,
@@ -817,24 +819,27 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
             if (!mounted) return;
             setState(() {
               if (hitItem) {
-                _itemController.text = _itemController.text
-                    .replaceAll(first.original, first.hotword);
+                _itemController.text = _itemController.text.replaceAll(
+                  first.original,
+                  first.hotword,
+                );
               }
               if (hitLoc) {
-                _locationController.text = _locationController.text
-                    .replaceAll(first.original, first.hotword);
+                _locationController.text = _locationController.text.replaceAll(
+                  first.original,
+                  first.hotword,
+                );
               }
             });
             AppLogger.appLog('✅ [Record] 音素相似替换已应用: $first');
           },
         ),
-        persist: false, // ⚠️ Flutter 的 SnackBar 带 action 时 persist 默认 true=永不超时消失，必须显式关
+        persist:
+            false, // ⚠️ Flutter 的 SnackBar 带 action 时 persist 默认 true=永不超时消失，必须显式关
         duration: const Duration(seconds: 3), // 用户要求：相似提示 3 秒即消失（原 6 秒）
         behavior: SnackBarBehavior.floating,
         backgroundColor: ext.primaryDark,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(10),
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       ),
     );
   }
@@ -1587,8 +1592,8 @@ class RecordTabState extends State<RecordTab> with WidgetsBindingObserver {
                                       value: _ttsEnabled,
                                       onChanged: (v) async {
                                         setState(() => _ttsEnabled = v);
-                                        final prefs = await SharedPreferences
-                                            .getInstance();
+                                        final prefs =
+                                            await SharedPreferences.getInstance();
                                         await prefs.setBool(
                                           'move_mode_tts_enabled',
                                           v,

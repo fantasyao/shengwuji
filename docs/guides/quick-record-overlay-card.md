@@ -85,7 +85,7 @@
 
 需要：`SYSTEM_ALERT_WINDOW + ForegroundService + 原生 AudioRecord + WindowManager.addView`
 
-详见 [评估文档](../../C:/Users/11219/.claude/plans/off-state-record-evaluation.md) 中的方案 B/C 部分。
+详见本机开发笔记中的评估文档（方案 B/C 部分，未随公开仓库分发）。
 
 ---
 
@@ -206,8 +206,6 @@
 
 ## 相关文档
 
-- 评估：[C:\Users\11219\.claude\plans\off-state-record-evaluation.md](../../../../C:/Users/11219/.claude/plans/off-state-record-evaluation.md)
-- 方案一 plan：[C:\Users\11219\.claude\plans\peppy-tumbling-wirth.md](../../../../C:/Users/11219/.claude/plans/peppy-tumbling-wirth.md)
 - 当前 UI 模式：[ui-patterns.md](ui-patterns.md)
 - 当前架构：[../architecture/volume-key-shortcuts.md](../architecture/volume-key-shortcuts.md)
 

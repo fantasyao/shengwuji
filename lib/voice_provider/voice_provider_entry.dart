@@ -35,6 +35,7 @@ const MethodChannel _channel = MethodChannel('shengwuji/voice_provider');
 
 /// headless 引擎入口（main.dart 里声明符号后委托到这里）
 Future<void> voiceProviderMain() async {
+  AppLogger.setEngine('voice_provider');
   WidgetsFlutterBinding.ensureInitialized();
   sherpa_onnx.initBindings();
   log('🎙️ [voiceProviderMain] provider 引擎入口已执行');

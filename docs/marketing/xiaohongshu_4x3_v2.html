@@ -1,0 +1,1166 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>声物记 · 小红书图解（4:3）</title>
+<style>
+/* ═══════════ 字体 / 变量（与 app 默认青主题一致） ═══════════ */
+@font-face{
+  font-family:'LXGW';
+  src:url('../../assets/LXGWWenKaiMonoGBScreen.ttf') format('truetype');
+  font-weight:400;font-style:normal;font-display:block;
+}
+:root{
+  --teal:#009688; --teal-dark:#00796B; --teal-deep:#0F3B36; --teal-light:#B2DFDB;
+  --ink:#0F3B36; --body:#456A63; --muted:#84A29C;
+  --card:#ffffff; --scaffold:#F5F5F5; --hint:#9E9E9E; --divider:rgba(0,0,0,.08);
+  --link:#1976D2; --link-bg:#BBDEFB;
+  --urgent:#FF6B6B; --star:#FEA545; --idea:#AE82E4; --task:#2E9F5C; --normal:#6F9AF0;
+  --gold:#D4A437;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:#0E1918}
+body{
+  padding:30px;display:flex;flex-direction:column;align-items:center;gap:30px;
+  font-family:'LXGW','LXGW WenKai Mono GB Screen','Microsoft YaHei','PingFang SC',sans-serif;
+  -webkit-font-smoothing:antialiased;text-rendering:geometricPrecision;
+}
+body:has(.slide:target){padding:0;display:block;background:#fff}
+body:has(.slide:target) .slide{display:none}
+body:has(.slide:target) .slide:target{display:block}
+.sprite{position:absolute;width:0;height:0;overflow:hidden}
+.ic{width:22px;height:22px;fill:currentColor;display:block;flex:none}
+
+/* ═══════════ 画布 1080×810 ═══════════ */
+.slide{
+  width:1080px;height:810px;position:relative;overflow:hidden;flex:none;
+  background:
+    radial-gradient(600px 460px at 88% 6%, rgba(0,150,136,.17), transparent 70%),
+    radial-gradient(560px 400px at 2% 100%, rgba(25,118,210,.09), transparent 72%),
+    linear-gradient(150deg,#F7FDFC 0%,#EAF6F3 54%,#DFEEEC 100%);
+}
+.slide::before{
+  content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:radial-gradient(rgba(0,120,110,.05) 1px, transparent 1px);
+  background-size:24px 24px;
+}
+.orb{position:absolute;border-radius:50%;pointer-events:none}
+.o1{width:420px;height:420px;right:-90px;top:-140px;background:radial-gradient(circle,rgba(0,150,136,.22),rgba(0,150,136,0) 68%)}
+.o2{width:360px;height:360px;left:-120px;bottom:-140px;background:radial-gradient(circle,rgba(25,118,210,.16),rgba(25,118,210,0) 70%)}
+.o3{width:240px;height:240px;left:300px;top:-110px;background:radial-gradient(circle,rgba(46,159,92,.13),rgba(46,159,92,0) 70%)}
+
+/* ═══════════ 文案区 ═══════════ */
+.copy{position:absolute;z-index:3}
+.step{
+  display:inline-flex;align-items:center;gap:8px;padding:7px 16px;border-radius:999px;
+  font-size:15px;letter-spacing:.08em;color:var(--teal-dark);
+  background:rgba(0,150,136,.10);border:1px solid rgba(0,150,136,.22);
+}
+.step .ic{width:15px;height:15px}
+h1{
+  font-size:56px;line-height:1.34;color:var(--ink);font-weight:700;letter-spacing:.01em;
+  margin-top:20px;
+}
+.copy.cover h1{font-size:64px;line-height:1.30}
+.lead{font-size:23px;line-height:1.78;color:var(--body);margin-top:20px;letter-spacing:.005em}
+.hl{color:var(--teal-dark);font-weight:700;background:linear-gradient(180deg,transparent 60%,rgba(0,150,136,.20) 60%);border-radius:3px;padding:0 2px}
+.small{font-size:16px;line-height:1.7;color:var(--muted);margin-top:16px}
+.brand{position:absolute;left:62px;top:52px;display:flex;align-items:center;gap:12px;z-index:3}
+.brand .logo{
+  width:38px;height:38px;border-radius:12px;display:grid;place-items:center;color:#fff;
+  background:linear-gradient(150deg,#12B5A4,#00796B);
+  box-shadow:0 6px 14px rgba(0,121,107,.30),inset 0 1px 0 rgba(255,255,255,.4);
+}
+.brand .logo .ic{width:22px;height:22px}
+.brandname{font-size:25px;color:var(--ink);font-weight:700;letter-spacing:.06em}
+.brandname em{font-style:normal;font-size:14px;font-weight:400;color:var(--muted);margin-left:10px;letter-spacing:.04em}
+.foot{position:absolute;left:64px;bottom:32px;font-size:15px;color:#8FA9A3;letter-spacing:.05em;z-index:3}
+.pageno{position:absolute;right:420px;bottom:30px;font-size:15px;color:#9DB6B0;letter-spacing:.12em;z-index:3}
+
+/* 封面卖点 */
+.feats{list-style:none;margin-top:26px;display:flex;flex-direction:column;gap:13px}
+.feats li{display:flex;align-items:center;gap:12px;font-size:20px;color:#2F5751}
+.feats .fi{
+  width:32px;height:32px;border-radius:10px;display:grid;place-items:center;color:var(--teal-dark);
+  background:rgba(0,150,136,.12);border:1px solid rgba(0,150,136,.16);
+}
+.feats .fi .ic{width:17px;height:17px}
+
+/* 强调卡 */
+.notecard{
+  margin-top:20px;padding:15px 18px;border-radius:14px;font-size:16px;line-height:1.75;color:#2F6B62;
+  background:rgba(0,150,136,.09);border:1px solid rgba(0,150,136,.16);
+}
+.notecard b{color:var(--teal-dark)}
+
+/* chips */
+.chips{display:flex;gap:10px;margin-top:18px;flex-wrap:wrap}
+.chips span{
+  font-size:15px;color:#46726B;padding:6px 13px;border-radius:999px;
+  background:rgba(255,255,255,.72);border:1px solid rgba(0,150,136,.18);
+}
+.chips span b{color:var(--teal-dark);font-weight:700}
+
+/* 步骤 */
+.steps{margin-top:22px;display:flex;flex-direction:column;gap:12px}
+.steps .s{display:flex;align-items:center;gap:13px;font-size:18px;color:#33574F}
+.steps .n{
+  width:28px;height:28px;border-radius:50%;display:grid;place-items:center;flex:none;
+  font-size:14px;font-weight:700;color:#fff;background:linear-gradient(150deg,#12B5A4,#00897B);
+  box-shadow:0 3px 8px rgba(0,137,123,.32);
+}
+
+/* ═══════════ 手机外框 ═══════════ */
+.phone{
+  position:absolute;width:358px;height:753px;padding:10px;border-radius:47px;z-index:4;
+  background:linear-gradient(160deg,#22262b,#0a0c0f 60%);
+  box-shadow:0 34px 64px rgba(8,45,40,.26),inset 0 1px 0 rgba(255,255,255,.22);
+}
+.phone .di{position:absolute;top:17px;left:50%;transform:translateX(-50%);width:88px;height:23px;border-radius:14px;background:#08090b;z-index:20}
+.phone-inner{width:338px;height:733px;border-radius:38px;overflow:hidden;position:relative;background:var(--scaffold)}
+.mock{width:393px;height:852px;transform:scale(.86);transform-origin:top left;position:relative;background:var(--scaffold);overflow:hidden}
+.phone.sm{width:310px;height:651px;padding:9px;border-radius:42px}
+.phone.sm .di{width:76px;height:20px;top:15px}
+.phone.sm .phone-inner{width:292px;height:633px;border-radius:34px}
+.phone.sm .mock{transform:scale(.743)}
+
+/* 状态栏 */
+.statusbar{height:44px;display:flex;align-items:center;justify-content:space-between;padding:0 26px;position:relative;z-index:12;color:#171717}
+.sb-time{font-size:13.5px;font-weight:700;letter-spacing:.02em}
+.sb-ic{display:flex;align-items:center;gap:6px}
+.sb-ic svg{display:block}
+.batt{width:23px;height:11.5px;border:1.2px solid rgba(0,0,0,.5);border-radius:3.5px;position:relative;display:inline-block}
+.batt::after{content:"";position:absolute;right:-3.5px;top:3.4px;width:2px;height:4.6px;border-radius:0 1px 1px 0;background:rgba(0,0,0,.42)}
+.batt i{position:absolute;left:1.2px;top:1.2px;bottom:1.2px;width:74%;background:#1c1c1c;border-radius:2px}
+
+/* 随手记页 */
+.halo{position:absolute;border-radius:50%;filter:blur(46px);z-index:0}
+.halo.a{width:210px;height:210px;left:-70px;top:-60px;background:rgba(0,150,136,.42)}
+.halo.b{width:180px;height:180px;right:30px;top:-50px;background:rgba(25,118,210,.24)}
+.diary-top{position:absolute;top:60px;left:20px;right:20px;display:flex;gap:12px;z-index:5}
+.search{
+  flex:1;height:50px;border-radius:24px;display:flex;align-items:center;gap:11px;padding:0 18px;
+  background:rgba(255,255,255,.55);border:1px solid var(--divider);
+  box-shadow:0 2px 8px rgba(0,0,0,.05);font-size:15px;color:var(--hint);
+}
+.search .ic{width:20px;height:20px;color:var(--teal)}
+.chipbtn{
+  width:44px;height:44px;border-radius:50%;display:grid;place-items:center;color:var(--teal);
+  background:rgba(0,150,136,.10);flex:none;
+}
+.chipbtn .ic{width:21px;height:21px}
+.list{position:absolute;top:120px;left:20px;right:20px;bottom:0;z-index:1;overflow:hidden}
+
+.dcard{
+  position:relative;background:rgba(255,255,255,.74);border:1px solid var(--divider);border-radius:16px;
+  padding:12px 16px 8px;margin-bottom:12px;box-shadow:0 4px 10px rgba(0,0,0,.05);
+}
+.meta{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--hint);line-height:1.5}
+.meta .dot{width:8px;height:8px;border-radius:50%;flex:none}
+.meta .dur{margin-left:20px}
+.meta .img{margin-left:12px;display:flex;align-items:center;gap:2px;color:var(--teal);font-size:11px;font-weight:700}
+.meta .img .ic{width:15px;height:15px}
+.dtext{font-size:16px;line-height:1.5;color:rgba(0,0,0,.87);margin-top:4px}
+.tline{color:var(--link);background:var(--link-bg);text-decoration:underline;text-underline-offset:2px;border-radius:3px;padding:0 3px}
+.lnk{color:var(--link);text-decoration:underline;text-underline-offset:2px}
+.dfoot{display:flex;align-items:center;gap:6px;height:40px;margin-top:5px}
+.spacer{flex:1}
+.icb{width:40px;height:40px;display:grid;place-items:center;color:var(--teal);flex:none}
+.icb .ic{width:18px;height:18px}
+.icb.ai{color:#4CAF50}
+.icb.lk{color:#9E9E9E}
+.playbar{flex:1;display:flex;align-items:center;gap:9px;color:var(--teal)}
+.pbtn{width:26px;height:26px;border-radius:50%;background:rgba(0,150,136,.13);display:grid;place-items:center;flex:none}
+.pbtn .ic{width:13px;height:13px}
+.track{flex:1;height:3px;border-radius:2px;background:rgba(0,150,136,.16);position:relative}
+.track i{position:absolute;left:0;top:0;bottom:0;width:34%;border-radius:2px;background:var(--teal)}
+.track u{position:absolute;left:0;top:-5px;bottom:-5px;width:34%;background:
+  repeating-linear-gradient(90deg,rgba(0,150,136,.45) 0 2px,transparent 2px 5px);
+  -webkit-mask-image:linear-gradient(90deg,#000 0%,transparent 100%);mask-image:linear-gradient(90deg,#000 0%,transparent 100%);opacity:.5}
+
+/* 底部导航 + FAB */
+.nav{
+  position:absolute;left:0;right:0;bottom:0;height:78px;background:#fff;display:flex;
+  padding-top:9px;box-shadow:0 -1px 10px rgba(0,0,0,.05);z-index:10;
+}
+.nav .it{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;font-size:11px;color:#9E9E9E}
+.nav .it.on{color:var(--teal)}
+.nav .it .ic{width:23px;height:23px}
+.fab{
+  position:absolute;left:50%;bottom:88px;transform:translateX(-50%);width:80px;height:80px;border-radius:50%;
+  display:grid;place-items:center;color:#fff;z-index:14;
+  background:linear-gradient(158deg,#00B9A6 0%,#00917F 58%,#00796B 100%);
+  box-shadow:0 12px 26px rgba(0,137,123,.42),inset 0 2px 5px rgba(255,255,255,.38),inset 0 -3px 8px rgba(0,70,60,.22);
+}
+.fab .ic{width:40px;height:40px}
+.fab::before{content:"";position:absolute;inset:-7px;border-radius:50%;background:rgba(0,150,136,.10)}
+
+/* 悬浮窗把手（封面） */
+.handle{
+  position:absolute;right:0;top:50%;transform:translateY(-50%);width:26px;height:88px;z-index:16;
+  border-radius:13px 0 0 13px;overflow:hidden;border:1px solid rgba(255,255,255,.9);border-right:none;
+  box-shadow:-5px 5px 16px rgba(0,0,0,.20);background:#fff;
+  display:flex;flex-direction:column;
+}
+.handle .top{height:44px;display:grid;place-items:center;color:var(--teal)}
+.handle .top .ic{width:13px;height:13px}
+.handle .bot{
+  height:44px;background:linear-gradient(180deg,#00A392,#00897B);color:#fff;
+  writing-mode:vertical-rl;display:flex;align-items:center;justify-content:center;
+  font-size:9px;letter-spacing:2px;
+}
+
+/* ═══════════ 悬浮窗面板 ═══════════ */
+.fw{position:absolute;top:44px;right:12px;width:283px;z-index:18;display:flex;flex-direction:column;align-items:flex-end;gap:10px}
+.fw.wide{width:333px;right:20px}
+.fw .toolbar{
+  display:flex;align-items:center;padding:2px 3px;border-radius:24px;
+  background:rgba(0,0,0,.72);box-shadow:0 5px 12px rgba(0,0,0,.22);
+}
+.fw .toolbar .tb{width:37px;height:37px;display:grid;place-items:center;color:#fff;position:relative}
+.fw .toolbar .tb .ic{width:19px;height:19px}
+.fw .toolbar .tb.hot::after{
+  content:"";position:absolute;inset:2px;border-radius:50%;
+  border:2px solid rgba(0,229,208,.95);box-shadow:0 0 0 5px rgba(0,229,208,.18);
+}
+.ocard{
+  width:100%;border-radius:22px;padding:13px 16px 6px;color:#fff;position:relative;
+  box-shadow:0 10px 22px rgba(20,30,60,.26),inset 0 1px 0 rgba(255,255,255,.25);
+}
+.ocard.collapsed{padding:12px 16px;display:flex;align-items:center;gap:10px;width:auto;max-width:100%;border-radius:24px}
+.ocard .row{display:flex;align-items:center;gap:9px;font-size:11.5px;color:rgba(255,255,255,.85)}
+.ocard .row .dot{width:7px;height:7px;border-radius:50%;background:rgba(255,255,255,.9)}
+.ocard .row .sp{flex:1}
+.ocard .row .ic{width:15px;height:15px;color:rgba(255,255,255,.92)}
+.ocard .txt{font-size:14.5px;line-height:1.6;margin-top:6px;color:#fff}
+.ocard .txt .ul{text-decoration:underline;text-decoration-color:rgba(255,255,255,.85);text-underline-offset:2px}
+.ocard .act{display:flex;align-items:center;gap:2px;height:40px;margin-top:4px;justify-content:flex-end}
+.ocard .act .ab{width:34px;height:34px;display:grid;place-items:center;color:#fff;position:relative;border-radius:9px}
+.ocard .act .ab .ic{width:17px;height:17px}
+.ocard .act .ab.dim{color:rgba(255,255,255,.38)}
+.ocard .one{font-size:13px;line-height:1.45;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ocard .ct{font-size:10.5px;color:rgba(255,255,255,.78);flex:none;margin-left:auto}
+
+/* 长按光圈 */
+.ripple{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:52px;height:52px;border-radius:50%;border:2px solid rgba(0,229,208,.95);pointer-events:none}
+.ripple::after{content:"";position:absolute;inset:-9px;border-radius:50%;border:2px solid rgba(0,229,208,.35)}
+.tapdot{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:26px;height:26px;border-radius:50%;background:rgba(0,229,208,.30);border:1px solid rgba(255,255,255,.7)}
+
+/* 标注气泡 + 引线 */
+.callout{
+  position:absolute;z-index:22;display:flex;align-items:center;gap:9px;
+  background:#0E3B36;color:#fff;border-radius:999px;padding:9px 17px;font-size:16px;
+  box-shadow:0 10px 24px rgba(10,50,45,.28);white-space:nowrap;
+}
+.callout .ic{width:16px;height:16px;color:#7FE6D8}
+.callout::after{
+  content:"";position:absolute;left:-6px;top:50%;transform:translateY(-50%) rotate(45deg);
+  width:12px;height:12px;background:#0E3B36;border-radius:2px;
+}
+.callout.right::after{left:auto;right:-6px}
+.callout.plain::after{display:none}
+.leader{position:absolute;z-index:21;border-top:2px dashed rgba(0,150,136,.55);transform-origin:left center}
+.leader.v{border-top:none;border-left:2px dashed rgba(0,150,136,.55)}
+
+/* 手绘感虚线箭头（跨设备连线 / 剪贴来源） */
+.ann{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:12;overflow:visible}
+.ann.inmock{z-index:17}
+
+/* ═══════════ 电脑窗口 ═══════════ */
+.pc{
+  position:absolute;border-radius:14px;overflow:hidden;background:#fff;z-index:6;
+  border:1px solid rgba(0,0,0,.07);box-shadow:0 26px 52px rgba(9,50,45,.24);
+}
+.pc .bar{
+  height:30px;background:#F3F6F6;border-bottom:1px solid rgba(0,0,0,.06);
+  display:flex;align-items:center;padding:0 11px;gap:8px;
+}
+.pc .bar .dots{display:flex;gap:5px}
+.pc .bar .dots i{width:8px;height:8px;border-radius:50%;background:#D8DEDD;display:block}
+.pc .bar .ttl{font-size:10.5px;color:#6F8884;letter-spacing:.04em}
+.pc .bar .win{margin-left:auto;display:flex;gap:10px;color:#8AA09C;font-size:10px}
+.pc .main{display:flex;height:calc(100% - 30px)}
+.pc .side{width:116px;border-right:1px solid rgba(0,0,0,.06);padding:9px 8px;display:flex;flex-direction:column;gap:6px;background:#FBFDFD}
+.pc .sbox{height:22px;border-radius:7px;background:#F0F4F4;display:flex;align-items:center;gap:5px;padding:0 7px;font-size:8.5px;color:#9AAEAA}
+.pc .sbox .ic{width:10px;height:10px;color:#7FA09A}
+.pc .sitem{padding:6px 7px;border-radius:8px;font-size:9px;line-height:1.35;color:#39564F;display:flex;gap:5px;align-items:flex-start}
+.pc .sitem.on{background:rgba(0,150,136,.12);color:#00695C}
+.pc .sitem .dt{width:6px;height:6px;border-radius:50%;flex:none;margin-top:4px}
+.pc .detail{flex:1;padding:12px 14px;display:flex;flex-direction:column;gap:7px;min-width:0}
+.pc .dmeta{font-size:8.5px;color:#9AAEAA;display:flex;align-items:center;gap:6px}
+.pc .dmeta .dt{width:6px;height:6px;border-radius:50%}
+.pc .dtext{font-size:11px;line-height:1.65;color:#2C4A44}
+.pc .dtext .tline{background:#BBDEFB;color:#1976D2;border-radius:2px;padding:0 2px;text-decoration:underline;text-underline-offset:1px}
+.pc .drow{display:flex;align-items:center;gap:5px;margin-top:auto;padding-top:6px;border-top:1px solid rgba(0,0,0,.05)}
+.pc .drow .b{height:18px;padding:0 7px;border-radius:6px;background:rgba(0,150,136,.12);color:#00796B;font-size:8px;display:flex;align-items:center;gap:3px;white-space:nowrap}
+.pc .drow .b .ic{width:9px;height:9px}
+.pc .drow .m{margin-left:auto;font-size:7.5px;color:#AEBFBC;white-space:nowrap}
+
+/* ═══════════ 特写浮层 / 卡片 ═══════════ */
+.floatcard{
+  position:absolute;z-index:8;background:#fff;border-radius:18px;border:1px solid rgba(0,0,0,.07);
+  box-shadow:0 24px 46px rgba(9,50,45,.20);padding:20px 22px;
+}
+.floatcard .fh{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--hint)}
+.floatcard .fh .dot{width:9px;height:9px;border-radius:50%}
+.floatcard .ft{font-size:25px;line-height:1.62;color:rgba(0,0,0,.87);margin-top:8px}
+.floatcard .ft .tline{font-size:24px}
+.floatcard .ft .lnk{font-size:24px}
+.floatcard .meta2{display:flex;align-items:center;gap:10px;margin-top:14px;font-size:13px;color:var(--muted)}
+.floatcard .meta2 .ic{width:15px;height:15px;color:var(--teal)}
+
+/* 浏览器条 */
+.browser{
+  position:absolute;z-index:8;height:56px;border-radius:14px;background:rgba(255,255,255,.88);
+  border:1px solid rgba(0,0,0,.06);box-shadow:0 12px 26px rgba(9,50,45,.12);
+  display:flex;align-items:center;gap:12px;padding:0 16px;
+}
+.browser .navic{display:flex;gap:12px;color:#93ABA6}
+.browser .navic .ic{width:17px;height:17px}
+.browser .url{
+  flex:1;height:32px;border-radius:9px;background:#EFF4F3;display:flex;align-items:center;
+  padding:0 12px;font-size:14px;color:#4C6B65;gap:8px;
+}
+.browser .url .ic{width:13px;height:13px;color:#8DA8A3}
+.browser .ok{font-size:12px;color:var(--teal-dark);background:rgba(0,150,136,.12);border-radius:999px;padding:5px 11px}
+
+/* Toast / 提示 */
+.toast{
+  position:absolute;z-index:24;display:flex;align-items:center;gap:8px;
+  background:rgba(20,24,26,.86);color:#fff;border-radius:999px;padding:9px 16px;font-size:14px;
+  box-shadow:0 10px 24px rgba(0,0,0,.24);
+}
+.toast .ic{width:15px;height:15px;color:#7FE6D8}
+
+/* 附件预览卡 */
+.attach{
+  position:absolute;z-index:8;background:#fff;border-radius:16px;border:1px solid rgba(0,0,0,.07);
+  box-shadow:0 20px 40px rgba(9,50,45,.16);padding:14px 16px;display:flex;gap:14px;align-items:center;
+}
+.thumb{
+  width:104px;height:132px;border-radius:11px;flex:none;overflow:hidden;position:relative;
+  background:#F2F6F5;border:1px solid rgba(0,0,0,.06);
+}
+.thumb .tb{height:12px;background:#E3EDEB}
+.thumb .tl{height:5px;border-radius:3px;background:#DCE8E5;margin:7px 9px 0}
+.thumb .tl.w60{width:60%}
+.thumb .tl.w80{width:80%}
+.thumb .ti{height:38px;border-radius:5px;margin:8px 9px 0;background:linear-gradient(120deg,#B9E4DC,#8FD0C4)}
+.thumb .tc{
+  position:absolute;right:6px;bottom:6px;background:rgba(0,0,0,.55);color:#fff;font-size:10px;
+  border-radius:5px;padding:2px 6px;
+}
+.attach .at{font-size:17px;color:#26443F;line-height:1.6}
+.attach .at small{display:block;font-size:13px;color:var(--muted);margin-top:6px;line-height:1.6}
+.attach .at .tag{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--teal-dark);background:rgba(0,150,136,.12);border-radius:999px;padding:3px 9px;margin-top:9px}
+.attach .at .tag .ic{width:12px;height:12px}
+
+/* 聊天背景（图4） */
+.chat{position:absolute;inset:0;background:#EDEDED}
+.chat .cbar{height:48px;background:#F7F7F7;border-bottom:1px solid rgba(0,0,0,.05);display:flex;align-items:flex-end;padding:0 18px 9px;gap:10px;color:#333;font-size:15px;font-weight:600}
+.chat .cbar .ic{width:18px;height:18px;color:#555}
+/* left 48：给「剪贴 → 悬浮窗」的虚线箭头留出左侧走线（14 会压住气泡） */
+.chat .cbody{position:absolute;top:92px;left:48px;right:14px;display:flex;flex-direction:column;gap:14px;padding-top:18px}
+.bubble{max-width:74%;padding:10px 13px;border-radius:10px;font-size:14.5px;line-height:1.55;position:relative}
+.bubble.them{background:#fff;color:#222;align-self:flex-start}
+.bubble.me{background:#95EC69;color:#123;align-self:flex-end}
+.bubble .who{font-size:10.5px;color:#9AA;margin-bottom:3px}
+.chat .copied{
+  align-self:flex-end;display:flex;align-items:center;gap:6px;font-size:11px;color:#4C6B65;
+  background:rgba(255,255,255,.9);border-radius:999px;padding:5px 11px;
+}
+.chat .copied .ic{width:12px;height:12px;color:#00897B}
+
+/* 阅读器背景（图3） */
+.reader{position:absolute;inset:0;background:#fff}
+.reader .rbar{height:44px;background:#F4F6F6;display:flex;align-items:center;padding:0 16px;gap:8px;font-size:11px;color:#7E9490}
+.reader .rbar .ic{width:12px;height:12px}
+.reader .rbody{padding:20px 22px}
+.reader .rt{font-size:21px;line-height:1.5;color:#1E2A28;font-weight:700}
+.reader .rm{font-size:11px;color:#9AAEAA;margin-top:8px}
+.reader .rimg{height:112px;border-radius:8px;margin-top:14px;background:linear-gradient(125deg,#CDE9E4,#9FD4CA 60%,#7FC3B8)}
+.reader .rimg.hero{height:340px;margin-top:0;border-radius:14px;background:linear-gradient(150deg,#D6EEE9 0%,#A8D9CF 52%,#7FC3B8 100%)}
+.reader .rl{height:7px;border-radius:4px;background:#E8EFEE;margin-top:11px}
+.reader .rl.w70{width:70%}
+.reader .rl.w90{width:90%}
+.reader .rl.w50{width:50%}
+.shade{position:absolute;inset:0;background:rgba(6,26,24,.26);z-index:17}
+
+/* 设置页（图6） */
+.setpage{position:absolute;inset:0;background:var(--scaffold)}
+.appbar{height:96px;display:flex;align-items:flex-end;padding:0 12px 12px;justify-content:center;position:relative;color:#1B1B1B;font-size:17px;font-weight:700}
+.appbar .back{position:absolute;left:10px;bottom:8px;width:40px;height:40px;display:grid;place-items:center;color:#3A3A3A}
+.appbar .back .ic{width:22px;height:22px;transform:rotate(180deg)}
+.sbody{padding:4px 20px}
+.scard{background:#fff;border-radius:15px;padding:15px 16px;box-shadow:0 4px 10px rgba(0,0,0,.03)}
+.scard .h{display:flex;align-items:center;gap:6px;color:var(--teal);font-size:13px;font-weight:600}
+.scard .h .ic{width:16px;height:16px}
+.scard .p{font-size:12px;line-height:1.7;color:#9E9E9E;margin-top:7px}
+.sect{font-size:14px;color:rgba(0,0,0,.54);font-weight:700;margin:18px 4px 8px}
+.srow{display:flex;align-items:center;gap:14px;padding:12px 16px}
+.srow .ci{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;color:#fff;flex:none}
+.srow .ci .ic{width:20px;height:20px}
+.srow .nm{flex:1;font-size:15px;color:rgba(0,0,0,.87)}
+.srow .nm small{display:block;font-size:11.5px;color:rgba(0,0,0,.54);margin-top:2px}
+.srow .cv{color:#9E9E9E}
+.srow .cv .ic{width:20px;height:20px}
+.sdiv{height:1px;background:rgba(0,0,0,.06);margin:0}
+.sreset{display:flex;justify-content:center;margin-top:16px;color:var(--teal);font-size:14px;gap:6px;align-items:center}
+.sreset .ic{width:16px;height:16px}
+
+/* 底部选择弹层 */
+.sheet-shade{position:absolute;left:0;right:0;top:44px;bottom:0;background:rgba(12,26,24,.34);z-index:25}
+.sheet{
+  position:absolute;left:0;right:0;bottom:0;height:306px;background:#fff;z-index:26;
+  border-radius:22px 22px 0 0;box-shadow:0 -12px 30px rgba(0,0,0,.16);padding:18px 20px 22px;
+}
+.sheet .sh{display:flex;align-items:center;justify-content:space-between;font-size:16px;color:#1B1B1B;font-weight:700}
+.sheet .sh .done{font-size:13px;font-weight:400;color:var(--teal)}
+.sheet .lbl{font-size:12px;color:#9E9E9E;margin:14px 0 8px}
+.igrid{display:grid;grid-template-columns:repeat(8,1fr);gap:8px}
+.igrid .cell{height:34px;border-radius:9px;display:grid;place-items:center;color:#7E9490}
+.igrid .cell .ic{width:18px;height:18px}
+.igrid .cell.on{background:rgba(0,150,136,.14);color:var(--teal-dark);box-shadow:inset 0 0 0 1.5px rgba(0,150,136,.5)}
+.colors{display:flex;gap:9px;margin-top:4px}
+.colors i{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;position:relative}
+.colors i.on{box-shadow:0 0 0 2px #fff,0 0 0 4px var(--teal)}
+.colors i.on::after{content:"";width:12px;height:6px;border-left:2.4px solid #fff;border-bottom:2.4px solid #fff;transform:rotate(-45deg) translate(1px,-1px)}
+
+/* 色板 / 迷你卡（图6 左下） */
+.palette{position:absolute;z-index:8;display:flex;gap:12px;align-items:center}
+.palette i{width:34px;height:34px;border-radius:50%;box-shadow:0 4px 10px rgba(0,0,0,.10)}
+.minicards{position:absolute;z-index:8;display:grid;grid-template-columns:repeat(2,max-content);gap:10px 12px}
+.minicard{
+  display:flex;align-items:center;gap:9px;color:#fff;font-size:14px;padding:9px 15px;border-radius:999px;
+  box-shadow:0 8px 18px rgba(20,30,60,.18);white-space:nowrap;
+}
+.minicard .ic{width:14px;height:14px}
+</style>
+</head>
+<body>
+
+<!-- ═══════════════ SVG sprite ═══════════════ -->
+<svg class="sprite" aria-hidden="true">
+  <symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 14c1.66 0 2.99-1.34 2.99-3L15 5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></symbol>
+  <symbol id="i-book" viewBox="0 0 24 24"><path d="M18 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 4h5v8l-2.5-1.5L6 12V4z"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></symbol>
+  <symbol id="i-add" viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></symbol>
+  <symbol id="i-paste" viewBox="0 0 24 24"><path d="M19 2h-4.18C14.4.84 13.3 0 12 0c-1.3 0-2.4.84-2.82 2H5c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-7 0c.55 0 1 .45 1 1s-.45 1-1 1-1-.45-1-1 .45-1 1-1zm7 18H5V4h2v3h10V4h2v16z"/></symbol>
+  <symbol id="i-unfold-more" viewBox="0 0 24 24"><path d="M12 5.83L15.17 9l1.41-1.41L12 3 7.41 7.59 8.83 9 12 5.83zm0 12.34L8.83 15l-1.41 1.41L12 21l4.59-4.59L15.17 15 12 18.17z"/></symbol>
+  <symbol id="i-unfold-less" viewBox="0 0 24 24"><path d="M7.41 18.59L8.83 20 12 16.83 15.17 20l1.41-1.41L12 14l-4.59 4.59zm9.18-13.18L15.17 4 12 7.17 8.83 4 7.41 5.41 12 10l4.59-4.59z"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></symbol>
+  <symbol id="i-alarm" viewBox="0 0 24 24"><path d="M22 5.72l-4.6-3.86-1.29 1.53 4.6 3.86L22 5.72zM7.88 3.39L6.6 1.86 2 5.71l1.29 1.53 4.59-3.85zM12.5 8H11v6l4.75 2.85.75-1.23-4-2.37V8zM12 4c-4.97 0-9 4.03-9 9s4.02 9 9 9c4.97 0 9-4.03 9-9s-4.03-9-9-9zm0 16c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/></symbol>
+  <symbol id="i-delete" viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM8 9h8v10H8V9zm7.5-5l-1-1h-5l-1 1H5v2h14V4h-3.5z"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></symbol>
+  <symbol id="i-lock-open" viewBox="0 0 24 24"><path d="M12 17c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm6-9h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6h1.9c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm0 12H6V10h12v10z"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/></symbol>
+  <symbol id="i-filter" viewBox="0 0 24 24"><path d="M4.25 5.61C6.27 8.2 10 13 10 13v6c0 .55.45 1 1 1h2c.55 0 1-.45 1-1v-6s3.72-4.8 5.74-7.39c.51-.66.04-1.61-.79-1.61H5.04c-.83 0-1.3.95-.79 1.61z"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></symbol>
+  <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></symbol>
+  <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></symbol>
+  <symbol id="i-bulb" viewBox="0 0 24 24"><path d="M9 21c0 .55.45 1 1 1h4c.55 0 1-.45 1-1v-1H9v1zm3-19C8.14 2 5 5.14 5 9c0 2.38 1.19 4.47 3 5.74V17c0 .55.45 1 1 1h6c.55 0 1-.45 1-1v-2.26c1.81-1.27 3-3.36 3-5.74 0-3.86-3.14-7-7-7z"/></symbol>
+  <symbol id="i-task" viewBox="0 0 24 24"><path d="M22 5.18L10.59 16.6l-4.24-4.24 1.41-1.41 2.83 2.83 10-10L22 5.18zm-2.21 5.04c.13.57.21 1.17.21 1.78 0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8c1.58 0 3.04.46 4.28 1.25l1.44-1.44C16.1 2.67 14.13 2 12 2 6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10c0-1.19-.22-2.33-.6-3.39l-1.61 1.61z"/></symbol>
+  <symbol id="i-bang" viewBox="0 0 24 24"><path d="M11 3h2v11h-2zM11 17h2v4h-2z"/></symbol>
+  <symbol id="i-sync" viewBox="0 0 24 24"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z"/></symbol>
+  <symbol id="i-open" viewBox="0 0 24 24"><path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></symbol>
+  <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"/></symbol>
+  <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></symbol>
+  <symbol id="i-phone" viewBox="0 0 24 24"><path d="M17 1.01L7 1c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-1.99-2-1.99zM17 19H7V5h10v14z"/></symbol>
+  <symbol id="i-laptop" viewBox="0 0 24 24"><path d="M20 18c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2H0v2h24v-2h-4zM4 6h16v10H4V6z"/></symbol>
+  <symbol id="i-label" viewBox="0 0 24 24"><path d="M17.63 5.84C17.27 5.33 16.67 5 16 5L5 5.01C3.9 5.01 3 5.9 3 7v10c0 1.1.9 1.99 2 1.99L16 19c.67 0 1.27-.33 1.63-.84L22 12l-4.37-6.16zM16 17H5V7h11l3.55 5L16 17z"/></symbol>
+  <symbol id="i-reset" viewBox="0 0 24 24"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></symbol>
+  <symbol id="i-work" viewBox="0 0 24 24"><path d="M20 6h-4V4c0-1.11-.89-2-2-2h-4c-1.11 0-2 .89-2 2v2H4c-1.11 0-1.99.89-1.99 2L2 19c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V8c0-1.11-.89-2-2-2zm-6 0h-4V4h4v2z"/></symbol>
+  <symbol id="i-event" viewBox="0 0 24 24"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></symbol>
+  <symbol id="i-mail" viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></symbol>
+  <symbol id="i-call" viewBox="0 0 24 24"><path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"/></symbol>
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></symbol>
+  <symbol id="i-heart" viewBox="0 0 24 24"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></symbol>
+  <symbol id="i-cafe" viewBox="0 0 24 24"><path d="M20 3H4v10c0 2.21 1.79 4 4 4h6c2.21 0 4-1.79 4-4v-3h2c1.11 0 2-.9 2-2V5c0-1.11-.89-2-2-2zm0 5h-2V5h2v3zM4 19h16v2H4z"/></symbol>
+  <symbol id="i-food" viewBox="0 0 24 24"><path d="M11 9H9V2H7v7H5V2H3v7c0 2.12 1.66 3.84 3.75 3.97V22h2.5v-9.03C11.34 12.84 13 11.12 13 9V2h-2v7zm5-3v8h2.5v8H21V2c-2.76 0-5 2.24-5 4z"/></symbol>
+  <symbol id="i-camera" viewBox="0 0 24 24"><path d="M12 15.2c1.77 0 3.2-1.43 3.2-3.2s-1.43-3.2-3.2-3.2-3.2 1.43-3.2 3.2 1.43 3.2 3.2 3.2zM9 2L7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2h-3.17L15 2H9zm3 15c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5z"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 24 24"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zm6.93 6h-2.95c-.32-1.25-.78-2.45-1.38-3.56 1.84.63 3.37 1.91 4.33 3.56zM12 4.04c.83 1.2 1.48 2.53 1.91 3.96h-3.82c.43-1.43 1.08-2.76 1.91-3.96zM4.26 14C4.1 13.36 4 12.69 4 12s.1-1.36.26-2h3.38c-.08.66-.14 1.32-.14 2 0 .68.06 1.34.14 2H4.26zm.82 2h2.95c.32 1.25.78 2.45 1.38 3.56-1.84-.63-3.37-1.9-4.33-3.56zm2.95-8H5.08c.96-1.66 2.49-2.93 4.33-3.56C8.81 5.55 8.35 6.75 8.03 8zM12 19.96c-.83-1.2-1.48-2.53-1.91-3.96h3.82c-.43 1.43-1.08 2.76-1.91 3.96zM14.34 14H9.66c-.09-.66-.16-1.32-.16-2 0-.68.07-1.35.16-2h4.68c.09.65.16 1.32.16 2 0 .68-.07 1.34-.16 2zm.25 5.56c.6-1.11 1.06-2.31 1.38-3.56h2.95c-.96 1.65-2.49 2.93-4.33 3.56zM16.36 14c.08-.66.14-1.32.14-2 0-.68-.06-1.34-.14-2h3.38c.16.64.26 1.31.26 2s-.1 1.36-.26 2h-3.38z"/></symbol>
+</svg>
+
+<!-- ═══════════════ 01 封面 ═══════════════ -->
+<section class="slide" id="s1">
+  <div class="orb o1"></div><div class="orb o2"></div><div class="orb o3"></div>
+
+  <div class="brand">
+    <div class="logo"><svg class="ic"><use href="#i-mic"/></svg></div>
+    <div class="brandname">声物记<em>离线语音随手记</em></div>
+  </div>
+
+  <div class="copy cover" style="left:64px;top:150px;width:520px">
+    <span class="step"><svg class="ic"><use href="#i-shield"/></svg>离线语音 · 全本地识别</span>
+    <h1>说一句话，<br>就记下来了</h1>
+    <p class="lead">长按开口，松开成文。找东西、记灵感、存链接，都在这一块随手可及的小屏里。</p>
+    <ul class="feats">
+      <li><span class="fi"><svg class="ic"><use href="#i-unfold-more"/></svg></span>悬浮窗随手记，不打断正在用的 app</li>
+      <li><span class="fi"><svg class="ic"><use href="#i-sync"/></svg></span>手机和电脑，WebDAV 双向同步</li>
+      <li><span class="fi"><svg class="ic"><use href="#i-shield"/></svg></span>语音识别全在本地，不联网也能记</li>
+    </ul>
+  </div>
+
+  <div class="foot">声物记 · 一个开口就能用的随手记</div>
+
+  <div class="phone" style="right:62px;top:30px">
+    <div class="di"></div>
+    <div class="phone-inner">
+      <div class="mock">
+        <div class="statusbar">
+          <span class="sb-time">9:41</span>
+          <span class="sb-ic">
+            <svg width="17" height="11" viewBox="0 0 18 12" fill="currentColor"><rect x="0" y="8" width="3" height="4" rx="1"/><rect x="5" y="5.4" width="3" height="6.6" rx="1"/><rect x="10" y="2.8" width="3" height="9.2" rx="1"/><rect x="15" y="0.4" width="3" height="11.6" rx="1"/></svg>
+            <svg width="16" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9zm8 8l3 3 3-3c-1.65-1.66-4.34-1.66-6 0zm-4-4l2 2c2.76-2.76 7.24-2.76 10 0l2-2C15.14 9.14 8.87 9.14 5 13z"/></svg>
+            <span class="batt"><i></i></span>
+          </span>
+        </div>
+        <div class="halo a"></div><div class="halo b"></div>
+
+        <div class="diary-top">
+          <div class="search"><svg class="ic"><use href="#i-search"/></svg><span>搜索回忆...</span></div>
+          <div class="chipbtn"><svg class="ic"><use href="#i-filter"/></svg></div>
+          <div class="chipbtn"><svg class="ic"><use href="#i-download"/></svg></div>
+        </div>
+
+        <div class="list">
+          <div class="dcard">
+            <div class="meta"><span>2026-10-28 09:41</span><span class="dur">0:06</span></div>
+            <div class="dtext"><span class="tline">明天上午 10 点</span>，和设计师在会议室过一遍新版首页</div>
+            <div class="dfoot">
+              <div class="playbar"><span class="pbtn"><svg class="ic"><use href="#i-play"/></svg></span><span class="track"><i></i><u></u></span></div>
+              <span class="icb ai"><svg class="ic"><use href="#i-chat"/></svg></span>
+              <span class="icb lk"><svg class="ic"><use href="#i-lock-open"/></svg></span>
+            </div>
+          </div>
+
+          <div class="dcard">
+            <div class="meta"><span class="dot" style="background:#FEA545"></span><span>2026-10-28 08:15</span><span class="dur">0:04</span></div>
+            <div class="dtext">钥匙放在玄关第二个抽屉里，别忘带门禁卡</div>
+            <div class="dfoot">
+              <div class="playbar"><span class="pbtn"><svg class="ic"><use href="#i-play"/></svg></span><span class="track"><i style="width:62%"></i><u style="width:62%"></u></span></div>
+              <span class="icb ai"><svg class="ic"><use href="#i-chat"/></svg></span>
+              <span class="icb lk"><svg class="ic"><use href="#i-lock-open"/></svg></span>
+            </div>
+          </div>
+
+          <div class="dcard">
+            <div class="meta"><span class="dot" style="background:#AE82E4"></span><span>2026-10-27 22:03</span>
+              <span class="img"><svg class="ic"><use href="#i-image"/></svg>1</span>
+            </div>
+            <div class="dtext"><span class="lnk">https://sspai.com/post/86600</span> 这篇讲得挺清楚，周末再看</div>
+            <div class="dfoot">
+              <span class="spacer"></span>
+              <span class="icb ai"><svg class="ic"><use href="#i-chat"/></svg></span>
+              <span class="icb lk"><svg class="ic"><use href="#i-lock-open"/></svg></span>
+            </div>
+          </div>
+
+          <div class="dcard">
+            <div class="meta"><span class="dot" style="background:#2E9F5C"></span><span>2026-10-27 20:40</span></div>
+            <div class="dtext">想给阳台加一盏暖光落地灯，别超过 3000K</div>
+          </div>
+
+          <div class="dcard">
+            <div class="meta"><span>2026-10-27 18:20</span><span class="dur">0:09</span></div>
+            <div class="dtext">周末把相机电池都充满，顺便导出上个月的照片</div>
+            <div class="dfoot"><div class="playbar"><span class="pbtn"><svg class="ic"><use href="#i-play"/></svg></span><span class="track"><i style="width:18%"></i><u style="width:18%"></u></span></div><span class="icb ai"><svg class="ic"><use href="#i-chat"/></svg></span></div>
+          </div>
+
+          <div class="dcard">
+            <div class="meta"><span class="dot" style="background:#FF6B6B"></span><span>2026-10-27 16:02</span></div>
+            <div class="dtext">下周三前把季度复盘初稿发出去</div>
+          </div>
+        </div>
+
+        <div class="nav">
+          <div class="it"><svg class="ic"><use href="#i-mic"/></svg><span>存物品</span></div>
+          <div class="it"><svg class="ic"><use href="#i-search"/></svg><span>查物品</span></div>
+          <div class="it on"><svg class="ic"><use href="#i-book"/></svg><span>随手记</span></div>
+          <div class="it"><svg class="ic"><use href="#i-settings"/></svg><span>设置</span></div>
+        </div>
+        <div class="fab"><svg class="ic"><use href="#i-mic"/></svg></div>
+
+        <div class="handle">
+          <span class="top"><svg class="ic"><use href="#i-bolt"/></svg></span>
+          <span class="bot">闪记</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 02 双向同步 ═══════════════ -->
+<section class="slide" id="s2">
+  <div class="orb o1"></div><div class="orb o2"></div>
+
+  <div class="copy" style="left:64px;top:74px;width:322px">
+    <span class="step"><svg class="ic"><use href="#i-sync"/></svg>01 · 电脑端</span>
+    <h1 style="font-size:52px">手机和电脑<br>双向同步</h1>
+    <p class="lead" style="font-size:21px">用 WebDAV 云盘做中转。手机上说的每句话，电脑打开就能看；电脑上改一条、删一条，手机下拉刷新也跟着变。</p>
+    <div class="notecard" style="font-size:14.5px;line-height:1.7">
+      文字、标注、<b>截图附件</b>都会同步；<br>锁定笔记在电脑端默认打码。
+    </div>
+  </div>
+
+  <!-- 同步小标 -->
+  <div class="callout plain" style="left:400px;top:392px;background:#0E3B36;font-size:14px;padding:8px 14px">
+    <svg class="ic"><use href="#i-sync"/></svg>两边改，两边都变
+  </div>
+
+  <!-- 电脑窗口 -->
+  <div class="pc" style="left:400px;top:438px;width:300px;height:246px">
+    <div class="bar">
+      <div class="dots"><i></i><i></i><i></i></div>
+      <div class="ttl">声物记电脑版</div>
+      <div class="win"><span>—</span><span>□</span><span>✕</span></div>
+    </div>
+    <div class="main">
+      <div class="side">
+        <div class="sbox"><svg class="ic"><use href="#i-search"/></svg>搜索笔记</div>
+        <div class="sitem on"><span class="dt" style="background:#FEA545"></span>钥匙放在玄关第二个抽屉…</div>
+        <div class="sitem"><span class="dt" style="background:#6F9AF0"></span>明天上午 10 点，和设计师…</div>
+        <div class="sitem"><span class="dt" style="background:#AE82E4"></span>想给阳台加一盏暖光落地灯…</div>
+        <div class="sitem"><span class="dt" style="background:#2E9F5C"></span>周末把相机电池都充满</div>
+      </div>
+      <div class="detail">
+        <div class="dmeta"><span class="dt" style="background:#FEA545"></span>2026-10-28 08:15 · 收藏</div>
+        <div class="dtext">钥匙放在玄关第二个抽屉里，别忘带门禁卡<br>门禁卡就在同一个抽屉，出门顺手拿</div>
+        <div class="drow">
+          <span class="b"><svg class="ic"><use href="#i-copy"/></svg>复制</span>
+          <span class="b" style="background:rgba(0,150,136,.06);color:#4C8A81"><svg class="ic"><use href="#i-image"/></svg>1 张截图</span>
+          <span class="m">2 秒回传</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 手机 -->
+  <div class="phone sm" style="right:36px;top:96px">
+    <div class="di"></div>
+    <div class="phone-inner">
+      <div class="mock">
+        <div class="statusbar">
+          <span class="sb-time">9:41</span>
+          <span class="sb-ic">
+            <svg width="17" height="11" viewBox="0 0 18 12" fill="currentColor"><rect x="0" y="8" width="3" height="4" rx="1"/><rect x="5" y="5.4" width="3" height="6.6" rx="1"/><rect x="10" y="2.8" width="3" height="9.2" rx="1"/><rect x="15" y="0.4" width="3" height="11.6" rx="1"/></svg>
+            <svg width="16" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9zm8 8l3 3 3-3c-1.65-1.66-4.34-1.66-6 0zm-4-4l2 2c2.76-2.76 7.24-2.76 10 0l2-2C15.14 9.14 8.87 9.14 5 13z"/></svg>
+            <span class="batt"><i></i></span>
+          </span>
+        </div>
+        <div class="halo a"></div><div class="halo b"></div>
+
+        <div class="diary-top">
+          <div class="search"><svg class="ic"><use href="#i-search"/></svg><span>搜索回忆...</span></div>
+          <div class="chipbtn"><svg class="ic"><use href="#i-filter"/></svg></div>
+          <div class="chipbtn"><svg class="ic"><use href="#i-download"/></svg></div>
+        </div>
+
+        <div class="list">
+          <div class="dcard">
+            <div class="meta"><span class="dot" style="background:#FEA545"></span><span>2026-10-28 08:15</span></div>
+            <div class="dtext">钥匙放在玄关第二个抽屉里，别忘带门禁卡</div>
+            <div class="dfoot"><span class="spacer"></span><span class="icb ai"><svg class="ic"><use href="#i-chat"/></svg></span><span class="icb lk"><svg class="ic"><use href="#i-lock-open"/></svg></span></div>
+          </div>
+          <div class="dcard">
+            <div class="meta"><span>2026-10-28 09:41</span><span class="dur">0:06</span></div>
+            <div class="dtext"><span class="tline">明天上午 10 点</span>，和设计师过一遍新版首页</div>
+            <div class="dfoot"><div class="playbar"><span class="pbtn"><svg class="ic"><use href="#i-play"/></svg></span><span class="track"><i></i><u></u></span></div><span class="icb ai"><svg class="ic"><use href="#i-chat"/></svg></span></div>
+          </div>
+          <div class="dcard">
+            <div class="meta"><span class="dot" style="background:#2E9F5C"></span><span>2026-10-27 20:40</span></div>
+            <div class="dtext">想给阳台加一盏暖光落地灯</div>
+          </div>
+          <div class="dcard">
+            <div class="meta"><span class="dot" style="background:#FF6B6B"></span><span>2026-10-27 16:02</span></div>
+            <div class="dtext">下周三前把季度复盘初稿发出去</div>
+          </div>
+          <div class="dcard">
+            <div class="meta"><span>2026-10-27 12:30</span><span class="dur">0:05</span></div>
+            <div class="dtext">冰箱里的牛奶还有两天过期</div>
+            <div class="dfoot"><div class="playbar"><span class="pbtn"><svg class="ic"><use href="#i-play"/></svg></span><span class="track"><i style="width:28%"></i><u style="width:28%"></u></span></div><span class="icb ai"><svg class="ic"><use href="#i-chat"/></svg></span></div>
+          </div>
+          <div class="dcard">
+            <div class="meta"><span class="dot" style="background:#AE82E4"></span><span>2026-10-27 10:05</span></div>
+            <div class="dtext">周一早上给绿萝浇水</div>
+          </div>
+        </div>
+
+        <div class="nav">
+          <div class="it"><svg class="ic"><use href="#i-mic"/></svg><span>存物品</span></div>
+          <div class="it"><svg class="ic"><use href="#i-search"/></svg><span>查物品</span></div>
+          <div class="it on"><svg class="ic"><use href="#i-book"/></svg><span>随手记</span></div>
+          <div class="it"><svg class="ic"><use href="#i-settings"/></svg><span>设置</span></div>
+        </div>
+        <div class="fab"><svg class="ic"><use href="#i-mic"/></svg></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 双向同步虚线箭头：手机第一条正文 ↔ 电脑端详情正文 -->
+  <svg class="ann" viewBox="0 0 1080 810" aria-hidden="true">
+    <defs>
+      <marker id="arq" viewBox="0 0 12 12" refX="9.6" refY="6" markerWidth="4.6" markerHeight="4.6" orient="auto-start-reverse">
+        <path d="M2 1.2 L10.6 6 L2 10.8 Z" fill="#009688"/>
+      </marker>
+    </defs>
+    <path d="M760 226 C 748 322, 722 438, 690 540" fill="none" stroke="#fff" stroke-opacity=".85" stroke-width="7.5" stroke-linecap="round"/>
+    <path d="M760 226 C 748 322, 722 438, 690 540" fill="none" stroke="#009688" stroke-width="2.6"
+          stroke-dasharray="7 6" stroke-linecap="round" marker-start="url(#arq)" marker-end="url(#arq)"/>
+  </svg>
+
+  <div class="foot">声物记 · 电脑版支持 Windows 10 / 11</div>
+  <div class="pageno">02 / 06</div>
+</section>
+
+<!-- ═══════════════ 03 长按复制 = 截图 ═══════════════ -->
+<section class="slide" id="s3">
+  <div class="orb o1"></div><div class="orb o2"></div>
+
+  <div class="copy" style="left:64px;top:76px;width:486px">
+    <span class="step"><svg class="ic"><use href="#i-camera"/></svg>02 · 悬浮窗</span>
+    <h1 style="font-size:52px">长按复制按钮<br>画面存成附件</h1>
+    <p class="lead" style="font-size:21px">悬浮窗里长按卡片上的复制按钮，当前画面直接截下来，存成这条笔记的截图附件。文字和截图一起留着。</p>
+    <div class="chips">
+      <span><b>Android 11+</b></span>
+      <span>可设置「截完自动展开卡片」</span>
+    </div>
+  </div>
+
+  <!-- 附件预览 -->
+  <div class="attach" style="left:64px;top:500px;width:498px">
+    <div class="thumb">
+      <div class="tb"></div>
+      <div class="tl w80"></div>
+      <div class="tl w60"></div>
+      <div class="ti"></div>
+      <div class="tl w80"></div>
+      <div class="tl w60"></div>
+      <div class="tc">刚刚截取</div>
+    </div>
+    <div class="at">
+      截图已保存为附件
+      <small>卡片日期行出现图片图标，点开可看大图、左右翻看多张。</small>
+      <span class="tag"><svg class="ic"><use href="#i-image"/></svg>文字 + 截图一起同步</span>
+    </div>
+  </div>
+
+  <!-- 手机：阅读器背景 + 悬浮窗 -->
+  <div class="phone" style="right:56px;top:30px">
+    <div class="di"></div>
+    <div class="phone-inner">
+      <div class="mock">
+        <div class="reader">
+          <div class="statusbar" style="color:#171717">
+            <span class="sb-time">9:41</span>
+            <span class="sb-ic">
+              <svg width="17" height="11" viewBox="0 0 18 12" fill="currentColor"><rect x="0" y="8" width="3" height="4" rx="1"/><rect x="5" y="5.4" width="3" height="6.6" rx="1"/><rect x="10" y="2.8" width="3" height="9.2" rx="1"/><rect x="15" y="0.4" width="3" height="11.6" rx="1"/></svg>
+              <svg width="16" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9zm8 8l3 3 3-3c-1.65-1.66-4.34-1.66-6 0zm-4-4l2 2c2.76-2.76 7.24-2.76 10 0l2-2C15.14 9.14 8.87 9.14 5 13z"/></svg>
+              <span class="batt"><i></i></span>
+            </span>
+          </div>
+          <div class="rbar"><svg class="ic"><use href="#i-lock"/></svg>sspai.com/post/86600</div>
+          <div class="rbody">
+            <div class="rimg hero"></div>
+            <div class="rt">把「随手记」变成第二大脑的 5 个小习惯</div>
+            <div class="rm">少数派 · 10 月 26 日 · 8 分钟阅读</div>
+            <div class="rl w90"></div>
+            <div class="rl w70"></div>
+            <div class="rl w90"></div>
+            <div class="rl w50"></div>
+            <div class="rl w90"></div>
+            <div class="rl w70"></div>
+            <div class="rl w50"></div>
+            <div class="rl w90"></div>
+            <div class="rl w70"></div>
+            <div class="rl w90"></div>
+            <div class="rl w50"></div>
+          </div>
+        </div>
+        <div class="shade" style="background:rgba(6,26,24,.20)"></div>
+
+        <!-- 悬浮窗面板（展开卡） -->
+        <div class="fw wide" style="top:104px">
+          <div class="toolbar" style="align-self:flex-end">
+            <span class="tb"><svg class="ic"><use href="#i-add"/></svg></span>
+            <span class="tb"><svg class="ic"><use href="#i-paste"/></svg></span>
+            <span class="tb"><svg class="ic"><use href="#i-unfold-less"/></svg></span>
+            <span class="tb"><svg class="ic"><use href="#i-book"/></svg></span>
+            <span class="tb"><svg class="ic"><use href="#i-mic"/></svg></span>
+          </div>
+
+          <div class="ocard" style="background:#6F9AF0">
+            <div class="row">
+              <span class="dot"></span><span>10-28 09:41</span><span class="sp"></span>
+              <svg class="ic"><use href="#i-alarm"/></svg>
+            </div>
+            <div class="txt">这篇讲得挺清楚：<span class="ul">https://sspai.com/post/86600</span>，<br>周末有空再细看一遍</div>
+            <div class="act">
+              <span class="ab"><svg class="ic"><use href="#i-delete"/></svg></span>
+              <span class="ab"><svg class="ic"><use href="#i-alarm"/></svg></span>
+              <span class="ab" style="position:relative">
+                <span class="ripple"></span>
+                <span class="tapdot"></span>
+                <svg class="ic" style="position:relative;z-index:2"><use href="#i-copy"/></svg>
+              </span>
+              <span class="ab"><svg class="ic"><use href="#i-chat"/></svg></span>
+              <span class="ab"><svg class="ic"><use href="#i-lock-open"/></svg></span>
+            </div>
+          </div>
+
+          <div class="ocard collapsed" style="background:#FEA545">
+            <span class="dot" style="width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,.9)"></span>
+            <span class="one">钥匙放在玄关第二个抽屉里</span>
+            <span class="ct">08:15</span>
+          </div>
+          <div class="ocard collapsed" style="background:#2E9F5C">
+            <span class="dot" style="width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,.9)"></span>
+            <span class="one">想给阳台加一盏暖光落地灯</span>
+            <span class="ct">昨天</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">声物记 · 悬浮窗随手记</div>
+  <div class="pageno">03 / 06</div>
+</section>
+
+<!-- ═══════════════ 04 剪贴板笔记 ═══════════════ -->
+<section class="slide" id="s4">
+  <div class="orb o1"></div><div class="orb o2"></div>
+
+  <div class="copy" style="left:64px;top:76px;width:486px">
+    <span class="step"><svg class="ic"><use href="#i-paste"/></svg>03 · 剪贴板</span>
+    <h1 style="font-size:52px">在别处复制<br>一键存成笔记</h1>
+    <p class="lead" style="font-size:21px">不用切回来粘贴。点悬浮窗工具条上的剪贴板按钮，系统剪贴板里最新那段文字，直接落成一条随手记。</p>
+    <div class="steps">
+      <div class="s"><span class="n">1</span>在任意 app 里复制一段文字</div>
+      <div class="s"><span class="n">2</span>点悬浮窗的「剪贴板」按钮</div>
+      <div class="s"><span class="n">3</span>直接多出一条笔记，一字不差</div>
+    </div>
+    <div class="small" style="margin-top:18px">空剪贴板或不是纯文字时，会提示「剪贴板里没有可保存的文字」。</div>
+  </div>
+
+  <!-- 手机：聊天背景 + 悬浮窗 -->
+  <div class="phone" style="right:56px;top:30px">
+    <div class="di"></div>
+    <div class="phone-inner">
+      <div class="mock">
+        <div class="chat">
+          <div class="statusbar" style="color:#171717">
+            <span class="sb-time">9:41</span>
+            <span class="sb-ic">
+              <svg width="17" height="11" viewBox="0 0 18 12" fill="currentColor"><rect x="0" y="8" width="3" height="4" rx="1"/><rect x="5" y="5.4" width="3" height="6.6" rx="1"/><rect x="10" y="2.8" width="3" height="9.2" rx="1"/><rect x="15" y="0.4" width="3" height="11.6" rx="1"/></svg>
+              <svg width="16" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9zm8 8l3 3 3-3c-1.65-1.66-4.34-1.66-6 0zm-4-4l2 2c2.76-2.76 7.24-2.76 10 0l2-2C15.14 9.14 8.87 9.14 5 13z"/></svg>
+              <span class="batt"><i></i></span>
+            </span>
+          </div>
+          <div class="cbar"><svg class="ic"><use href="#i-chat"/></svg>老同学</div>
+          <div class="cbody">
+            <div class="bubble them">在吗</div>
+            <div class="bubble me">在的，刚吃完饭</div>
+            <div class="bubble them">周末还去不去爬山</div>
+            <div class="bubble me">看天气吧</div>
+            <div class="bubble them">预报说晴，那就周六</div>
+            <div class="bubble me">行，相机我带上</div>
+            <div class="bubble them">老地方的咖啡店换了菜单，抹茶拿铁还不错</div>
+            <div class="bubble me">那就去那家</div>
+            <div class="bubble me">几点见</div>
+            <div class="bubble them">周六下午三点，老地方见。地铁 2 号线 B 口上来那家咖啡店。</div>
+            <div class="copied"><svg class="ic"><use href="#i-copy"/></svg>已复制</div>
+          </div>
+        </div>
+        <div class="shade" style="background:rgba(6,26,24,.38)"></div>
+
+        <!-- 剪贴来源箭头：微信这条消息 → 悬浮窗第一条笔记 -->
+        <svg class="ann inmock" viewBox="0 0 393 852" aria-hidden="true">
+          <defs>
+            <marker id="ar4" viewBox="0 0 12 12" refX="9.6" refY="6" markerWidth="4.8" markerHeight="4.8" orient="auto">
+              <path d="M2 1.2 L10.6 6 L2 10.8 Z" fill="#2FD3BE"/>
+            </marker>
+          </defs>
+          <path d="M48 673 L34 673 Q28 673 28 667 L28 178 Q28 172 34 172 L90 172" fill="none"
+                stroke="rgba(6,30,27,.45)" stroke-width="6.5" stroke-linecap="round"/>
+          <path d="M48 673 L34 673 Q28 673 28 667 L28 178 Q28 172 34 172 L90 172" fill="none"
+                stroke="#2FD3BE" stroke-width="2.5" stroke-dasharray="7 6" stroke-linecap="round" marker-end="url(#ar4)"/>
+          <circle cx="48" cy="673" r="3.6" fill="#2FD3BE" stroke="rgba(6,30,27,.45)" stroke-width="2"/>
+        </svg>
+
+        <div class="fw" style="top:100px">
+          <div class="toolbar" style="align-self:flex-end">
+            <span class="tb"><svg class="ic"><use href="#i-add"/></svg></span>
+            <span class="tb hot"><svg class="ic"><use href="#i-paste"/></svg></span>
+            <span class="tb"><svg class="ic"><use href="#i-unfold-more"/></svg></span>
+            <span class="tb"><svg class="ic"><use href="#i-book"/></svg></span>
+            <span class="tb"><svg class="ic"><use href="#i-mic"/></svg></span>
+          </div>
+
+          <div class="ocard collapsed" style="background:#AE82E4;width:100%">
+            <span class="dot" style="width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,.9)"></span>
+            <span class="one">周六下午三点，老地方见。地铁 2 号线…</span>
+            <span class="ct">刚刚</span>
+          </div>
+
+          <div class="ocard collapsed" style="background:#FEA545">
+            <span class="dot" style="width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,.9)"></span>
+            <span class="one">钥匙放在玄关第二个抽屉里</span>
+          </div>
+
+          <div class="ocard collapsed" style="background:#6F9AF0;width:100%">
+            <span class="dot" style="width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,.9)"></span>
+            <span class="one">会议纪要：下周三前交初稿</span>
+          </div>
+        </div>
+
+        <div class="toast" style="left:50%;transform:translateX(-50%);bottom:34px">
+          <svg class="ic"><use href="#i-check"/></svg>已存为随手记
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">声物记 · 悬浮窗随手记</div>
+  <div class="pageno">04 / 06</div>
+</section>
+
+<!-- ═══════════════ 05 正文链接 ═══════════════ -->
+<section class="slide" id="s5">
+  <div class="orb o1"></div><div class="orb o2"></div>
+
+  <div class="copy" style="left:64px;top:76px;width:500px">
+    <span class="step"><svg class="ic"><use href="#i-link"/></svg>04 · 正文链接</span>
+    <h1 style="font-size:52px">网址会变蓝<br>点一下就打开</h1>
+    <p class="lead" style="font-size:21px">正文里的 http / https 链接自动识别，蓝色下划线标出来，点一下就用系统浏览器打开。时间提醒仍是蓝色高亮，两者互不干扰。</p>
+    <div class="chips">
+      <span>随手记</span><span>悬浮窗</span><span>时间高亮不冲突</span>
+    </div>
+  </div>
+
+  <!-- 放大卡片 -->
+  <div class="floatcard" style="left:64px;top:460px;width:498px">
+    <div class="fh"><span class="dot" style="background:#AE82E4"></span>2026-10-28 09:52<span style="margin-left:auto;color:#B4C7C3">灵感</span></div>
+    <div class="ft"><span class="lnk">https://sspai.com/post/86600</span><br>这篇讲得挺清楚，<span class="tline">周六上午 9 点</span>再看</div>
+    <div class="meta2"><svg class="ic"><use href="#i-open"/></svg>点击链接 → 系统浏览器打开，失败时会提示手动访问</div>
+  </div>
+
+  <div class="browser" style="left:64px;top:672px;width:498px">
+    <div class="navic">
+      <svg class="ic" style="transform:rotate(180deg)"><use href="#i-chevron"/></svg>
+      <svg class="ic"><use href="#i-chevron"/></svg>
+      <svg class="ic"><use href="#i-sync"/></svg>
+    </div>
+    <div class="url"><svg class="ic"><use href="#i-lock"/></svg>sspai.com/post/86600</div>
+    <div class="ok">已打开</div>
+  </div>
+
+  <!-- 手机 -->
+  <div class="phone" style="right:56px;top:30px">
+    <div class="di"></div>
+    <div class="phone-inner">
+      <div class="mock">
+        <div class="statusbar">
+          <span class="sb-time">9:41</span>
+          <span class="sb-ic">
+            <svg width="17" height="11" viewBox="0 0 18 12" fill="currentColor"><rect x="0" y="8" width="3" height="4" rx="1"/><rect x="5" y="5.4" width="3" height="6.6" rx="1"/><rect x="10" y="2.8" width="3" height="9.2" rx="1"/><rect x="15" y="0.4" width="3" height="11.6" rx="1"/></svg>
+            <svg width="16" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9zm8 8l3 3 3-3c-1.65-1.66-4.34-1.66-6 0zm-4-4l2 2c2.76-2.76 7.24-2.76 10 0l2-2C15.14 9.14 8.87 9.14 5 13z"/></svg>
+            <span class="batt"><i></i></span>
+          </span>
+        </div>
+        <div class="halo a"></div><div class="halo b"></div>
+
+        <div class="diary-top">
+          <div class="search"><svg class="ic"><use href="#i-search"/></svg><span>搜索回忆...</span></div>
+          <div class="chipbtn" style="background:rgba(0,150,136,.18)"><svg class="ic"><use href="#i-filter"/></svg></div>
+          <div class="chipbtn"><svg class="ic"><use href="#i-download"/></svg></div>
+        </div>
+
+        <div class="list">
+          <div class="dcard" style="box-shadow:0 4px 10px rgba(0,0,0,.05),inset 0 0 0 2px rgba(0,150,136,.45)">
+            <div class="meta"><span class="dot" style="background:#AE82E4"></span><span>2026-10-28 09:52</span></div>
+            <div class="dtext"><span class="lnk">https://sspai.com/post/86600</span> 这篇讲得挺清楚，<span class="tline">周六上午 9 点</span>再看</div>
+            <div class="dfoot"><span class="spacer"></span><span class="icb ai"><svg class="ic"><use href="#i-chat"/></svg></span><span class="icb lk"><svg class="ic"><use href="#i-lock-open"/></svg></span></div>
+          </div>
+
+          <div class="dcard">
+            <div class="meta"><span>2026-10-28 09:41</span><span class="dur">0:06</span></div>
+            <div class="dtext"><span class="tline">明天上午 10 点</span>，和设计师过一遍新版首页</div>
+            <div class="dfoot"><div class="playbar"><span class="pbtn"><svg class="ic"><use href="#i-play"/></svg></span><span class="track"><i></i><u></u></span></div><span class="icb ai"><svg class="ic"><use href="#i-chat"/></svg></span></div>
+          </div>
+
+          <div class="dcard">
+            <div class="meta"><span class="dot" style="background:#FEA545"></span><span>2026-10-28 08:15</span></div>
+            <div class="dtext">钥匙放在玄关第二个抽屉里，别忘带门禁卡</div>
+          </div>
+
+          <div class="dcard">
+            <div class="meta"><span class="dot" style="background:#2E9F5C"></span><span>2026-10-28 07:50</span></div>
+            <div class="dtext">周末去江边拍一组胶片，顺路买卷新的</div>
+          </div>
+
+          <div class="dcard">
+            <div class="meta"><span>2026-10-27 21:12</span><span class="dur">0:04</span></div>
+            <div class="dtext">把冰箱里的酸奶喝完，别又放到过期</div>
+            <div class="dfoot"><div class="playbar"><span class="pbtn"><svg class="ic"><use href="#i-play"/></svg></span><span class="track"><i style="width:46%"></i><u style="width:46%"></u></span></div><span class="icb ai"><svg class="ic"><use href="#i-chat"/></svg></span></div>
+          </div>
+        </div>
+
+        <div class="nav">
+          <div class="it"><svg class="ic"><use href="#i-mic"/></svg><span>存物品</span></div>
+          <div class="it"><svg class="ic"><use href="#i-search"/></svg><span>查物品</span></div>
+          <div class="it on"><svg class="ic"><use href="#i-book"/></svg><span>随手记</span></div>
+          <div class="it"><svg class="ic"><use href="#i-settings"/></svg><span>设置</span></div>
+        </div>
+        <div class="fab"><svg class="ic"><use href="#i-mic"/></svg></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">声物记 · 链接点击用系统浏览器打开</div>
+  <div class="pageno">05 / 06</div>
+</section>
+
+<!-- ═══════════════ 06 标签自定义 ═══════════════ -->
+<section class="slide" id="s6">
+  <div class="orb o1"></div><div class="orb o2"></div>
+
+  <div class="copy" style="left:64px;top:76px;width:500px">
+    <span class="step"><svg class="ic"><use href="#i-label"/></svg>05 · 标签</span>
+    <h1 style="font-size:52px">四个标签<br>换个图标和颜色</h1>
+    <p class="lead" style="font-size:21px">紧急、收藏、灵感、待办四个槽位，24 款图标 × 10 种颜色随意搭。随手记的筛选、悬浮窗的卡片、电脑端看到的，都是你选的样子。</p>
+    <div class="small">只改外观，不影响已有笔记、备份和云同步。</div>
+  </div>
+
+  <!-- 色板 + 效果示例 -->
+  <div class="palette" style="left:64px;top:542px">
+    <i style="background:#FF6B6B"></i><i style="background:#FEA545"></i><i style="background:#D99A1B"></i>
+    <i style="background:#2E9F5C"></i><i style="background:#168C8C"></i><i style="background:#6F9AF0"></i>
+    <i style="background:#5B5BC9"></i><i style="background:#AE82E4"></i><i style="background:#D4548C"></i>
+    <i style="background:#5C6B7A"></i>
+  </div>
+
+  <div class="minicards" style="left:64px;top:604px">
+    <div class="minicard" style="background:#FF6B6B"><svg class="ic"><use href="#i-bang"/></svg>紧急</div>
+    <div class="minicard" style="background:#FEA545"><svg class="ic"><use href="#i-star"/></svg>收藏</div>
+    <div class="minicard" style="background:#AE82E4"><svg class="ic"><use href="#i-bulb"/></svg>灵感</div>
+    <div class="minicard" style="background:#2E9F5C"><svg class="ic"><use href="#i-task"/></svg>待办</div>
+  </div>
+
+  <!-- 手机：标签外观设置 + 选择弹层 -->
+  <div class="phone" style="right:56px;top:30px">
+    <div class="di"></div>
+    <div class="phone-inner">
+      <div class="mock">
+        <div class="setpage">
+          <div class="statusbar">
+            <span class="sb-time">9:41</span>
+            <span class="sb-ic">
+              <svg width="17" height="11" viewBox="0 0 18 12" fill="currentColor"><rect x="0" y="8" width="3" height="4" rx="1"/><rect x="5" y="5.4" width="3" height="6.6" rx="1"/><rect x="10" y="2.8" width="3" height="9.2" rx="1"/><rect x="15" y="0.4" width="3" height="11.6" rx="1"/></svg>
+              <svg width="16" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9zm8 8l3 3 3-3c-1.65-1.66-4.34-1.66-6 0zm-4-4l2 2c2.76-2.76 7.24-2.76 10 0l2-2C15.14 9.14 8.87 9.14 5 13z"/></svg>
+              <span class="batt"><i></i></span>
+            </span>
+          </div>
+
+          <div class="appbar"><span class="back"><svg class="ic"><use href="#i-chevron"/></svg></span>标签外观</div>
+
+          <div class="sbody">
+            <div class="scard">
+              <div class="h"><svg class="ic"><use href="#i-label"/></svg>4 个标注槽位</div>
+              <div class="p">只改图标和颜色，不提供改名：标注数据用固定槽位保存，改外观不会影响已有笔记、备份和云同步。</div>
+            </div>
+
+            <div class="sect">槽位</div>
+            <div class="scard" style="padding:0">
+              <div class="srow">
+                <span class="ci" style="background:#FF6B6B"><svg class="ic"><use href="#i-bang"/></svg></span>
+                <span class="nm">标签 1<small>点击更换图标与颜色</small></span>
+                <span class="cv"><svg class="ic"><use href="#i-chevron"/></svg></span>
+              </div>
+              <div class="sdiv"></div>
+              <div class="srow">
+                <span class="ci" style="background:#FEA545"><svg class="ic"><use href="#i-star"/></svg></span>
+                <span class="nm">标签 2<small>点击更换图标与颜色</small></span>
+                <span class="cv"><svg class="ic"><use href="#i-chevron"/></svg></span>
+              </div>
+              <div class="sdiv"></div>
+              <div class="srow">
+                <span class="ci" style="background:#AE82E4"><svg class="ic"><use href="#i-bulb"/></svg></span>
+                <span class="nm">标签 3<small>点击更换图标与颜色</small></span>
+                <span class="cv"><svg class="ic"><use href="#i-chevron"/></svg></span>
+              </div>
+              <div class="sdiv"></div>
+              <div class="srow">
+                <span class="ci" style="background:#2E9F5C"><svg class="ic"><use href="#i-task"/></svg></span>
+                <span class="nm">标签 4<small>点击更换图标与颜色</small></span>
+                <span class="cv"><svg class="ic"><use href="#i-chevron"/></svg></span>
+              </div>
+            </div>
+
+            <div class="sreset"><svg class="ic"><use href="#i-reset"/></svg>恢复默认</div>
+          </div>
+
+          <!-- 选择弹层 -->
+          <div class="sheet-shade"></div>
+          <div class="sheet">
+            <div class="sh"><span>标签 2</span><span class="done">完成</span></div>
+            <div class="lbl">图标</div>
+            <div class="igrid">
+              <span class="cell"><svg class="ic"><use href="#i-bang"/></svg></span>
+              <span class="cell on"><svg class="ic"><use href="#i-star"/></svg></span>
+              <span class="cell"><svg class="ic"><use href="#i-bulb"/></svg></span>
+              <span class="cell"><svg class="ic"><use href="#i-task"/></svg></span>
+              <span class="cell"><svg class="ic"><use href="#i-work"/></svg></span>
+              <span class="cell"><svg class="ic"><use href="#i-event"/></svg></span>
+              <span class="cell"><svg class="ic"><use href="#i-mail"/></svg></span>
+              <span class="cell"><svg class="ic"><use href="#i-call"/></svg></span>
+              <span class="cell"><svg class="ic"><use href="#i-home"/></svg></span>
+              <span class="cell"><svg class="ic"><use href="#i-heart"/></svg></span>
+              <span class="cell"><svg class="ic"><use href="#i-cafe"/></svg></span>
+              <span class="cell"><svg class="ic"><use href="#i-food"/></svg></span>
+              <span class="cell"><svg class="ic"><use href="#i-camera"/></svg></span>
+              <span class="cell"><svg class="ic"><use href="#i-edit"/></svg></span>
+              <span class="cell"><svg class="ic"><use href="#i-globe"/></svg></span>
+              <span class="cell"><svg class="ic"><use href="#i-copy"/></svg></span>
+              <span class="cell"><svg class="ic"><use href="#i-lock"/></svg></span>
+              <span class="cell"><svg class="ic"><use href="#i-image"/></svg></span>
+              <span class="cell"><svg class="ic"><use href="#i-alarm"/></svg></span>
+              <span class="cell"><svg class="ic"><use href="#i-book"/></svg></span>
+              <span class="cell"><svg class="ic"><use href="#i-bolt"/></svg></span>
+              <span class="cell"><svg class="ic"><use href="#i-sync"/></svg></span>
+              <span class="cell"><svg class="ic"><use href="#i-link"/></svg></span>
+              <span class="cell"><svg class="ic"><use href="#i-mic"/></svg></span>
+            </div>
+            <div class="lbl">颜色</div>
+            <div class="colors">
+              <i style="background:#FF6B6B"></i>
+              <i class="on" style="background:#FEA545"></i>
+              <i style="background:#D99A1B"></i>
+              <i style="background:#2E9F5C"></i>
+              <i style="background:#168C8C"></i>
+              <i style="background:#6F9AF0"></i>
+              <i style="background:#5B5BC9"></i>
+              <i style="background:#AE82E4"></i>
+              <i style="background:#D4548C"></i>
+              <i style="background:#5C6B7A"></i>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">声物记 · 标签外观随备份导出，换机不丢</div>
+  <div class="pageno">06 / 06</div>
+</section>
+
+</body>
+</html>

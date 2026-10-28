@@ -7,5 +7,8 @@
     <!-- 供努比亚滑动键等外部硬件映射的悬浮窗语音速记入口（toggle：再触发即停止） -->
     <string name="overlay_record_short">悬浮窗录音</string>
     <string name="overlay_record_long">悬浮窗语音速记（再触发停止）</string>
+    <!-- 供外部硬件映射的显示悬浮窗入口（toggle：再触发即隐藏） -->
+    <string name="show_overlay_short">显示悬浮窗</string>
+    <string name="show_overlay_long">显示悬浮窗面板（再触发隐藏）</string>
     <string name="accessibility_service_description">允许通过长按音量键快速启动录音，双击音量减键新建文本笔记。本服务不会读取屏幕内容或收集任何个人信息。</string>
 </resources>

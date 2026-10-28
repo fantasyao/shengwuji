@@ -170,15 +170,19 @@ class DartChronoParser {
     return results;
   }
 
-  /// 解析具体日期（如：1月5日、1月5号）
+  /// 解析具体日期（如：1月5日、21号、下个月21号、下个月）
   List<TimeEntity> _parseSpecificDate(String text, DateTime now) {
     final results = <TimeEntity>[];
 
-    // 匹配"1月5日"或"1月5号"
-    final pattern1 = RegExp(r'(\d+)月(\d+)[日号]');
+    // 钟点同款数字字符集：阿拉伯 + 中文数字（语音转写常出"十月五号""二十一号"）
+    const numCls = r'[零〇一二两三四五六七八九十\d]+';
+
+    // 匹配"1月5日"或"1月5号"（中文数字同权："十月五号"）
+    final pattern1 = RegExp('($numCls)月($numCls)[日号]');
     for (final match in pattern1.allMatches(text)) {
-      final month = int.parse(match.group(1)!);
-      final day = int.parse(match.group(2)!);
+      final month = _cnNumToInt(match.group(1)!);
+      final day = _cnNumToInt(match.group(2)!);
+      if (month == null || day == null) continue;
 
       if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
         var date = DateTime(now.year, month, day);
@@ -201,7 +205,91 @@ class DartChronoParser {
       }
     }
 
+    // 匹配"下个月21号/这个月5日/本月三号/下下个月7号"（月词 + 日号）。
+    // 长词必须排在短词前（ alternation 顺序敏感）：否则"下下个月5号"会被
+    // "下个月"吃掉前缀、错算成只偏移一个月
+    final monthWordPattern = RegExp(
+      '(下下个月|下个月|下月|这个月|这月|本月)($numCls)[日号]',
+    );
+    for (final match in monthWordPattern.allMatches(text)) {
+      final monthWord = match.group(1)!;
+      final day = _cnNumToInt(match.group(2)!);
+      if (day == null || day < 1 || day > 31) continue;
+      final monthOffset = monthWord == '下下个月'
+          ? 2
+          : (monthWord.startsWith('下') ? 1 : 0);
+      final targetMonth = now.month + monthOffset;
+      var date = DateTime(now.year, targetMonth, day);
+      // 目标月没有这一天（如"下个月31号"而次月只有30天，DateTime 会溢
+      // 出到下下月 1 号）→ 收拢到目标月最后一天，比溢出更贴近用户意图
+      final normalizedMonth = ((targetMonth - 1) % 12) + 1;
+      if (date.month != normalizedMonth) {
+        date = DateTime(now.year, targetMonth + 1, 0);
+      }
+      results.add(
+        _createEntity(
+          text: match.group(0)!,
+          index: match.start,
+          date: date,
+          hour: 12,
+        ),
+      );
+    }
+
+    // 裸"下个月/下月/下下个月"（无日号）：指向目标月 1 日。负向断言排除
+    // "下个月21号"这类已被上一条整段匹配的前缀，防重复实体
+    final bareNextMonthPattern = RegExp(
+      '(下下个月|下个月|下月)(?!$numCls[日号])',
+    );
+    for (final match in bareNextMonthPattern.allMatches(text)) {
+      final monthOffset = match.group(1) == '下下个月' ? 2 : 1;
+      results.add(
+        _createEntity(
+          text: match.group(0)!,
+          index: match.start,
+          date: DateTime(now.year, now.month + monthOffset, 1),
+          hour: 12,
+        ),
+      );
+    }
+
+    // 裸"21号/21日"（无月前缀）：口语"21号9点提醒我"=本月21号，当天已
+    // 过（号数 < 今天）滚到下月；本月没有这一天（如 2 月说"31号"）顺延
+    // 到下一个有该日的月份。前置断言挡"1月5号"里的"5号"（前字是月）、
+    // "第21号"序号；后置断言挡物品场景的"3号电池/3号楼/21号线"与
+    // "5日后"（_parseOffset 的地盘，防重叠双实体）
+    final bareDayPattern = RegExp(
+      '(?<![月\\d第])($numCls)[日号](?![楼栋楼幢单元室层电池线后])',
+    );
+    for (final match in bareDayPattern.allMatches(text)) {
+      final day = _cnNumToInt(match.group(1)!);
+      if (day == null || day < 1 || day > 31) continue;
+      final date = _resolveDayOfMonth(now, day);
+      if (date == null) continue;
+      results.add(
+        _createEntity(
+          text: match.group(0)!,
+          index: match.start,
+          date: date,
+          hour: 12,
+        ),
+      );
+    }
+
     return results;
+  }
+
+  /// 裸"N号"的落月：号数 >= 今天 → 本月；否则逐月向后找第一个有该日的
+  /// 月份（含本月号数够用但本月天数不够的情形，如 2 月说"31号"→3月31）。
+  /// 12 个月内必命中（每月都有 1 号），兜底 null 防御
+  static DateTime? _resolveDayOfMonth(DateTime now, int day) {
+    for (var offset = 0; offset <= 12; offset++) {
+      if (offset == 0 && day < now.day) continue; // 本月该日已过
+      final month = now.month + offset;
+      final daysInMonth = DateTime(now.year, month + 1, 0).day;
+      if (day <= daysInMonth) return DateTime(now.year, month, day);
+    }
+    return null;
   }
 
   /// 解析时间（如：下午3点、15:30、八点半、两点）

@@ -27,6 +27,7 @@
 | `PUT /api/notes/{id}` | 编辑内容，body `{"content": "..."}`（**锁定笔记 403 拒绝**） |
 | `DELETE /api/notes/{id}` | 删除（连带删录音文件，与日记页删除语义一致；**锁定笔记 403 拒绝**） |
 | `GET /audio/{id}` | 录音流（支持 Range 206，进度条可拖动；**锁定笔记 403 拒绝**——录音内容与正文同属锁定范围） |
+| `GET /tag-icons.otf` | 标签图标字体（`rootBundle` 取 App 打包的 `fonts/MaterialIcons-Regular.otf`，供网页按 `tagConfig` 的 codePoint 渲染自定义标签图标；缓存 24h，读取失败 404） |
 | `GET /api/events` | SSE 事件流，数据变化推 `data: changed`，浏览器收到重拉列表 |
 | `GET /__identity` | 自家服务身份标记（端口接管探测用） |
 | `POST /__shutdown` | 关停服务（**仅接受 127.0.0.1 回环请求**，局域网设备调不通） |
@@ -127,3 +128,15 @@ sqflite；widget 测试也无法起 sqflite）。socket 走回环地址 + 临时
   出网即脱敏为固定星号、audioUrl 置 null，PUT/DELETE 回 403，`/audio/{id}`
   直构 URL 也 403（录音内容=笔记内容）——局域网是悬浮窗/锁屏之外的第三个
   泄露面，锁定即三面同防；电脑端要编辑/收听先在手机上解除锁定。
+- 2026-10-21：加锁功能总开关（prefs `note_lock_enabled`，设置页可关）。
+  关闭时本服务与主 App/悬浮窗同语义按「未加锁」处理：列表出网不解锁
+  （`diaryNoteToJson` 新增 `lockEnabled` 参数，缺省 true 保持旧行为）、
+  PUT/DELETE 与 `/audio/{id}` 不再 403；**库内 is_locked 标记保留**，
+  重新开启即恢复脱敏与拦截。
+- 2026-10-22：标签外观（4 槽位自定义图标/颜色）网页端一致。`GET /api/notes`
+  顶层新增 `tagConfig` 数组（每项 `{tag, codePoint, fontFamily, bg, fg}`，
+  由 `lib/utils/diary_tag.dart` 的 `DiaryTagStyles.config` 投影，底色为槽位色
+  14% 叠白、字色为槽位色本身）；页面用 `@font-face` 加载 `GET /tag-icons.otf`
+  （Flutter 打包的 MaterialIcons），标签芯片渲染为该图标 + 配置配色，不再有
+  固定文字标签。配置本身只存手机 prefs（`diary_tag_styles_v1`）并随全量备份
+  ZIP 的 `tag_config.json` 迁移，不参与云同步。

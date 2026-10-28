@@ -58,9 +58,7 @@ String formatPairTime(String? iso) {
   final dd = d.day.toString().padLeft(2, '0');
   final hh = d.hour.toString().padLeft(2, '0');
   final mi = d.minute.toString().padLeft(2, '0');
-  final ymd = d.year == DateTime.now().year
-      ? '$mm-$dd'
-      : '${d.year}-$mm-$dd';
+  final ymd = d.year == DateTime.now().year ? '$mm-$dd' : '${d.year}-$mm-$dd';
   return '$ymd $hh:$mi';
 }
 
@@ -159,8 +157,10 @@ class _CorrectionPairsPageState extends State<CorrectionPairsPage> {
   /// 加入热词：把「错误 → 修正」转成音素热词条目「正词 | 错词」，
   /// 发音近似的错误写法之后会自动替换（不止字面提示）
   Future<void> _promotePair(CorrectionPair pair) async {
-    final added =
-        await widget.processor.appendHotwordPair(pair.correct, pair.error);
+    final added = await widget.processor.appendHotwordPair(
+      pair.correct,
+      pair.error,
+    );
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -311,9 +311,9 @@ class _CorrectionPairsPageState extends State<CorrectionPairsPage> {
                           icon: Icon(
                             Icons.library_add_outlined,
                             size: 20,
-                            color: pair.hitCount >=
-                                    PhonemeHotwordConfig
-                                        .promotionHitThreshold
+                            color:
+                                pair.hitCount >=
+                                    PhonemeHotwordConfig.promotionHitThreshold
                                 ? ext.primary
                                 : ext.textHint,
                           ),

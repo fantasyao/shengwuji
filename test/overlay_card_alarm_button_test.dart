@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shengwuji_app/overlay/widgets/overlay_diary_card.dart';
+import 'package:shengwuji_app/theme/app_theme.dart';
 
 /// 悬浮窗卡片闹钟按钮接线回归：onAlarm 传入后按钮从「恒禁用占位」变可用，
 /// 点击触发回调；onAlarm 为 null 保持禁用占位（按钮仍渲染但无回调）。
@@ -10,6 +11,7 @@ void main() {
   Future<void> pumpCard(WidgetTester tester, {VoidCallback? onAlarm}) async {
     await tester.pumpWidget(
       MaterialApp(
+        theme: AppThemes.defaultTeal.toThemeData(),
         home: Scaffold(
           body: SizedBox(
             width: 296,

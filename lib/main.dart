@@ -18,8 +18,10 @@ import 'widgets/blur_loading_overlay.dart';
 import 'widgets/diary_floating_button.dart';
 import 'widgets/neu_widgets.dart';
 import 'shortcut_manager.dart' as sm;
+import 'sync/webdav_request_counter.dart';
 import 'recognizer_singleton.dart';
 import 'splash_screen.dart';
+import 'theme/app_font.dart';
 import 'theme/app_theme.dart';
 import 'theme/app_theme_extension.dart';
 import 'theme/custom_theme.dart';
@@ -68,6 +70,11 @@ void main() async {
 
   sherpa_onnx.initBindings();
 
+  // 本机 WebDAV 请求预算（见 sync/webdav_request_counter.dart）。主 App 与
+  // 悬浮窗各写一份日志，这里只加载自己那份；读一次小文件，直接 await 保证
+  // 首屏之后的同步/设置页都拿到已恢复的计数。
+  await WebDavRequestCounter.initialize(engine: 'main');
+
   // 设备诊断信息记一次（品牌/型号/屏幕/导航模式/权限/已启用无障碍服务——
   // 悬浮窗「收起后把手/竖线不出现」终端用户反馈定位用，采集口径见
   // utils/device_diagnostics.dart；fire-and-forget 不阻塞启动）
@@ -115,6 +122,11 @@ void main() async {
 
   // 预读用户选择的字号缩放（默认 1.0 中档；旧版本无此 key 回退 1.0）
   AppRoot.fontScaleNotifier.value = prefs.getDouble('font_size_scale') ?? 1.0;
+
+  // 预读字体选择（默认霞鹜文楷；悬浮窗独立 engine 在同一 key 上各读各的）
+  AppRoot.fontChoiceNotifier.value = parseAppFontChoice(
+    prefs.getString(kAppFontPrefKey),
+  );
 
   // 预读主界面 Tab 可见性（设置页「功能页面」两个隐藏开关，重启生效——
   // MainScaffold 按 visibleTabStack 装配 IndexedStack/底部导航，进程内不变）
@@ -173,6 +185,11 @@ class AppRoot extends StatelessWidget {
     1.0,
   );
 
+  /// 全局字体选择（霞鹜文楷/系统默认）——main() 启动预读 `app_font_family`，
+  /// 设置页切换后立即整树重建；悬浮窗是独立 engine，按同一 prefs key 自行读取
+  static final ValueNotifier<AppFontChoice> fontChoiceNotifier =
+      ValueNotifier<AppFontChoice>(kDefaultAppFontChoice);
+
   /// 主界面 Tab 可见性（设置页「功能页面」两个隐藏开关；main() 启动时预读，
   /// 默认 false=显示。同 themeNotifier 的「启动一次预读」模式，重启生效）
   static bool recordTabHidden = false;
@@ -191,41 +208,46 @@ class AppRoot extends StatelessWidget {
             return ValueListenableBuilder<double>(
               valueListenable: fontScaleNotifier,
               builder: (context, fontScale, _) {
-                return MaterialApp(
-                  title: '声物记',
-                  theme: themeDef.toThemeData(),
-                  // 深色模式：全 App 唯一一套深色皮肤（不进主题选择器，
-                  // 深浅切换由「深色模式」三档驱动）；themeMode=system 时
-                  // 框架跟随系统深浅自动在 theme/darkTheme 间切换
-                  darkTheme: AppThemes.dark.toThemeData(),
-                  themeMode: themeMode,
-              // 强制中文本地化：UI 文案全 App 硬编码中文，日期转轮选择器
-              //（悬浮窗闹钟 CalendarConfirmSheet 的 CupertinoDatePicker）等
-              // 框架级文案跟随这里——不配则转轮显示英文月份/AM/PM
-              locale: const Locale('zh', 'CN'),
-              supportedLocales: const [Locale('zh', 'CN')],
-              localizationsDelegates: const [
-                GlobalMaterialLocalizations.delegate,
-                GlobalWidgetsLocalizations.delegate,
-                GlobalCupertinoLocalizations.delegate,
-              ],
-              // 全局字号缩放：整树文本统一缩放（含硬编码 fontSize）。
-              // 悬浮窗是独立 engine 独立 widget 树，不经过此 builder，不受影响。
-              builder: (context, child) {
-                return MediaQuery(
-                  data: MediaQuery.of(
-                    context,
-                  ).copyWith(textScaler: TextScaler.linear(fontScale)),
-                  child: child!,
-                );
-              },
-              home: SplashScreen(
-                child: MainScaffold(
-                  recordTabHidden: recordTabHidden,
-                  listTabHidden: listTabHidden,
-                ),
-              ),
-              debugShowCheckedModeBanner: false,
+                return ValueListenableBuilder<AppFontChoice>(
+                  valueListenable: fontChoiceNotifier,
+                  builder: (context, fontChoice, _) {
+                    return MaterialApp(
+                      title: '声物记',
+                      theme: themeDef.toThemeData(font: fontChoice),
+                      // 深色模式：全 App 唯一一套深色皮肤（不进主题选择器，
+                      // 深浅切换由「深色模式」三档驱动）；themeMode=system 时
+                      // 框架跟随系统深浅自动在 theme/darkTheme 间切换
+                      darkTheme: AppThemes.dark.toThemeData(font: fontChoice),
+                      themeMode: themeMode,
+                      // 强制中文本地化：UI 文案全 App 硬编码中文，日期转轮选择器
+                      //（悬浮窗闹钟 CalendarConfirmSheet 的 CupertinoDatePicker）等
+                      // 框架级文案跟随这里——不配则转轮显示英文月份/AM/PM
+                      locale: const Locale('zh', 'CN'),
+                      supportedLocales: const [Locale('zh', 'CN')],
+                      localizationsDelegates: const [
+                        GlobalMaterialLocalizations.delegate,
+                        GlobalWidgetsLocalizations.delegate,
+                        GlobalCupertinoLocalizations.delegate,
+                      ],
+                      // 全局字号缩放：整树文本统一缩放（含硬编码 fontSize）。
+                      // 悬浮窗是独立 engine 独立 widget 树，不经过此 builder，不受影响。
+                      builder: (context, child) {
+                        return MediaQuery(
+                          data: MediaQuery.of(
+                            context,
+                          ).copyWith(textScaler: TextScaler.linear(fontScale)),
+                          child: child!,
+                        );
+                      },
+                      home: SplashScreen(
+                        child: MainScaffold(
+                          recordTabHidden: recordTabHidden,
+                          listTabHidden: listTabHidden,
+                        ),
+                      ),
+                      debugShowCheckedModeBanner: false,
+                    );
+                  },
                 );
               },
             );
@@ -453,6 +475,9 @@ class _MainScaffoldState extends State<MainScaffold>
         state == AppLifecycleState.hidden) {
       _isAppBackgrounded = true;
       _scheduleBackgroundRelease();
+      // 追加写没有防抖，这里只是等已入队的行落盘（进程随时可能被杀）
+      final requestCounter = WebDavRequestCounter.instanceOrNull;
+      if (requestCounter != null) unawaited(requestCounter.flush());
     } else if (state == AppLifecycleState.resumed) {
       _isAppBackgrounded = false;
       _backgroundReleaseTimer?.cancel();
@@ -494,7 +519,9 @@ class _MainScaffoldState extends State<MainScaffold>
       return;
     }
     if (!RecognizerSingleton.instance.isReady) return; // 已释放/未加载，无事可做
-    log('[BackgroundRelease] App 退后台 ${_backgroundReleaseDelaySeconds}s，释放识别引擎内存');
+    log(
+      '[BackgroundRelease] App 退后台 ${_backgroundReleaseDelaySeconds}s，释放识别引擎内存',
+    );
     RecognizerSingleton.instance.dispose();
   }
 
@@ -748,35 +775,35 @@ class _MainScaffoldState extends State<MainScaffold>
               // 显示下标=语义索引在可见栈中的位置（隐藏页不挂载后两者不等）
               index: widget._tabStack.indexOf(_currentIndex),
               children: [
-                for (final semantic in widget._tabStack) _buildTabPage(
-                  semantic,
-                ),
+                for (final semantic in widget._tabStack)
+                  _buildTabPage(semantic),
               ],
             ),
             bottomNavigationBar: AppThemeExtension.of(context).isNeumorphic
                 ? _buildNeuBottomNav()
                 : Theme(
-              data: Theme.of(context).copyWith(
-                // 关闭点击水波纹效果，提升性能
-                splashColor: Colors.transparent,
-                highlightColor: Colors.transparent,
-              ),
-              child: BottomNavigationBar(
-                currentIndex: widget._tabStack.indexOf(_currentIndex),
-                // 显式指定背景色：黑金主题下默认白色会与深色 scaffold 断裂
-                // 4 套主题中 3 套浅色 cardBackground≈白，视觉无变化；黑金修复白底问题
-                backgroundColor: ext.cardBackground,
-                type: BottomNavigationBarType
-                    .fixed, // [注意] 超过3个tab建议加上这个属性，防止图标乱动
-                onTap: _onNavTap,
-                selectedItemColor: ext.primary,
-                unselectedItemColor: ext.textHint,
-                // 按可见栈装配（隐藏页不出现在导航上，与 IndexedStack 顺序一致）
-                items: [
-                  for (final semantic in widget._tabStack) _navItem(semantic),
-                ],
-              ),
-            ),
+                    data: Theme.of(context).copyWith(
+                      // 关闭点击水波纹效果，提升性能
+                      splashColor: Colors.transparent,
+                      highlightColor: Colors.transparent,
+                    ),
+                    child: BottomNavigationBar(
+                      currentIndex: widget._tabStack.indexOf(_currentIndex),
+                      // 显式指定背景色：黑金主题下默认白色会与深色 scaffold 断裂
+                      // 4 套主题中 3 套浅色 cardBackground≈白，视觉无变化；黑金修复白底问题
+                      backgroundColor: ext.cardBackground,
+                      type: BottomNavigationBarType
+                          .fixed, // [注意] 超过3个tab建议加上这个属性，防止图标乱动
+                      onTap: _onNavTap,
+                      selectedItemColor: ext.primary,
+                      unselectedItemColor: ext.textHint,
+                      // 按可见栈装配（隐藏页不出现在导航上，与 IndexedStack 顺序一致）
+                      items: [
+                        for (final semantic in widget._tabStack)
+                          _navItem(semantic),
+                      ],
+                    ),
+                  ),
           ),
           // 【悬浮语音按钮】：因为在外层 Stack 中，它会钉在物理底部，键盘弹起时会被覆盖而不会飞起。
           // ValueListenableBuilder：DiaryTab 状态翻转（_diaryButtonTick）只重建按钮，
@@ -918,19 +945,23 @@ class _MainScaffoldState extends State<MainScaffold>
           SizedBox(
             width: 44,
             height: 28,
-          // 选中=NeuInset 凹陷（双轴渐变晕影，与开关/输入框同款，
-          // 2026-09-19 统一，替代对角渐变 neuInsetDecoration——顶/底边
-          // 整条没阴影的旧观感）
-          child: selected
-              ? NeuInset(
-                  radius: 14,
-                  child: Center(
+            // 选中=NeuInset 凹陷（双轴渐变晕影，与开关/输入框同款，
+            // 2026-09-19 统一，替代对角渐变 neuInsetDecoration——顶/底边
+            // 整条没阴影的旧观感）
+            child: selected
+                ? NeuInset(
+                    radius: 14,
+                    child: Center(
+                      child: Icon(
+                        _navIconData(semantic),
+                        color: color,
+                        size: 20,
+                      ),
+                    ),
+                  )
+                : Center(
                     child: Icon(_navIconData(semantic), color: color, size: 20),
                   ),
-                )
-              : Center(
-                  child: Icon(_navIconData(semantic), color: color, size: 20),
-                ),
           ),
           const SizedBox(height: 3),
           Text(
@@ -1119,12 +1150,20 @@ class _MainScaffoldState extends State<MainScaffold>
     // 落深色，麦克风变黑不一致，2026-09-23 教训）
     final bool isNeu = ext.isNeumorphic;
     Color btnColor = ext.fabReady; // 默认青色（旧主题=按钮底色；拟物=中心图标色）
-    Widget btnChild = Icon(Icons.mic, color: isNeu ? ext.primary : ext.fabContentColor, size: 46);
+    Widget btnChild = Icon(
+      Icons.mic,
+      color: isNeu ? ext.primary : ext.fabContentColor,
+      size: 46,
+    );
 
     if (!state.isReady && !RecognizerSingleton.hasModel) {
       // 模型文件不存在 → 禁用按钮
       btnColor = ext.fabDisabled;
-      btnChild = Icon(Icons.mic, color: isNeu ? ext.textHint : ext.fabContentColor, size: 46);
+      btnChild = Icon(
+        Icons.mic,
+        color: isNeu ? ext.textHint : ext.fabContentColor,
+        size: 46,
+      );
     } else if (state.isListening) {
       // 录音中 → 红色
       btnColor = ext.fabRecording;
@@ -1176,19 +1215,19 @@ class _MainScaffoldState extends State<MainScaffold>
             child: isNeu
                 ? NeuVoiceFab(size: 94, child: btnChild)
                 : AnimatedContainer(
-              duration: const Duration(milliseconds: 200),
-              width: 94,
-              height: 94,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: btnColor,
-                // 🎨 黏土拟态阴影：ext.fabClayShadow（三处语音圆钮共用
-                // 唯一真值）——浅色=白高光+暗影；深色=仅暗影（白高光
-                // 在深底显形为光晕，2026-09-28 真机反馈）
-                boxShadow: ext.fabClayShadow,
-              ),
-              child: Center(child: btnChild),
-            ),
+                    duration: const Duration(milliseconds: 200),
+                    width: 94,
+                    height: 94,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: btnColor,
+                      // 🎨 黏土拟态阴影：ext.fabClayShadow（三处语音圆钮共用
+                      // 唯一真值）——浅色=白高光+暗影；深色=仅暗影（白高光
+                      // 在深底显形为光晕，2026-09-28 真机反馈）
+                      boxShadow: ext.fabClayShadow,
+                    ),
+                    child: Center(child: btnChild),
+                  ),
           ),
           const SizedBox(height: 14),
           // 用固定高度容器包裹文字：文字出现/消失都不改变 Column 总高度（仿日记页）
@@ -1199,7 +1238,10 @@ class _MainScaffoldState extends State<MainScaffold>
                 statusText,
                 textAlign: TextAlign.center,
                 style: TextStyle(
-                  fontFamily: 'LXGWWenKaiMonoGBScreen',
+                  // 主题字体（霞鹜文楷/系统默认由全局字体选项决定）
+                  fontFamily: Theme.of(
+                    context,
+                  ).textTheme.bodyMedium?.fontFamily,
                   fontSize: 16,
                   color: ext.textHint,
                   fontWeight: FontWeight.w500,
@@ -1234,12 +1276,20 @@ class _MainScaffoldState extends State<MainScaffold>
     // 落深色，麦克风变黑不一致，2026-09-23 教训）
     final bool isNeu = ext.isNeumorphic;
     Color btnColor = ext.fabReady;
-    Widget btnChild = Icon(Icons.mic, color: isNeu ? ext.primary : ext.fabContentColor, size: 55);
+    Widget btnChild = Icon(
+      Icons.mic,
+      color: isNeu ? ext.primary : ext.fabContentColor,
+      size: 55,
+    );
 
     if (!state.isReady && !RecognizerSingleton.hasModel) {
       // 模型文件不存在 → 禁用按钮（灰色）
       btnColor = ext.fabDisabled;
-      btnChild = Icon(Icons.mic, color: isNeu ? ext.textHint : ext.fabContentColor, size: 55);
+      btnChild = Icon(
+        Icons.mic,
+        color: isNeu ? ext.textHint : ext.fabContentColor,
+        size: 55,
+      );
     } else if (state.isListening) {
       btnColor = ext.fabRecording;
       btnChild = Icon(
@@ -1306,20 +1356,20 @@ class _MainScaffoldState extends State<MainScaffold>
                     child: ext.isNeumorphic
                         ? NeuVoiceFab(size: 100, child: btnChild)
                         : AnimatedContainer(
-                      duration: const Duration(milliseconds: 200),
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        // 🎨 黏土拟态阴影：ext.fabClayShadow（三处语音圆钮共用
-                        // 唯一真值）——浅色=白高光+暗影；深色=仅暗影（白高光
-                        // 在深底显形为光晕，2026-09-28 真机反馈）
-                        boxShadow: ext.fabClayShadow,
-                      ),
-                      child: CircleAvatar(
-                        radius: 50,
-                        backgroundColor: btnColor,
-                        child: btnChild,
-                      ),
-                    ),
+                            duration: const Duration(milliseconds: 200),
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              // 🎨 黏土拟态阴影：ext.fabClayShadow（三处语音圆钮共用
+                              // 唯一真值）——浅色=白高光+暗影；深色=仅暗影（白高光
+                              // 在深底显形为光晕，2026-09-28 真机反馈）
+                              boxShadow: ext.fabClayShadow,
+                            ),
+                            child: CircleAvatar(
+                              radius: 50,
+                              backgroundColor: btnColor,
+                              child: btnChild,
+                            ),
+                          ),
                   ),
                   // 确认保存按钮（拟物主题：纯同色凸起 + 品牌青文字，按住凹陷；
                   // 2026-09-17 预览拍板不用彩色渐变底）
@@ -1336,8 +1386,7 @@ class _MainScaffoldState extends State<MainScaffold>
                                 style: TextStyle(
                                   fontSize: 18,
                                   fontWeight: FontWeight.bold,
-                                  color:
-                                      AppThemeExtension.of(context).primary,
+                                  color: AppThemeExtension.of(context).primary,
                                   // ⚠️ NeuPressable 无 Material 祖先（钉底栏在
                                   // 外层 Stack，ElevatedButton 自带的 Material
                                   // 被换掉），decoration 不置 none 会出黄色
@@ -1348,24 +1397,24 @@ class _MainScaffoldState extends State<MainScaffold>
                             ),
                           )
                         : ElevatedButton(
-                      onPressed: state.saveData,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: ext.primary,
-                        // 深色主题落近黑（白字在深底界面太跳），浅色恒白
-                        foregroundColor: ext.fabContentColor,
-                        elevation: 0,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(18),
-                        ),
-                      ),
-                      child: const Text(
-                        "确认保存",
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
+                            onPressed: state.saveData,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: ext.primary,
+                              // 深色主题落近黑（白字在深底界面太跳），浅色恒白
+                              foregroundColor: ext.fabContentColor,
+                              elevation: 0,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(18),
+                              ),
+                            ),
+                            child: const Text(
+                              "确认保存",
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
                   ),
                 ],
               ),

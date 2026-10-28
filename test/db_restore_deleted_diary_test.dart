@@ -42,6 +42,7 @@ void main() {
     );
     await dbHelper.updateDiaryTag(id, 'star');
     await dbHelper.setDiaryLocked(id, true);
+    await dbHelper.updateDiaryImage(id, '/tmp/undo_shot.jpg');
     final before =
         (await db.query('diary', where: 'id = ?', whereArgs: [id])).single;
     final uuid = before['sync_uuid'] as String;
@@ -74,6 +75,8 @@ void main() {
     expect(restored['exported_at'], before['exported_at']);
     expect(restored['tag'], before['tag']);
     expect(restored['is_locked'], before['is_locked']);
+    // 截图附件随行还原（撤销窗口内图片文件未删，路径原样指回）
+    expect(restored['image_path'], '/tmp/undo_shot.jpg');
     // 跨端身份保留（sync_uuid 是云同步合并键）
     expect(restored['sync_uuid'], uuid);
 

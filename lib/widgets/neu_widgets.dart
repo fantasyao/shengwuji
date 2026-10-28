@@ -77,16 +77,16 @@ class NeuInset extends StatelessWidget {
         borderRadius: BorderRadius.circular(radius),
         color: ext.cardBackground,
       ),
-        child: CustomPaint(
-          painter: _InsetShadowPainter(
-            radius: radius,
-            dark: ext.neuShadowDark.withValues(alpha: 0.9),
-            light: ext.neuShadowLight.withValues(alpha: 0.9),
-          ),
-          child: padding == null
-              ? child
-              : Padding(padding: padding!, child: child),
+      child: CustomPaint(
+        painter: _InsetShadowPainter(
+          radius: radius,
+          dark: ext.neuShadowDark.withValues(alpha: 0.9),
+          light: ext.neuShadowLight.withValues(alpha: 0.9),
         ),
+        child: padding == null
+            ? child
+            : Padding(padding: padding!, child: child),
+      ),
     );
   }
 }
@@ -197,6 +197,83 @@ class NeuSwitchTile extends StatelessWidget {
   }
 }
 
+/// 拟物单选胶囊（替代 ChoiceChip）：未选=凸起、选中=凹陷 + 品牌青字
+///
+/// 2026-10-27 收口：原外观页「字号/深色模式」两处内联实现 + 设置页各
+/// ChoiceChip 选择器（悬浮窗 8 组档位、音量键手势、搜索引擎、字体档）统一
+/// 走本组件，调用方一般经 settings_widgets.buildSettingsChoiceChip 分流
+/// （非拟物主题保持 M3 ChoiceChip，渲染路径零变化）。
+///
+/// 选中态用 [NeuInset] 而非实心底色：拟物主题"背景与组件同色"是双阴影
+/// 成立的前提，实心品牌青块会破坏层级（2026-09-18 预览拍板 + 真机确认）。
+/// [avatar] 用于图标/自定义预览（如把手主题双色圆点）；调用方传无 color
+/// 的 [Icon] 即可，颜色由本组件按选中态注入（IconTheme，显式 color/size
+/// 优先生效）。
+class NeuChoiceChip extends StatelessWidget {
+  final Widget? avatar;
+
+  final Widget label;
+
+  final bool selected;
+
+  final ValueChanged<bool>? onSelected;
+
+  const NeuChoiceChip({
+    super.key,
+    this.avatar,
+    required this.label,
+    required this.selected,
+    this.onSelected,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final ext = AppThemeExtension.of(context);
+    final enabled = onSelected != null;
+    final content = Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (avatar != null) ...[
+            // 图标颜色随选中态：选中青暗（凹陷里的品牌青字），未选品牌青
+            IconTheme.merge(
+              data: IconThemeData(
+                color: selected ? ext.primaryDark : ext.primary,
+                size: 16,
+              ),
+              child: avatar!,
+            ),
+            const SizedBox(width: 6),
+          ],
+          // label 允许带自身字体（如外观页「字体」chip 预览字形），颜色/
+          // 字号/字重由拟物选中态统一注入
+          DefaultTextStyle.merge(
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+              color: selected ? ext.primaryDark : ext.textPrimary,
+            ),
+            child: label,
+          ),
+        ],
+      ),
+    );
+    return GestureDetector(
+      onTap: enabled ? () => onSelected!(!selected) : null,
+      child: Opacity(
+        opacity: enabled ? 1.0 : 0.45,
+        child: selected
+            ? NeuInset(radius: 999, child: content)
+            : Container(
+                decoration: neuRaisedDecoration(context, radius: 999),
+                child: content,
+              ),
+      ),
+    );
+  }
+}
+
 /// 可按压的拟物容器：静止凸起，按住转凹陷
 ///
 /// 用于入口行、次级按钮等「轻操作」；主 CTA 若需要强调可在外部包同款。
@@ -280,7 +357,12 @@ class NeuCard extends StatelessWidget {
 
   final EdgeInsetsGeometry? padding;
 
-  const NeuCard({super.key, required this.child, this.radius = 18, this.padding});
+  const NeuCard({
+    super.key,
+    required this.child,
+    this.radius = 18,
+    this.padding,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -311,7 +393,11 @@ class NeuCard extends StatelessWidget {
 /// 层序与 CSS 一致：本 painter 画在 child 之下——child 应是需要浮在
 /// 内阴影上的内容（如开关滑块）；纯底加内阴影时 child 传空盒即可。
 class _InsetShadowPainter extends CustomPainter {
-  _InsetShadowPainter({required this.radius, required this.dark, required this.light});
+  _InsetShadowPainter({
+    required this.radius,
+    required this.dark,
+    required this.light,
+  });
 
   final double radius;
 
@@ -514,21 +600,16 @@ class _InsetShadowPainter extends CustomPainter {
     final inner = (r - band) / r;
     final square = Rect.fromCircle(center: center, radius: r);
     for (var i = 0; i < slices; i++) {
-      final color = Color.lerp(
-        startColor,
-        endColor,
-        (i + 0.5) / slices,
-      )!;
-      final wedge =
-          Path()
-            ..moveTo(center.dx, center.dy)
-            ..arcTo(
-              square,
-              startAngle + sweepAngle * (i / slices),
-              sweepAngle / slices,
-              false,
-            )
-            ..close();
+      final color = Color.lerp(startColor, endColor, (i + 0.5) / slices)!;
+      final wedge = Path()
+        ..moveTo(center.dx, center.dy)
+        ..arcTo(
+          square,
+          startAngle + sweepAngle * (i / slices),
+          sweepAngle / slices,
+          false,
+        )
+        ..close();
       canvas.save();
       canvas.clipPath(wedge);
       canvas.drawRect(
@@ -632,9 +713,7 @@ class NeuSwitch extends StatelessWidget {
               child: AnimatedAlign(
                 duration: const Duration(milliseconds: 200),
                 curve: Curves.easeOutCubic,
-                alignment: value
-                    ? Alignment.centerRight
-                    : Alignment.centerLeft,
+                alignment: value ? Alignment.centerRight : Alignment.centerLeft,
                 child: Container(
                   width: 22,
                   height: 22,

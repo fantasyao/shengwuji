@@ -1,6 +1,6 @@
 # 悬浮窗（闪念胶囊）架构与实现记录
 
-> 分支：`feature/floating-window` · 最近更新：2026-09-14 · 状态：**把手 + 数据链路 + 全屏透明面板/自适应胶囊 + 召唤式交互已打通**（音量键手势槽位召唤悬浮窗并自动展开、收起后可配置秒数自动彻底隐藏、显示时再触发立即隐藏、展开/收起推屏滑动动画；卡片标注换色已落地；把手支持长按拖动调整纵向位置；**悬浮窗整体为 Pro 付费功能**——设置页门禁 + 原生手势拦截双层，见"Pro 门禁"小节）
+> 分支：`feature/floating-window` · 最近更新：2026-10-28 · 状态：**把手 + 数据链路 + 全屏透明面板/自适应胶囊 + 召唤式交互已打通**（音量键手势槽位召唤悬浮窗并自动展开、收起后可配置秒数自动彻底隐藏、显示时再触发立即隐藏、展开/收起推屏滑动动画；卡片标注换色、面板下拉刷新 WebDAV 同步、header 剪贴板一键存为笔记已落地（2026-10-28 起音量键手势也能直接存剪贴板，不展开面板）；把手支持长按拖动调整纵向位置；**悬浮窗整体为 Pro 付费功能**——设置页门禁 + 原生手势拦截双层，见"Pro 门禁"小节）
 
 ## 功能概述
 
@@ -63,6 +63,25 @@
 | （2026-10-07 本次提交） | **大爆炸层四角圆弧化**（用户需求：分词弹窗四周边缘做圆弧化处理，随手记/悬浮窗两侧都要）——收在共用组件 `BigBangLayer.build` 一处两侧同时生效：新常量 `OverlayConstants.bigBangCornerRadius`=20dp，深色主体 Material 加 `borderRadius` + `clipBehavior: Clip.antiAlias`（Material 的 borderRadius 只影响背景形状，子内容须显式 clip 才随圆角裁切），圆角缺口透出下层画面，与顶部透明留白/底部透明关闭条同一「层不撑满全屏」视觉语言；⚠️ 缺口区域外包 `GestureDetector(opaque, onTap:(){})` 吸收触摸——裁切外的角落若不接住，overlay 侧穿透会命中面板空白区收起手势（把面板连同本层一起收掉）、主 App 侧（opaque:false 路由无 barrier）穿透会点到下层日记卡；两个调用方 overlay_home/diary_tab 零改动；新增圆角 widget 测试 1 例（Material borderRadius/clipBehavior + 常量数值钉死），flutter analyze 0 error + flutter test 749 全过（748 基线+1 新增）；详见「大爆炸分词层」小节首段 |
 | （2026-10-07 本次提交） | **大爆炸滑动取消**（用户需求：在已连选的词块上滑动应取消选择，对齐锤子原版——此前滑动只能追加不能取消）：连选模式由**锚点词块的选中态**决定——起步时锚点已选中 → 本轮为「滑动取消」（`_dragDeselect`），锚点→当前命中区间从基线 `_dragBase` 中剔除而非并集；锚点未选中 → 维持追加置选不变（第二轮滑选不丢旧选的既有语义不受影响，追加轮经过已选词块也不误剔——模式只看锚点）；同一轮内拖回缩小区间可恢复（基线不动，只影响本轮划到的范围），取消后新一轮在已取消词块上滑选自动回到追加模式（每轮独立判定）；改动收在 `BigBangLayer` 一处（`_applyRange` 按模式分流 + 起步判定 + 两处收尾复位），主 App/悬浮窗两侧共用同时生效，调用方零改动；新增 widget 测试 4 例（滑过取消+复制剩余 / 拖回恢复 / 追加轮不误剔 / 取消后重新追加），flutter analyze 0 error + flutter test 753 全过（749 基线+4 新增）；详见「大爆炸分词层」手势模型小节 |
 | （2026-10-08 本次提交） | **大爆炸层白底浅色化 + 下层压暗遮罩**（用户需求：分词弹窗改锤子原版白色卡片视觉，顶部/底部透出下层画面处要有明暗分层；白底下文字变黑、滑选选中变白）——收在共用组件 `BigBangLayer` + `OverlayConstants` 一处两侧同时生效：①`bigBangBackground` 深色（0xFA101319）→ 近不透明白（0xFAFFFFFF），文字/控件配色整体反转——未选词块浅灰底（black 5%）深字（black87）、选中维持主题蓝底白字（滑选/点选即「变白」，对齐原版选中高亮）、标点 black38、顶栏标题/计数/全选清空/关闭钮与「分词中…」深色化、底栏预览条与禁用按钮浅灰化；②新增 `bigBangScrimColor`（35% 黑）统一铺在顶部留白、圆角缺口层、底部关闭条三处透出下层画面的区域——下层内容隐约可辨但明确退到「下一层」，白色主体浮出；吸收触摸的 GestureDetector 结构不变（遮罩只改视觉不改命中）；改动不涉及手势/分词/复制逻辑；新增浅色配色 widget 测试 1 例（白底常量钉死 + 遮罩 3 处计数 + 未选词块深字断言）、圆弧测试名对账，flutter analyze 0 error（warning 均为基线既有）+ flutter test 754 全过（753 基线+1 新增）；详见「大爆炸分词层」小节首段 |
+| （2026-10-08 本次提交） | **大爆炸层深色模式适配**（用户需求：APP 深色模式下白底太刺眼，白色改黑色）——`BigBangLayer` 新增可空参数 `isDark`（null=跟随 Theme brightness）：主 App 侧经透明路由推入、Theme 已解析 system 档，不传参零改动自动跟随；悬浮窗 engine 固定浅色主题（跨背景对比度既有设计，自动判定恒浅），唤起时由 `OverlayHome._openBigBang` reload 读 `theme_mode` prefs 经 `parseThemeMode` 解析（system 档按 platformBrightness 裁决）显式传入——大爆炸层是悬浮窗侧唯一消费 theme_mode key 的组件。深色底 `bigBangBackgroundDark`=0xFA101319（浅色化前历史深色值直接复用）；9 处配色位（主/次/动作文字、未选词块底与描边、禁用底与图标、底栏预览条底与描边）走双色板辅助函数整体反转；选中词块恒主题蓝底白字、压暗遮罩与底部 ✕ 按钮深浅共用；新增深色配色 + isDark 缺省跟随 Theme 两条 widget 测试，flutter analyze 0 error（warning 均基线既有）+ flutter test 761 全过（+2 新增）；详见「大爆炸分词层」小节 |
+| （2026-10-19 本次提交） | **面板 header 末位按钮：收起 chevron 换语音速记录音按钮**（用户需求：悬浮窗顶部折叠按钮换成录音按钮，点击即走会随时间变长的录音胶囊入口）——`OverlayPanelHeader` 的 `onCollapse` 参数/收起 chevron 替换为 `onStartVoiceMemo` + `Icons.mic`（tooltip「语音速记」），收起面板的职责收编到空白区点击/滑动与卡片划走手势；⚠️ 按钮**不直接调 Dart `_voiceMemo.start()`**——Kotlin 侧 toggle 状态机（voiceMemoActive）/四级 watchdog/Pro 门禁/主 App 麦克风互斥都以原生为权威，Dart 直调会让原生失联（toggle 停录失灵、watchdog 缺席）——新增通道方法 `startVoiceMemo`（Dart `AccessibilityOverlay.startVoiceMemo()` → Kotlin handler 直调 `triggerVoiceMemoOverlay()`，与音量键「悬浮窗录音」动作同一入口），原生随后经既有 `startVoiceMemo` 消息回 Dart `onStartVoiceMemo` handler 开录，面板窗口随即 resize 成录音胶囊（312×84，暖路径 hiddenReveal=false 立即揭示）；录音中 header 随窗口离屏不可达，toggle 停止分支天然不经过此按钮；header 测试 6 例改写（mic 断言/chevron findsNothing/第四回调接线/镜像只留 Align 与阴影），flutter analyze 148 issue 与基线持平 + flutter test 789 全过 + compileDebugKotlin 通过；详见「面板 header 录音按钮」小节 |
+| （2026-10-19 本次提交） | **「全部展开」状态跨会话沿上次**（用户反馈：点过全部展开后下次再进面板卡片又全收起）——新增 prefs key `overlay_expand_all_cards`（bool，缺省 false=历史行为），`_toggleExpandAll` 为唯一写入方（展开全部→true/收起全部→false），`_expand` 收起态主分支在滑入动画首帧前读取并把当前 `_diaries` 全部 id 加回 `_expandedIds`；写入/读取同为 overlay engine（主 App 无入口），同 isolate prefs 缓存天然同步无需 reload；边界：恢复用上一会话残留列表（State 常驻 id 稳定），恢复后 `_syncDiariesIfChanged` 重查不清 `_expandedIds` 故不被冲掉，期间新增的卡不自动展开（转写新卡由 `_expandFirstDiaryAfterLoad` 管）；三处清空点（`_finishCollapse`/`_resetFromNative`/`_onScreenAutoHide`）照旧清内存态，持久化标记由 prefs 承担；flutter analyze 0 error（+2 info 同款 print）+ flutter test 793 全过 |
+| （2026-10-20 本次提交） | **语音搜索跳转**（用户需求：语音速记/按住说话转写完说「搜索 xxx」直接打开浏览器搜，不用再手切）——转写收尾纠错后文本以「搜索/搜索一下/搜一下」严格开头（白名单前缀，同清单提取「代办/待办」思路，新检测器 `lib/utils/search_command_detector.dart`，先长后短匹配防「搜索一下」被「搜索」截留「一下」残留）即 `loadSearchConfig()` + `openUrl` 拉起浏览器搜索关键词（引擎/浏览器复用「大爆炸搜索」配置）；日记照常 updateDiary 回填原文不变；拉起成功置 controller 新标志 `consumeExpandOnFinish`，`_onVoiceMemoChanged` 的 transcribing→idle 分支读即清并跳过 `_expand`（用户已被带去浏览器，面板不该弹出抢焦点），拉起失败不置标志回落正常切面板；判定放在纠错之后减少「搜索」被识别错的误判；设置开关 `voice_search_jump_enabled`（默认开，悬浮窗二级页「语音搜索跳转」卡，同走 Pro 门禁），overlay engine 转写收尾现场 reload 读、读取异常按关闭兜底（宁不跳不误跳打扰）；主 App 录音（diary_tab/record_tab）不受影响；新增 search_command_detector_test 10 例（触发词命中/先长后短/不在开头/无关键词/剥离后为空/首尾标点清理），flutter analyze 0 error + flutter test 全过 |
+| （2026-10-21 本次提交） | **语音搜索触发词可配置 + 随全量备份走**（用户需求：触发词在设置页悬浮窗二级页可配，且配置可导入导出）——①配置真值收在 `lib/utils/search_command_detector.dart`：默认白名单常量 `kDefaultVoiceSearchTriggers`（搜索一下/搜索/搜一下）+ prefs key `kVoiceSearchTriggersKey = 'voice_search_triggers'`（String，换行分隔的规范化结果）+ 纯函数 `normalize`（按换行/英文逗号/中文逗号/顿号拆分 → trim/去空/去重 → 按长度降序，先长后短）与 `parseTriggers`（空/非法回落默认，老版本无 key 行为不变）；②设置页「语音搜索跳转」卡新增触发词行（当前列表「搜索一下 / 搜索 / 搜一下」展示 + 编辑按钮弹多行对话框，保存前 `normalize`、空列表拒绝保存；同走 Pro 门禁）；③overlay 转写收尾读 `parseTriggers(prefs.getString(...))` 传入 `detect`，空/非法回落默认，自定义后原默认触发词不再生效（宁缺勿误）；④全量备份 ZIP 新增 `voice_search_triggers.txt`（每行一个，导出的是当前**实际生效**列表，未配置即默认白名单），导入按备份覆盖（`normalize` 后写 prefs），老版本备份无此文件或内容为空时保留本机配置不动——不回落默认，避免误清用户配置；README 同步说明；`detect` 对传入 triggers 内部再排序，调用方不必保证顺序；新增 detector 单测 9 例（normalize 拆分/去重/降序、parseTriggers 兜底、自定义触发词命中与默认词失效、乱序输入），flutter analyze 0 error（+1 info 为新增 print 同款）+ flutter test 813 全过（804 基线+9 新增） |
+| （2026-10-21 本次提交） | **加锁功能总开关**（用户需求：设置页可开关随手记/悬浮窗的加锁功能）——设置页「日记智能与交互」卡首位新增「笔记锁定」开关（prefs `note_lock_enabled`，默认开=历史行为，免费功能无 Pro 门禁；新文件 `lib/utils/note_lock_settings.dart` 统一读写，读前 reload 跨 engine 惯例，读异常按开启兜底）；关闭后**非破坏性**：`diary.is_locked` 标记原样保留，只在展示/认证层按未加锁处理——主 App 随手记与悬浮窗卡片隐藏锁按钮、跳过打码与认证门禁（锁定笔记按明文展示），局域网电脑访问同步（出网不再打星号、PUT/DELETE/`/audio/{id}` 不再 403），重新开启立即恢复全部保护；关闭时同步 `NoteUnlockSession.revoke()` 结束当前解锁会话；跨 engine 生效靠设置页写后 `DiarySyncBridge.bump()` → 悬浮窗 `_loadDiaries` 展开时重读，主 App `refreshList` 与回前台重读；新增 note_lock_settings_test 3 例 + diary_lock_sync_test 1 例（开关关闭时 JSON 按明文返回且标记仍保留），flutter analyze 0 error（+2 info 同款 print）+ flutter test 817 全过（813 基线+4 新增）；详见「笔记锁定」小节末段 |
+| （2026-10-21 本次提交） | **卡片截图附件**（用户需求：展开卡长按复制按钮 → 先收起悬浮窗 → 截图存进该卡附件 → 展开时右侧显示缩略图，点击可查看）——①原生：无障碍服务新增 `captureScreenshot` 通道（API 30+，`CAPABILITY_CAN_TAKE_SCREENSHOT` 能力判定；截图前把悬浮窗 alpha 置 0 隐藏 64ms 防自拍，成功/失败/3s 超时三路恢复 alpha，`screenshotBusy` 防连按，HardwareBuffer → ARGB_8888 Bitmap → JPEG 85 落盘）+ `showToast` 原生 Toast（收起后窗口只剩把手，SnackBar 无载体）；`accessibility_service_config.xml` 加 `canTakeScreenshot="true"`（已启用服务需重开一次加载新配置）；②数据：DB v16→v17 加 `diary.image_path`，`updateDiaryImage` 写入/清空且**不 bump 云同步**——图片只存 `docs/diary_images/`，不进备份 ZIP/CSV、不参与云同步；每卡一张，重截先写新文件再删旧文件；③交互：`OverlayDiaryCard` 复制按钮 tap=复制 / long press=截图（`onCopyLongPress`），展开查看态正文右侧 44dp 缩略图（`onImageTap`），点开面板内全屏预览（`InteractiveViewer` 4 倍）；截图后保持收起 + 原生 Toast；锁定打码卡不渲染缩略图、截图/预览走解锁门禁；归档保留图片，五条真实删除/转存路径同步清文件；新增 db_upgrade_v17_test + overlay_card_image_attachment_test 5 例，flutter analyze 0 error + flutter test 823 全过（817 基线+6 新增）；详见「卡片截图附件」小节 |
+
+| （2026-10-21 本次提交） | **截图附件交互优化（震动 + 预览返回手势）**（用户反馈：①长按复制无震动，不知按多久才触发截图；②点缩略图开预览无震动；③预览只能点右上角关闭，不能侧滑/单击返回）——①`_onCardCopyLongPress` 入口先 `performHaptic('click')`（长按判定成立即反馈，与 tap 复制的 tick 区分；截图成功的 tick 保留）；②`_openImagePreview` 打开预览时 `performHaptic('tick')`（轻档）；③预览层抽成 `lib/overlay/widgets/overlay_image_preview.dart`（原 `_buildImagePreview` 私有方法移出）：单击图片/黑底、右滑超过 88dp 均可关闭（未过阈值 AnimatedContainer 160ms 回弹），右上角 ✕ 保留；侧滑用 `Listener` 原始指针而非外层 onHorizontalDrag——InteractiveViewer 的子层手势识别器会截走拖拽竞技场；放大态（scale>1）与多指期间不响应侧滑，避免误退出/打断缩放；父层收起/重锁/息屏清理路径不变；新增 overlay_image_preview_test 5 例（单击/✕/右滑过阈值/未过阈值回弹/左滑不关），flutter analyze 0 error（166 issue 与基线持平）+ flutter test 全过 |
+| （2026-10-22 本次提交） | **标签外观可自定义（4 槽位图标 + 颜色，用户需求：不是所有用户都想要紧急/收藏/灵感这三类，希望自定义）**——用户拍板方案 B（不做改名/自定义图标库，固定 4 槽位 + 精选图标/颜色库）：①`lib/utils/diary_tag.dart` 重写为唯一真值：槽位 id 固定 `urgent/star/idea/task`（第 4 个是新增稳定 id，避免 DB/CSV/云同步迁移）、24 个精选图标 `kTagIconChoices`（工作/生活/灵感/出行）+ 10 色 `kTagColorChoices`、默认外观 `kDefaultTagStyles`、`DiaryTagStyleConfig` 编解码（坏项跳过、缺槽位补默认、颜色强制不透明）、`DiaryTagStyles`（prefs `diary_tag_styles_v1` + 进程内 `ValueNotifier`，保存后 `DiarySyncBridge.bump()` 跨 engine）；②新增设置页「外观 → 标签外观」二级页 `lib/settings/tag_style_settings_page.dart`（4 槽位列表 + 图标/颜色底部弹层 + 单槽恢复默认 + 全部恢复默认，说明不可改名）；③悬浮窗时间行 4 按钮收紧到 28×32/相邻 2dp（时间文本 `FittedBox(scaleDown)` 兜底窄屏、chevron 32×32），`OverlayHome._refreshOverlayConfig` reload 后显式传 `tagStyles` 给卡片；④主 App 筛选行改「全部 + 普通 + 4 槽位图标」，外边距 20→16/间距 8→6 + 整行横向滚动，监听 notifier 即时重绘；⑤全量备份 ZIP 新增 `tag_config.json`（导入覆盖语义，老备份无文件保留本机配置）；⑥电脑访问服务 `GET /api/notes` 附带 `tagConfig`（codePoint + 浅底/深字 hex），页面用新增 `/tag-icons.otf` 路由（App 打包的 MaterialIcons 字体）渲染图标，手机端换肤即刻同步到网页；不参与云同步（用户明确先不做 WebDAV）；新增 diary_tag_style_test 7 例 + 卡片自定义图标/颜色断言 + web tagConfig 断言 + task 筛选断言，flutter analyze 0 error（169 issue 与基线持平）+ flutter test 838 全过（829 基线+9 新增）；详见「卡片标注」小节 |
+
+| （2026-10-21 本次提交） | **截图后展开笔记卡片开关**（用户需求：截图后希望能直接看效果或二次编辑，但不想每次都被唤出，用设置开关切换两种收尾）——设置页悬浮窗二级页新增「截图附件」分区开关（prefs `overlay_screenshot_expand_card`，默认关=历史行为，同走悬浮窗 Pro 门禁）；`_onCardCopyLongPress` 成功收尾现场 reload 读：关 → Toast「截图已保存为附件」+ 保持收起；开 → Toast 后唤醒面板并 `_expandedIds.add(id)` + `_expand()`（先落展开集合保证展开首帧即展开态；缩略图因先静默重查已就绪），核对截图/继续编辑一步到位；读取异常按关闭兜底；新增 overlay_settings_screenshot_expand_test 1 例，flutter analyze 0 error（166 issue 与基线持平）+ flutter test 全过 |
+| （2026-10-24 本次提交） | **面板下拉刷新云同步**（用户需求：手机端悬浮窗与随手记都要能下拉刷新 WebDAV）——日记列表、空态、错误态统一包 `RefreshIndicator`（空态/错误态经 `_buildRefreshablePlaceholder` 用 `SingleChildScrollView` + `AlwaysScrollableScrollPhysics` 撑出可下拉区域，空库首次同步主要靠它；列表本体补 `AlwaysScrollableScrollPhysics` 让条目不足一屏也能下拉）；下拉调 `OverlayDataClient.syncFromCloud()`——overlay engine 内自建 `CloudSyncService(dbHelper: DbHelper(), processor: TextProcessor())`，与主 App 设置页同一套同步引擎、直连同一 `items.db`，热词走本地 `user_hotwords.txt`；落库后直接 `_loadDiaries(showLoading: false)` 重查（不等展开时的 DiarySyncBridge 脏检查）；结果走 `AccessibilityOverlay.showToast` 原生 Toast（收起后面板不可见，Flutter 侧无可见载体），文案与随手记共用 `CloudSyncResult.pullRefreshMessage`；未配置时只提示「设置 → 云端同步」不联网；两 engine 各持一份 `_syncing` 防重入、同时下载最坏多传一次相同数据（沿用既有边界）；新增 cloud_sync_pull_refresh_message_test 1 例（3 断言），flutter analyze 0 error（166 issue 与基线持平）+ flutter test 877 全过（876 基线+1 新增）；详见「展开面板视觉」下拉刷新条目与 @cloud-sync.md「下拉刷新入口」 |
+| （2026-10-24 本次提交） | **卡片截图随云同步到电脑**（用户需求：手机端截图同步到电脑，适配电脑端 v2 附件模型）——截图**只手机 → 电脑**：手机侧把 `image_path` 按笔记 sync_uuid 编成根目录 `image_index.json`（每设备每笔记一条，sha256/mime/size/updated_at），图片字节 PUT 进电脑端同一 `v2/assets/<sha前两位>/<sha256>.<ext>`；电脑端同步读索引，为对应笔记挂 `origin='mobile'` 的 image 附件（不改 `updated_at`，避免与手机 v1 投影打架），字节走既有 `_syncAssets` 下载并落本地 blobs；索引按 `(note_uuid, device_id)` 所有权合并、本机条目先发后写（上传失败/超批/文件缺失保留旧条目，下次续传），下载来的 `diary_sync_*` 文件不再回传（防接收端复活旧图）；每次最多 80 张、失败只记统计不拖垮文本同步；`updateDiaryImage` 改为 bump `CloudSyncDataVersion`；新增 image_sync 相关单测 9 例、电脑端 codec/merge/e2e 测试 7 例；详见 @docs/architecture/cloud-sync.md「截图附件同步」 |
+| （2026-10-24 本次提交） | **电脑端多图同步到手机 + 图集左右切换**（用户需求：电脑上的图片手机也要能看到，多张时悬浮窗显示数量、点开可左右切换；随手记仅有图的笔记显示图片图标）——索引升级为双向：条目按 `(note_uuid, device_id, sha256)` 唯一、带 `position`/`source`，电脑端以 `source='desktop'` 发布自有图片，手机回写时原样透传；手机把电脑端多图全部下收到新增 v18 `diary_images` 表（不在 `diary.image_path` 里塞多值），`getDiaries` 计算 `image_count` 与首图 `primary_image_path`（本机截图优先，否则按 position）；悬浮窗缩略图改 Stack 叠数量角标（>1 才显示），点击把本机截图+下收多图合并成列表进图集；`OverlayImagePreview` 改 PageView：右滑不再关闭（改翻页）、页码指示「2 / 5」、翻页手势用原始 `Listener` 驱动（InteractiveViewer 会抢水平拖拽）、每页复位缩放；随手记卡片日期行仅有图笔记显示图片图标+数量，点击打开同一图集（`fullscreenDialog` 路由）；锁定打码卡沿用图片隐藏规则。新增/修改单测：多图集合/下载/裁剪、图集合规手势 7 例；详见本文件「卡片截图附件」与 @docs/guides/ui-patterns.md「图片附件图标」 |
+| （2026-10-25 本次提交） | **图集内删除截图按钮**（用户需求：悬浮窗截图完也要能单独丢图，不动笔记；位置与删除范围用户拍板）——`OverlayImagePreview` 顶栏由「右上角单个 ✕」改成 `Row(spaceBetween)` 左右两格：左 = 🗑（48×48 opaque 命中区，与 ✕ 同款），右 = ✕。**只删手机自拍那张**（`diary.image_path`）：`image_index.json` 按设备所有权合并，本机摘别人（电脑端）的条目会被来源端下轮重发布、删不干净，故电脑端图不给删除入口——`ownImagePath` 为空（这组里本没有本机截图）连按钮都不渲染；翻到电脑端那张点 🗑 走 `onForeignImageTap` → 原生 Toast「这张来自电脑端，请在电脑端删除」；主 App 日记页共用本组件但不传删除参数，行为不变。点 🗑 不立即删：左上整格替换成「确认删除？✓✗」（复用卡片删除确认行先例，✗ 只退出确认不关预览，翻页作废确认态）。✓ → `OverlayHome._onDeleteOwnPreviewImage`：先 `updateDiaryImage(id, null)` 再删文件（顺序不可反，写库失败时图仍在，不留破图）+ `DiarySyncBridge.bump()` + tick 震动与 Toast + 静默重查（缩略图/角标随即消失）；`_deletingImageIds` 按 id 防抖；删完关图集（翻页/缩放状态在组件内，列表收缩不重算会停在越界页）。下轮同步本机索引条目自然消失 → 电脑端摘掉对应附件。`_openImagePreview` 新增 `_previewDiaryId`/`_previewOwnImagePath` 归属参数（与 `_previewImageIndex` 同生命周期）；overlay_image_preview_test 增至 12 例（原 7 例手势不变 + 不渲染/确认态 ✓✗/翻页作废/电脑端页只提示 5 例）；flutter analyze 0 error（169 issue = 基线 167 + 新增 2 条 avoid_print）+ flutter test 950 全过；详见「卡片截图附件」小节 |
+| （2026-10-27 本次提交） | **header 剪贴板一键存为笔记**（用户需求：悬浮窗顶部「新增」右边加剪贴按钮，点一下就把系统剪贴板最近一条内容直接存成笔记，省掉新增→粘贴→保存三步）——`OverlayPanelHeader` 新增 `onSaveClipboard` + `Icons.content_paste`（白图标，tooltip「剪贴板存为笔记」），顺序变为「新增 / 剪贴板 / 全部展开 / 打开随手记 / 语音速记」，空列表 4 个（展开照旧不渲染）；链路 `OverlayHome._saveClipboardToNote` → 新通道 `readClipboard` → Kotlin `readClipboardWithFocus` 读首条纯文本 → `insertDiary(trim)`（统一入口 min-1 置顶）→ `DiarySyncBridge.bump()` → 静默重查 + 新卡加入 `_expandedIds` → 原生 Toast「已保存到随手记」。⚠️ **Android 10+ 只允许有输入焦点的应用读剪贴板**，而展开面板刻意 `NOT_FOCUSABLE`：原生在非聚焦时临时摘掉该 flag → 等 `onWindowFocusChanged(true)`（最多 500ms）→ 读 `getPrimaryClip` → 立刻还原；**还原前比对当前 flags 是否仍为本次提权值**，避免把编辑态（focuspointer）/录音态窗口踢回不可聚焦。边界：空/非文本/系统拒绝统一 Toast 不落库；编辑中提示「先完成当前编辑」；录音转写中忽略；`_savingClipboard` 防连点（500ms 焦点等待窗口期比普通写库长）。新增 overlay_read_clipboard_test 3 例（通道契约）、header 测试改 8 例（多按钮渲染/顺序/回调接线）；模拟器 Android 16 实测点击后 DB 新行 sort_order=-14 置顶、面板新卡展开、Toast 正常；flutter analyze 0 error（172 issue = 基线 169 + 新增 3 条 print）+ flutter test 979 全过 + compileDebugKotlin 通过；详见「剪贴板存为笔记」小节 |
+| （2026-10-27 本次提交） | **面板按钮位置可切到底部**（用户需求：把悬浮窗顶部按钮切换到悬浮窗底部，便于单手操作）——设置页悬浮窗二级页「面板高度」后新增「按钮位置」两档 ChoiceChip（顶部 = 默认/历史行为，底部），prefs `overlay_panel_buttons_bottom`（bool，缺省 false，同走 Pro 门禁）。**关键：不能只挪按钮条**——面板是顶部锚定布局，只把 Column 里 header 挪到列表下方的话条目少时面板整体仍在屏幕上方、按钮停在半空；底部模式必须把面板锚点一起换成停靠侧下角（`OverlayConstants.panelAlignment` → bottomRight/bottomLeft），按钮条才真正贴到屏幕底部拇指区。布局差异全部收进纯函数：`panelHeaderPadding` 顶部避状态栏（top=40/bottom=4）/底部避导航栏（top=4/bottom=48），`panelListBottomPadding` 顶部 48/底部 8（导航栏由按钮条自身避让）；底部模式不叠加「面板高度」的顶部下压偏移（面板已贴底），列表限高仍按档位生效；大爆炸层 `topInset` 在底部模式回到只避让状态栏。读取方 `_refreshOverlayConfig`/`_scheduleAutoHide`（下一次状态转换生效），Kotlin 零改动；新增 overlay_panel_buttons_position_test 7 例（key/默认 + 锚点四向 + 内边距两模式 + 列表底距）；详见「按钮位置（顶部/底部）」小节 |
+| （2026-10-28 本次提交） | **音量键直接存剪贴板**（用户需求：把手势绑到音量键，按一下就把最近复制的内容存进随手记，不用先展开面板点剪贴按钮）——新动作 `overlay_clipboard_note`（Dart `VolumeGestureAction.overlayClipboardNote` ↔ Kotlin `ACTION_OVERLAY_CLIPBOARD_NOTE`，合法值 7→8），落库完全复用 header 的 `_saveClipboardToNote`（`haptic:false`，原生触发时已震一次）。⚠️ **不展开面板就没有可借焦点的窗口**（Android 10+ 读剪贴板需输入焦点）：浮窗已显示 → 复用现有窗走 `readClipboardWithFocus`；浮窗不存在 → 直建 `alpha=0 + NOT_TOUCHABLE` 临时隐藏窗（`showOverlay` 新增 `revealOnUiReady=false`，不置 `pendingVoiceMemoReveal`），Dart 回执 `clipboardNoteDone` 收窗 + 10s 超时兜底，收窗按 `clipboardNoteView` View 身份比对（等待期间重建的浮窗不误关）；`dartReady` 前挂起 `pendingClipboardNote` 补发（负载 `{ephemeral}`）；录音中先于 Pro 门禁 Toast 不建窗；新增 overlay_read_clipboard_test 3 例（saveClipboardNote 负载解析/clipboardNoteDone 方法名）+ volume_key_clipboard_note_action_test 3 例（4 行都提供该 chip/写 `volume_gesture_long_press_up`/Pro 未解锁不写 prefs 且弹窗）+ 配置 1 例；flutter analyze 0 error（175 issue = 基线 173 + 新增 2 条 print）+ flutter test 992 全过（985 基线 + 7）+ compileDebugKotlin 通过；⚠️ `alpha=0` 临时窗能否拿到输入焦点未真机验证（拿不到会 500ms 超时安全降级并收窗）；详见「剪贴板存为笔记·音量键入口」小节 |
 
 ## 核心架构
 
@@ -99,7 +118,7 @@
 - 可行性依据：`FlutterEngineGroup.createAndRunEngine` 默认自动注册所有插件，overlay engine 上 sqflite 原生侧就绪；`DbHelper` 无 context / SharedPreferences 依赖，可直接复用
 - **独立性**：主 engine 随 Activity 生死，overlay engine 查库不依赖主 App 存活（App 被杀后浮窗仍有数据）
 - **新鲜度（2026-09-04 起：DiarySyncBridge 计数器桥）**：跨 engine 无推送通知，靠 SharedPreferences 计数器脏检查同步（复用 `is_recording` / `is_pro_unlocked` 同款 prefs 桥惯例）：
-  - **写方**：任一 engine 写 diary 成功后 `DiarySyncBridge.bump()`（key `diary_change_counter`，int 单调递增；bump 内先 reload 再 +1 防双 engine 并发覆盖）。悬浮窗侧挂点：归档/恢复、删除、标注、编辑保存、新增笔记、占位行删除（overlay_home.dart）+ 语音速记占位插入与转写回填（overlay_voice_memo.dart）；主 App 侧挂点：diary_tab.dart 全部 insert/update/delete/archive 写点
+  - **写方**：任一 engine 写 diary 成功后 `DiarySyncBridge.bump()`（key `diary_change_counter`，int 单调递增；bump 内先 reload 再 +1 防双 engine 并发覆盖）。悬浮窗侧挂点：归档/恢复、删除、标注、编辑保存、新增笔记、占位行删除（overlay_home.dart）+ 语音速记占位插入与转写回填（overlay_voice_memo.dart）；主 App 侧挂点：diary_tab.dart 全部 insert/update/delete/archive 写点 + 云同步下载合并有实际插入（`CloudSyncService.mergeDownloadedText`，2026-10-23——否则电脑端同步来的日记随手记可见、悬浮窗不刷新）
   - **读方（双向）**：主 App 日记页 resumed 时 `_syncDiaryChangesFromOverlay()` reload 比对内存计数，变了才 `refreshList()`——用户从悬浮窗记完回主 App 无感出新卡；悬浮窗 `_expand()` 调 `_syncDiariesIfChanged()` 替代旧的无条件重查，无变更零开销
   - 计数器而非时间戳：防同毫秒覆盖丢信号；读取方记录计数在查库**前**——查库期间另一 engine 再 bump 时本批数据未含该变更，记旧值下次仍触发刷新（不丢变更）
   - 详见 [lib/utils/diary_sync_bridge.dart](../../lib/utils/diary_sync_bridge.dart)
@@ -126,10 +145,11 @@
 - 卡片（[overlay_diary_card.dart](../../lib/overlay/widgets/overlay_diary_card.dart)）：横向长纵向短胶囊，固定高 46dp 全圆角，白字单行左对齐（字号 15），间距 10dp，轻阴影；1dp 细白描边（`OverlayConstants.cardBorderWidth`，2026-09-04 对齐闪念原型"彩色胶囊+白描边+柔影"分层——原型采样的 3 层边缘像素是白边两侧抗锯齿混色非 3 条描边。⚠️ Border.all 计入 Container 有效内边距，宽度/高度估算三处已同步 ±2×border 补偿，收起态内层 minHeight 补偿维持总高=46 不变量）
 - **收起态内容纵向居中**（2026-09-02 贴顶回归修复）：靠收起分支 Row 外包 `ConstrainedBox(minHeight: cardHeight)` 撑满胶囊高度实现（Row 自身 crossAxisAlignment.center 居中）——外层 Switcher 的 Stack 锚点 topRight 只服务过渡动画的旧内容顶缘连续，不能让裸 Row 直接靠它定位（Row 比 Stack 矮会贴顶，a36800b 引入、真机反馈"胶囊变粗内容挤在顶部"）
 - **卡片宽度自适应**：`BoxConstraints(minWidth: 60, maxWidth: 面板宽-28)`——短内容短胶囊、超长省略号，左对齐排列
-- **固定默认色 + 标注换色**（2026-09-02 起，替代旧的 index % 6 轮换色板）：无标注活跃卡恒用 `OverlayConstants.defaultCardColor`（#6F9AF0）；标注后整卡换标注色（映射唯一真值在 [lib/utils/diary_tag.dart](../../lib/utils/diary_tag.dart) 的 `DiaryTag.colors`，主 App 日记页小色点共用）；已归档卡片不参与取色，固定灰 + 删除线（归档卡允许标注入库，恢复后显示标注色）。标注三色按钮 2026-09-22 起一级直出展开卡时间行（时间文本后紧凑排列；首版底条入口→二级选择态的两步交互已删除），详见"卡片标注"小节
-- 头部按钮条（无标题，深色半透明工具条，见下）：新增笔记（+，插占位行进编辑态）/ 全部展开·收起（空列表不渲染）/ **打开随手记**（2026-09-13 起，`Icons.book` 与主 App 底部导航「随手记」同图标，见「跳回主 App 日记页」小节）/ 收起 chevron（指向停靠边缘）
-- **深色半透明工具条**（2026-09-13，[overlay_panel_header.dart](../../lib/overlay/widgets/overlay_panel_header.dart)）：此前四个按钮裸放透明面板上、图标色跟主题（ext.textHint），垫在白色背景的应用上看不清（用户实测反馈）。改为黑 72% 半透明底 + 白图标 + 朝屏内侧柔影——与录音胶囊/停止提示胶囊同视觉家族（白图标对黑 72% 底，垫纯白背景等效底 ≈#4a4a4a，对比度 ≈8:1，跨背景都可读），也是闪念原型「黑色半透明工具条」设计的正式落地。组件纯渲染：回调上抛、停靠侧镜像（贴停靠缘 Align / chevron 朝向 / 阴影方向）与条件渲染（空列表）由参数驱动；渲染契约锁在 `overlay_panel_header_test`（按钮渲染条件/回调接线/家族配色/两侧镜像 6 用例）
+- **固定默认色 + 标注换色**（2026-09-02 起，替代旧的 index % 6 轮换色板）：无标注活跃卡恒用 `OverlayConstants.defaultCardColor`（#6F9AF0）；标注后整卡换该槽位配置色（4 槽位外观唯一真值在 [lib/utils/diary_tag.dart](../../lib/utils/diary_tag.dart) 的 `DiaryTagStyles`，2026-10-22 起可在设置页「外观 → 标签外观」换图标/颜色，主 App 日记页小色点与网页端共用）；已归档卡片不参与取色，固定灰 + 删除线（归档卡允许标注入库，恢复后显示标注色）。4 个标注按钮 2026-09-22 起一级直出展开卡时间行（时间文本后紧凑排列；首版底条入口→二级选择态的两步交互已删除），详见"卡片标注"小节
+- 头部按钮条（无标题，深色半透明工具条，见下；默认在列表上方，设置页「按钮位置」可切到列表下方并让面板贴屏幕下角，见「按钮位置（顶部/底部）」小节）：新增笔记（+，插占位行进编辑态）/ **剪贴板存为笔记**（2026-10-27 起，`Icons.content_paste`，紧挨「新增」右侧；一键读系统剪贴板最后一条文本直接落库，省掉新增→粘贴→保存三步，详见「剪贴板存为笔记」小节）/ 全部展开·收起（空列表不渲染；状态持久化 prefs `overlay_expand_all_cards`，下次打开面板沿上次直接展开，2026-10-19 起）/ **打开随手记**（2026-09-13 起，`Icons.book` 与主 App 底部导航「随手记」同图标，见「跳回主 App 日记页」小节）/ **语音速记录音**（2026-10-19 起，`Icons.mic`，替代原收起 chevron——收起面板改由空白区点击/滑动承担；点击经通道调原生 `triggerVoiceMemoOverlay` 走音量键「悬浮窗录音」同一链路开录，窗口随状态机 resize 成录音胶囊，详见「面板 header 录音按钮」小节）
+- **深色半透明工具条**（2026-09-13，[overlay_panel_header.dart](../../lib/overlay/widgets/overlay_panel_header.dart)）：此前按钮裸放透明面板上、图标色跟主题（ext.textHint），垫在白色背景的应用上看不清（用户实测反馈）。改为黑 72% 半透明底 + 白图标 + 朝屏内侧柔影——与录音胶囊/停止提示胶囊同视觉家族（白图标对黑 72% 底，垫纯白背景等效底 ≈#4a4a4a，对比度 ≈8:1，跨背景都可读），也是闪念原型「黑色半透明工具条」设计的正式落地。组件纯渲染：回调上抛、停靠侧镜像（贴停靠缘 Align / 阴影方向）与条件渲染（空列表）由参数驱动；渲染契约锁在 `overlay_panel_header_test`（按钮渲染条件/按钮顺序/回调接线/家族配色/两侧镜像 8 用例）。
 - 日记列表区域限高约 10 张卡高度（`OverlayConstants.panelListMaxHeight`），超出部分区域内滚动查看全部记录（2026-09-02 起；原为 `maxVisibleDiaryCards` 条数硬截断只显示最新 10 条）
+- **下拉刷新云同步（2026-10-24）**：日记列表（含空态/错误态）包 `RefreshIndicator`，下拉即在 overlay engine 内跑一次 WebDAV 同步（同一 `items.db` + 独立 `TextProcessor` 读写热词文件），落库后直接 `_loadDiaries` 重查，结果走原生 Toast（收起后 Flutter 侧无可见载体）；空库首次同步主要靠这个入口；未配置时只提示「设置 → 云端同步」不联网；详见 @cloud-sync.md「下拉刷新入口」
 
 ### 展开/收起推屏滑动动画（2026-08-28）
 
@@ -156,7 +176,7 @@
 |---|---|
 | 长按音量键 500ms（长按槽位动作=显示悬浮窗，隐藏态） | 唤醒屏幕 + 100ms 震动 → 浮窗出现**并自动展开面板** |
 | 悬浮窗显示中（把手/面板态）长按同一音量键 | 50ms 短震 → **立即彻底隐藏**（toggle 兜底，不用等自动隐藏） |
-| 收起面板（空白区点击/任意方向滑动/收起按钮，推屏滑出动画） | 回到把手，**10s 后自动彻底隐藏**（设置页可选 5/10/30s 或永久常驻） |
+| 收起面板（空白区点击/任意方向滑动，推屏滑出动画；2026-10-19 前面板 header 还有收起按钮，此后改由空白区手势承担） | 回到把手，**10s 后自动彻底隐藏**（设置页可选 5/10/30s 或永久常驻） |
 | 时限内再展开 | 取消自动隐藏计时（把手不会中途消失） |
 
 - 长按链路（Kotlin `triggerShowOverlay`）**直连本服务 `showOverlay(autoExpand = true)`**。旧链路是 startActivity 拉起主 App → 主 engine → flutter_overlay_window 插件（小米被拦的那条路），已废弃——MainActivity 侧 `show_overlay` intent 分支保留但无生产调用方，待后续清理
@@ -250,6 +270,17 @@
 - **矮屏安全**：Padding 在 Align（StackFit.expand 给的满窗紧约束）内缩小可用高度，Column 的 Flexible 列表仍被窗口剩余高度约束，下压后底部不溢出
 - **生效时机**同把手大小：`_refreshOverlayConfig`/`_scheduleAutoHide` reload 读取，下一次状态转换生效，已展开的面板不瞬移；同走 Pro 门禁；Kotlin 零改动
 
+### 按钮位置（顶部/底部，2026-10-27）
+
+用户需求：把悬浮窗顶部按钮切到悬浮窗底部，便于单手操作。设置页悬浮窗二级页「面板高度」后新增「按钮位置」两档 ChoiceChip（顶部 = 默认/历史行为，底部），prefs `overlay_panel_buttons_bottom`（bool，缺省 false），同走 Pro 门禁。
+
+- **⚠️ 不能只挪按钮条**：面板是顶部锚定布局（`Align.topRight/topLeft`），只把 Column 里的 header 挪到列表下方，条目少时面板整体仍在屏幕上方、按钮停在半空——单手问题没解决。底部模式必须把面板锚点一起换成停靠侧**下角**（`OverlayConstants.panelAlignment` → `bottomRight`/`bottomLeft`），按钮条才真正贴到屏幕底部拇指区
+- **布局差异**（全部收在 `OverlayConstants` 纯函数，测试钉住）：`panelHeaderPadding` 顶部模式避状态栏（top=40 / bottom=4）、底部模式避导航栏（top=4 / bottom=48，与列表历史底部 padding 同值）；`panelListBottomPadding` 顶部 48（导航栏避让，历史行为）、底部 8（导航栏由下方按钮条自身避让，再留 48 会多出一大段空白）
+- **与「面板高度」的关系**：底部模式面板已贴底，`panelTopOffsetFor` 的顶部下压偏移不叠加（下压无意义）；列表限高仍按可见条数档位生效（少看几条 = 面板从顶部方向收缩，底边不动）
+- **大爆炸层顶边**：按钮位置 = 底部时 header 已在屏幕底部、不用让位，`BigBangLayer.topInset` 回到只避让状态栏（`panelHeaderTopPadding`=40），不再叠加面板高度档偏移
+- **键盘**：原生窗口早已设 `SOFT_INPUT_ADJUST_RESIZE`（见 Kotlin 建窗注释），编辑时窗口被键盘抬高的部分裁掉，底部模式面板随窗口下缘上移、按钮条不会被键盘盖住
+- **生效时机**同面板高度：`_refreshOverlayConfig`/`_scheduleAutoHide` reload 读取，下一次状态转换生效；Kotlin 零改动（面板是全屏窗口内的 Dart 布局）
+
 ### 笔记锁定（2026-09-22，悬浮窗/锁屏防偷看）
 
 悬浮窗在锁屏上可见（`TYPE_ACCESSIBILITY_OVERLAY` 系统放行），锁屏页亮着时旁人不解锁手机就能看到笔记内容——笔记锁定功能的威胁模型即此。diary 加 `is_locked` 列（v15，用户手动锁定，免费功能无 Pro 门禁），主 App 与悬浮窗全链路打码 + 设备凭据认证后可看；完整数据层/主 App 侧设计见 @docs/architecture/database.md v15 行。
@@ -266,6 +297,8 @@
 **解锁会话**（[note_unlock_session.dart](../../lib/utils/note_unlock_session.dart)）：认证成功后续期 5 分钟，主/悬浮窗两 engine 共享同一 prefs key（读写前 reload，DiarySyncBridge 同款纪律）。会话 ≠ 解除锁定：会话过期卡片重新打码但 is_locked 不动。两条入口语义不同（2026-09-22 用户反馈两步语义反直觉后定版）——**点锁按钮（解除锁定）→ 认证成功后直接解除该卡锁定**（意图 pendingUnlockReleaseId 异步消费，主/悬浮窗一致）；**点卡片本体查看 → 只开临时会话**，锁定标志不动、锁图标保持（与 Apple 备忘录「解锁查看后列表仍带锁图标」一致）。
 
 **悬浮窗打码范围**：收起态单行文本、展开态正文（`OverlayDiaryCard.lockedHidden`，明文一帧不进组件树）、播放行隐藏；宽度估算用打码文本（不泄露笔记长度）。门禁入口（`OverlayHome._ensureNoteUnlocked`）：展开/编辑/复制/AI 对话/播放/删除/闹钟（闹钟会读正文做时间解析）；划走归档放行、已归档划走（=删除）门禁；锁定/解锁按钮在卡片底条（`onLockToggle`）。认证前点开的卡记住意图，认证成功自动展开。
+
+**加锁功能总开关（2026-10-21，用户要求）**：设置页「日记智能与交互」卡新增「笔记锁定」开关，prefs `note_lock_enabled`（**默认开 = 历史行为**，免费功能无 Pro 门禁），读写统一走 [note_lock_settings.dart](../../lib/utils/note_lock_settings.dart)。**关闭语义是非破坏性的**：落库的 `diary.is_locked` 标记一律保留不动，只在展示/认证层按「未加锁」处理——主 App 随手记与悬浮窗卡片不再渲染锁按钮（悬浮窗 `onLockToggle` 传 null 即不渲染）、`_isLockedHidden` 恒 false 按明文展示、`_ensureNoteUnlocked` 直接放行，局域网电脑访问同步解除脱敏与 403（见 @docs/architecture/web-server.md）；重新开启后原有锁定立即恢复全部保护（无需逐条重锁）。关闭开关时同步 `NoteUnlockSession.revoke()` 结束当前 5 分钟解锁会话。跨 engine 生效无推送通道：设置页写库后 `DiarySyncBridge.bump()`，悬浮窗在 `_loadDiaries`（展开时脏检查重查链路）重读；主 App 在 `refreshList`（含切回日记页）与回前台时重读；读取失败按开启兜底（安全侧）。
 
 **加锁前置检查（2026-10-08，用户要求）**：点锁按钮**加锁**前先查设备是否已设锁屏凭据（`KeyguardManager.isDeviceSecure`，PIN/图案/密码）——未设置时不允许锁定：锁定后没有任何认证手段能看回内容，锁定形同虚设反而误导用户以为已保护。两个加锁入口（主 App `DiaryTabState._toggleDiaryLock` / 悬浮窗 `_OverlayHomeState._toggleDiaryLock`）在写库前各自经本 engine 的通道查询（新增通道方法 `isDeviceSecure`，MainActivity 与无障碍服务双通道各一份实现），未设置则弹引导对话框「未设置锁屏密码」（「去设置」经新增 `openSecuritySettings` 拉起系统安全设置页，悬浮窗侧 NEW_TASK；「取消」什么都不做），**本次不加锁**。通道异常按「未设置」失败关闭（安全侧兜底）。解除锁定不受影响（解锁认证链路 `NoteUnlockActivity` 本来就有 `isDeviceSecure` 兜底拦截）。封装：主 App `NoteLockAuth.isDeviceSecure/openSecuritySettings`、悬浮窗 `AccessibilityOverlay.isDeviceSecure/openSecuritySettings`；通道封装单测见 `test/note_lock_auth_test.dart`。
 
@@ -304,7 +337,7 @@
 **三端共读同一 key，各管各的镜像面**：
 
 - **原生窗口 Gravity**（Kotlin `horizontalEdgeGravity()`）：`buildOverlayParams` / `resizeOverlay` 每次建窗/resize 实时读 `flutter.overlay_side_left`（Flutter SharedPreferences 落盘带 `flutter.` 前缀），分流 `Gravity.END` / `Gravity.START`——把手、贴边竖线、语音胶囊窗口、展开全屏帧全部随侧落位。无缓存即无跨端状态同步
-- **overlay engine Dart 镜像**（`OverlayHome._sideLeft`，`_refreshSide()` reload 后读）：把手/竖线的 Align、缩窗把手回位与面板推屏动画的平移符号（`Offset((1-t)×(±1), 0)`，左缘取 -x）、面板锚点 `topRight`/`topLeft`、面板「朝停靠边缘滑收起」与把手/竖线「朝屏幕内侧滑展开」的方向判定（统一走 `OverlayConstants.swipeExceeds(towardLeft:)` 纯函数）、header 按钮聚拢侧与收起 chevron 朝向、卡片划走归档方向（`SwipeDismissCard.dismissDirection`：右缘=左滑归档/左缘=右滑归档，反方向快滑经 `onSwipeCollapse` 转发收起——回调名已从 `onSwipeRight` 改中性）、录音胶囊贴屏端（`OverlayVoiceMemoBar.dockLeft`：对齐、距屏边距、停止钮与分隔线钉靠屏端、阴影投射方向）
+- **overlay engine Dart 镜像**（`OverlayHome._sideLeft`，`_refreshSide()` reload 后读）：把手/竖线的 Align、缩窗把手回位与面板推屏动画的平移符号（`Offset((1-t)×(±1), 0)`，左缘取 -x）、面板锚点 `topRight`/`topLeft`、面板「朝停靠边缘滑收起」与把手/竖线「朝屏幕内侧滑展开」的方向判定（统一走 `OverlayConstants.swipeExceeds(towardLeft:)` 纯函数）、header 按钮聚拢侧、卡片划走归档方向（`SwipeDismissCard.dismissDirection`：右缘=左滑归档/左缘=右滑归档，反方向快滑经 `onSwipeCollapse` 转发收起——回调名已从 `onSwipeRight` 改中性）、录音胶囊贴屏端（`OverlayVoiceMemoBar.dockLeft`：对齐、距屏边距、停止钮与分隔线钉靠屏端、阴影投射方向）
 - **卡片几何锚定**（`OverlayDiaryCard.dockLeft`）：胶囊外层对齐（centerRight/centerLeft）、展开↔收起过渡的 Switcher 叠放锚与 OverflowBox 锚、收卷窗口 `_CollapseWindowClipper.alignLeft` 固定缘。卡内文字/按钮的阅读排版保持 LTR 不镜像（时间行、勾选框、底部按钮条两种停靠下一致）
 
 **方向镜像口诀**：一切"朝屏幕内侧"的手势与"停靠边缘"的锚定随侧翻转——把手/竖线朝屏内侧滑=展开、卡片朝屏内侧滑=归档、面板朝停靠边缘滑=收起；把手的纵向拖动与拖存档（`flutter.overlay_handle_y_offset_dp`）左右共用，切侧不丢上下位置。
@@ -334,6 +367,38 @@
 
 **悬浮窗自身去向**：跳转即收起回把手，`_scheduleAutoHide` 照常计时（默认 10s 缩竖线/彻底隐藏）——用户在主 App 里操作时悬浮窗自动让路，把手常驻语义不变。拉起失败（`getLaunchIntentForPackage` null，仅剩图标包 alias 异常边角）面板已收起，点把手可重试，不做回滚展开。
 
+### 面板 header 录音按钮（2026-10-19，收起 chevron 换语音速记）
+
+用户需求：悬浮窗顶部工具条的「折叠悬浮窗」chevron 换成录音按钮，点击直接开始录音，走「会随时间变长的录音胶囊」入口。改动与链路：
+
+- **UI**：`OverlayPanelHeader` 构造参数 `onCollapse` → `onStartVoiceMemo`，末位按钮 `Icons.chevron_*` → `Icons.mic`（白图标，tooltip「语音速记」），按钮顺序变为「新增笔记 / 全部展开·收起 / 打开随手记 / 语音速记录音」（2026-10-27 起在「新增」右侧插入「剪贴板存为笔记」，见下节）。**收起面板的职责收编到空白区点击/任意方向滑动与卡片划走手势**（既有手势本就覆盖收起，chevron 是冗余入口）
+- **⚠️ 启动必须走原生入口**：Dart 侧**不直接调 `_voiceMemo.start()`**——Kotlin 侧 toggle 状态机（`voiceMemoActive`）、四级 watchdog、Pro 门禁、主 App 麦克风互斥都以原生为权威，Dart 直调 controller 会让原生失联（音量键 toggle 停录失灵、watchdog 不挂钩）。链路：按钮 → `OverlayHome._startVoiceMemoFromHeader` → 新通道方法 `AccessibilityOverlay.startVoiceMemo()` → Kotlin channel handler `startVoiceMemo` 直调 `triggerVoiceMemoOverlay()`（与音量键「悬浮窗录音」动作**同一入口**，门禁/互斥/toggle/watchdog 全部复用）→ 原生经既有 `notifyDartStartVoiceMemo` 消息回 Dart `onStartVoiceMemo` handler → controller.start() 开录
+- **窗口切换**：面板态点击时 `overlayView != null`，走非隐藏窗暖路径（hiddenReveal=false，Dart 录音态首帧即发 voiceMemoUiReady，Kotlin 非 pending 时收到是 no-op）；`_onVoiceMemoChanged` 照常 resize 面板窗口为录音胶囊（312×84）
+- **边界**：录音中 header 随窗口变为胶囊离屏不可达，按钮的 toggle 停止分支天然不存在（停止仍走音量键 toggle / 胶囊停止钮 / 说完自动停）；主 App 录音中点击走 `isRecording()` 互斥，按既有语义退回「显示浮窗」（罕见边角，接受）；面板高度档位的顶部下压偏移随 header 整体生效，无需改动
+
+### 剪贴板存为笔记（2026-10-27，header 新增按钮）
+
+用户需求：悬浮窗顶部「新增笔记」右边加一个剪贴按钮，点一下就把系统剪贴板最近一条内容直接存成笔记，省掉「新增 → 粘贴 → 保存」三步。
+
+- **UI**：`OverlayPanelHeader` 新增参数 `onSaveClipboard`，按钮 `Icons.content_paste`（白图标，tooltip「剪贴板存为笔记」）紧挨「+」右侧，顺序变为「新增笔记 / 剪贴板存为笔记 / 全部展开·收起 / 打开随手记 / 语音速记录音」；空列表只剩 4 个按钮（展开/收起照旧不渲染）
+- **链路**：点击 → `OverlayHome._saveClipboardToNote` → 原生通道 `AccessibilityOverlay.readClipboard()` → Kotlin handler `readClipboard` 读剪贴板首条纯文本 → Dart `insertDiary(text.trim())`（统一入口自动取 min-1 sort_order 置顶）→ `DiarySyncBridge.bump()` 让主 App 感知 → 静默刷新并把新卡加入 `_expandedIds`（即时看到存了什么，想改再点正文进编辑）→ 原生 Toast「已保存到随手记」
+- **⚠️ Android 10+ 剪贴板焦点限制**（本功能的核心难点）：系统只允许**持有输入焦点**（或默认输入法）的应用读剪贴板，而展开面板刻意是 `FLAG_NOT_FOCUSABLE` 窗口（不抢用户当前 App 的焦点与键盘，见「展开面板视觉」）。因此 Kotlin `readClipboardWithFocus` 在非聚焦时做一次**临时提权**：摘掉 `NOT_FOCUSABLE` → 等 `onWindowFocusChanged(true)`（最多 500ms，同 `awaitWindowFocusThenReply` 的兜底）→ 读 `getPrimaryClip` → 立刻还原原 flags。编辑态窗口本就可聚焦（focuspointer），直接读、不折腾
+- **⚠️ 还原不能无条件写回旧 flags**：等待期间 Dart 可能已进入编辑态（focuspointer）、开始语音速记（叠 `KEEP_SCREEN_ON`）或隐藏窗口重设 flags。还原前比对当前 flags 是否仍等于本次提权值，只有仍是才写回，否则放过——避免把编辑态窗口踢回不可聚焦（有光标无键盘）
+- **边界**：剪贴板为空/图片等非文本/系统拒绝读取统一 Toast「剪贴板里没有可保存的文字」不落库；编辑中点击提示「先完成当前编辑」（静默刷新会重建列表打断编辑）；录音/转写中面板不可达直接忽略；`_savingClipboard` 防连点重复入库（读剪贴板含最多 500ms 焦点等待，窗口期比普通写库长）；内容 `trim()` 后存，空白不上库
+
+#### 音量键入口（2026-10-28，不展开面板也能量）
+
+用户需求：把手势绑到音量键，按一下就把最近复制的内容存进随手记，**不用先展开面板再点剪贴按钮**。动作值 `overlay_clipboard_note`，落库链路完全复用上面的 `_saveClipboardToNote`（只把震动从 Dart 侧关掉，原生触发时已震一次）。
+
+- **浮窗已显示**（把手/竖线/面板）：直接复用现有窗口，走同一套 `readClipboardWithFocus`（含面板不可聚焦时的临时提权）
+- **浮窗不存在**：没有任何窗口可借焦点（Android 10+ 限制），Kotlin `triggerOverlayClipboardNote` 直建一个 **`alpha=0 + NOT_TOUCHABLE` 的临时隐藏窗**（`showOverlay(hidden=true, revealOnUiReady=false)`，312×84 直建，复用语音速记冷启动机制），Dart 处理完回执 `clipboardNoteDone` 收窗；10s 超时兜底（`CLIPBOARD_NOTE_TIMEOUT_MS`）。用户全程看不到浮窗，只有一条 Toast
+- **⚠️ 临时窗永不揭示**：`showOverlay` 新增 `revealOnUiReady` 参数（默认 true，语音速记/按住说话/Pro 提示胶囊行为不变）；剪贴板临时窗传 false，不置 `pendingVoiceMemoReveal`——否则后续动作会把"隐藏窗在场"误判成待揭示状态
+- **⚠️ 收窗按 View 身份比对**：等待 Dart 的这段时间里用户可能用别的动作重建了浮窗（`showOverlay` 先 hide 再 add），`clipboardNoteView` 只收本次那个 View；所有移窗路径（`hideOverlay` / `destroyOverlayEngine`）清空临时窗与挂起请求
+- **Dart 未就绪**：`pendingClipboardNote` + `pendingClipboardNoteEphemeral` 挂起（与 `pendingNewNote` 同机制），`dartReady` 后补发 `saveClipboardNote`（负载 `{ephemeral: bool}`，Dart 只用于日志）
+- **录音中**：先于 Pro 门禁直接 Toast「录音中，先结束录音再存剪贴板」不建窗（避免提示胶囊顶掉正在录的胶囊）
+- **Dart 侧**：`OverlayHome._onSaveClipboardNoteFromGesture` → `_saveClipboardToNote(haptic: false)` → finally 回执 `clipboardNoteDone`（成功/失败/空剪贴板都要回）
+- **未验证风险（需真机确认）**：`alpha=0` 临时窗能否拿到输入焦点理论上可行（焦点判定与 alpha 无关）；万一拿不到，`readClipboardWithFocus` 500ms 等焦点超时后安全降级为「剪贴板里没有可保存的文字」并收窗，不会卡死。详见 @volume-key-shortcuts.md「剪贴板笔记」小节
+
 ## 关键文件与行号（2026-08-29 核对）
 
 ### lib/main.dart
@@ -352,7 +417,7 @@
 ### lib/overlay/overlay_home.dart
 - **L31 相位枚举**：`_PanelAnimPhase { idle, expanding, collapsing }`（推屏动画编排，见"展开/收起推屏滑动动画"小节）
 - **L101 揭示门字段**：`_revealGatePending`（隐藏窗口揭示门，第四轮修复语义见"冷启动隐藏窗口"小节；旧 `_revealGateConstraints` 约束基准已删除）
-- **initState L140 起**：动画控制器创建 + `setupNativeChannel`（onExpand 防御性 resize + `_expand()`；onReset → `_resetFromNative`；**onStartVoiceMemo L183 起——hiddenReveal 挂门在 handler 顶部**）+ `notifyDartReady()` 握手
+- **initState L140 起**：动画控制器创建 + `setupNativeChannel`（onExpand 防御性 resize + `_expand()`；onReset → `_resetFromNative`；**onStartVoiceMemo L183 起——hiddenReveal 挂门在 handler 顶部**；onSaveClipboardNote → 手势剪贴板笔记（2026-10-28，处理完回执 clipboardNoteDone））+ `notifyDartReady()` 握手
 - **L567 `_onPanelAnimStatus`**：动画边界回调——dismissed 才调 `controller.collapse()`（缩窗）+ `_scheduleAutoHide()`，completed 回稳定展开态
 - **L603 / L660**：`_expand`（主路径 / collapsing 中断反向 / expanding 幂等 / 稳定展开态防御重播——语音转写完成路径）/ `_collapse`（反向收起，缩窗延迟到 dismissed）
 - **L684 `_resetFromNative`**：reset 复位（开头三行动画跳终态：stop → phase 归 idle → value=0；含清揭示门）
@@ -363,7 +428,7 @@
   - `Icons.bolt` 闪电图标（"闪念"语义）
   - `handleLabel.characters.join('\n')` 中文逐字竖排（`String.characters` 由 material.dart 透出，无需额外 import）
   - 手势：onTap 展开、onHorizontalDrag 左滑 >4dp 松手展开
-- **`_buildPanel`（L885 起）**：展开态 Stack 布局——`Positioned.fill` 空白区垫底 + 贴右上的自适应面板包动画层（AnimatedBuilder child 缓存整块 + FractionalTranslation/Opacity）+ 动画期间叠加把手（header"随手记"+ 收起按钮，top padding 40 避状态栏；日记 ListView `shrinkWrap` 高度收缩，bottom 48 避导航栏，条目多时内部滚动）
+- **`_buildPanel`（L885 起）**：展开态 Stack 布局——`Positioned.fill` 空白区垫底 + 自适应面板包动画层（AnimatedBuilder child 缓存整块 + FractionalTranslation/Opacity）。面板锚点默认贴停靠侧上角（`panelAlignment`；「按钮位置 = 底部」时贴下角）；header 按钮条（top padding 40 避状态栏；底部模式在列表下方、bottom 48 避导航栏）；日记 ListView `shrinkWrap` 高度收缩，bottom 48 避导航栏（底部模式改 8，导航栏由按钮条避让），条目多时内部滚动；动画期间叠加把手
 
 ### lib/overlay/overlay_data_client.dart
 - overlay isolate 的数据客户端，直连 sqflite（`DbHelper().getDiaries()`）。旧的跨 engine 服务端 `overlay_data_bridge.dart` 已删除
@@ -373,8 +438,9 @@
 - **L110-121 字段**：`dartReady` / `pendingAutoExpand`（握手状态，见"自动展开"小节）/ `pendingVoiceMemoReveal`（隐藏窗口标记，L129 附近）
 - **L377 `vibrateOneShot()`**：单次震动封装（triggerQuickRecord / triggerShowOverlay 共用，含 SDK < O 降级）
 - **L454 `triggerShowOverlay()`**：长按直连入口——toggle 判断 + `showOverlay(autoExpand = true)`，已废弃 startActivity 绕路
-- **L640 `showOverlay(autoExpand, hidden)`**：显示浮窗；hidden=true 时**直建胶囊尺寸隐藏窗口**（addView 312×84 + alpha=0 + NOT_TOUCHABLE）；`wm.addView` 后 `if (autoExpand) notifyDartExpand()`
-- **L671 起**：accessibility_overlay channel 服务端（resizeOverlay / updateFlag / closeOverlay / **dartReady** / **voiceMemoUiReady**——揭示延迟 2 vsync / **beginHandleDrag·dragHandle·endHandleDrag**——把手拖动移窗与落盘，见"把手长按拖动"小节）
+- **L640 `showOverlay(autoExpand, hidden, revealOnUiReady = true)`**：显示浮窗；hidden=true 时**直建胶囊尺寸隐藏窗口**（addView 312×84 + alpha=0 + NOT_TOUCHABLE）；`revealOnUiReady=false`（剪贴板笔记临时窗）不置 `pendingVoiceMemoReveal`；`wm.addView` 后 `if (autoExpand) notifyDartExpand()`
+- **`triggerOverlayClipboardNote()` / `notifyDartSaveClipboardNote()` / `onClipboardNoteDone()`**（2026-10-28）：音量键「剪贴板笔记」动作——浮窗不存在时直建临时隐藏窗借焦点，Dart 回执收窗 + 10s 超时兜底，收窗按 `clipboardNoteView` View 身份比对（等待期间重建的浮窗不会被误关）；见「剪贴板存为笔记·音量键入口」
+- **L671 起**：accessibility_overlay channel 服务端（resizeOverlay / updateFlag / closeOverlay / **clipboardNoteDone**——收临时隐藏窗 / **dartReady** / **voiceMemoUiReady**——揭示延迟 2 vsync / **beginHandleDrag·dragHandle·endHandleDrag**——把手拖动移窗与落盘，见"把手长按拖动"小节）
 - **`HANDLE_Y_OFFSET_KEY`**（companion object）：把手纵向偏移落盘 key `flutter.overlay_handle_y_offset_dp`（int，dp），写入方 endHandleDrag / 读取方 buildOverlayParams
 - **L804 `notifyDartExpand()`**：dartReady 直接发 expand，否则挂起 pendingAutoExpand
 - **L816 `hideOverlay()`**：removeView + detach + **发 reset 复位 Dart**（须在 channel 引用置 null 之前），不销毁 engine（热启动复用）
@@ -604,15 +670,18 @@ overlay engine 是独立 isolate，持有**自己的** `RecognizerSingleton` 实
 | [lib/overlay/overlay_home.dart](../../lib/overlay/overlay_home.dart) | `_toggleAudioPlay` / `_stopAudioPlayback` + 三处停播挂点 + onPlayerComplete 订阅 + dispose 清理 |
 | [lib/overlay/overlay_constants.dart](../../lib/overlay/overlay_constants.dart) | `cardPlayButtonSize 30` / `cardPlayIconSize 20` / `cardPlayButtonHitSize 40` |
 
-## 卡片标注（标签换色，2026-09-02；2026-09-22 上提时间行一级直出）
+## 卡片标注（标签换色，2026-09-02；2026-09-22 上提时间行一级直出；2026-10-22 扩成 4 槽位可换图标/颜色）
 
-展开卡**时间行**直出标注三色按钮（❗urgent / ⭐star / 💡idea，时间文本后紧凑排列，32×32 命中区相邻不加间距），点按即换色/取消，无二级菜单。首版（2026-09-02）为两步交互——底部按钮条标注入口（`Icons.label_outline`）→ 底行整行替换标注选择态「❗ ⭐ 💡 ✗返回」，2026-09-22 用户要求上提一级（时间行右侧原有空隙 + 时间格式改横杠省出的空间刚好放下），二级菜单机制（`isTagPicking`/`onTagEntry`/`onTagPickCancel`/`_tagPickingIds`）整体删除。标注持久化到 diary 表 `tag` 列（TEXT 可空，DB v9→v10 新增），悬浮窗与主 App 共用同一数据库。
+展开卡**时间行**直出 4 个标注按钮（默认 ❗urgent / ⭐star / 💡idea / ✓task，时间文本后紧凑排列，命中区 28×32、相邻 2dp，时间文本由 `FittedBox(scaleDown)` 兜底窄屏），点按即换色/取消，无二级菜单。首版（2026-09-02）为两步交互——底部按钮条标注入口（`Icons.label_outline`）→ 底行整行替换标注选择态「❗ ⭐ 💡 ✗返回」，2026-09-22 用户要求上提一级（时间行右侧原有空隙 + 时间格式改横杠省出的空间刚好放下），二级菜单机制（`isTagPicking`/`onTagEntry`/`onTagPickCancel`/`_tagPickingIds`）整体删除。标注持久化到 diary 表 `tag` 列（TEXT 可空，DB v9→v10 新增），悬浮窗与主 App 共用同一数据库。
+
+**4 槽位只换皮肤不改 id**（2026-10-22 用户定夺）：槽位 id 固定 `urgent/star/idea/task`（第 4 个是新增的稳定 id），设置页「外观 → 标签外观」只允许从 **24 个精选图标 + 10 个颜色**里换图标/颜色，不提供改名——CSV/云同步/旧数据零迁移。配置唯一真值在 [lib/utils/diary_tag.dart](../../lib/utils/diary_tag.dart) 的 `DiaryTagStyles`（prefs key `diary_tag_styles_v1`，JSON `[{tag,icon,color}]`；坏项跳过、缺槽位补默认、颜色强制不透明）。生效链路：主 App 保存 → `ValueNotifier` 即时重绘日记页筛选行/色点 → `DiarySyncBridge.bump()` → 悬浮窗下次展开前 `_refreshOverlayConfig` reload prefs 并显式传 `tagStyles` 给卡片；电脑访问服务每次 `GET /api/notes` 附带 `tagConfig`（图标 `codePoint` + 浅底/深字 hex），网页用 `/tag-icons.otf`（App 打包的 MaterialIcons）按 codePoint 渲染。配置随全量备份 ZIP 的 `tag_config.json` 走（导入为覆盖语义；老备份无此文件时保留本机现值），不参与云同步（用户明确暂不做 WebDAV）。
 
 ### 交互与状态
 
-- **时间行标注按钮**（`_buildInlineTagButton`）：当前已标注的按钮加视觉强调（白底圆 24 + 图标换标注色 15，未选中白图标 17，对齐 `_buildCheckbox` 勾选态视觉语言的缩小版）；**点击已选中的 tag = 取消标注**（toggle 回默认色）；命中区 32×32 = 时间行高（与收起 chevron 命中区 32 同高，不撑高时间行，`_estimateExpandedHeight` 的 timeRowH 分母不变）
+- **时间行标注按钮**（`_buildInlineTagButton`）：当前已标注的按钮加视觉强调（白底圆 24 + 图标换配置色 15，未选中白图标 17，对齐 `_buildCheckbox` 勾选态视觉语言的缩小版）；**点击已选中的 tag = 取消标注**（toggle 回默认色）；命中区 28×32（4 槽位比原三色横向收紧 4dp）= 时间行高，`_estimateExpandedHeight` 的 timeRowH 分母不变；收起 chevron 同步收紧到 32×32
 - **写库**：`OverlayHome._setDiaryTag(id, tag)` → `DbHelper.updateDiaryTag` → 内存列表按 id 局部更新（⚠️ sqflite 查询结果是只读 QueryRow，须 `{...row, 'tag': tag}` 物化替换）；不整表 reload
 - **归档卡**：允许标注（tag 正常入库），视觉仍固定灰色，恢复后显示标注色
+- **主 App 筛选行**（`diary_tab._buildTagFilterRow`）：普通 + 4 个槽位；纯图标（tooltip 普通/「标签 N」），外边距 16、芯片间距 6，窄屏整行可横向滚动。2026-10-22 用户要求去掉「全部」芯片（中字号下行宽放不下）：改为点一次选中筛选、再点已选中芯片取消筛选（恢复全部）
 
 ### 取色规则（替代旧的 index % 6 轮换色板）
 
@@ -620,19 +689,21 @@ overlay engine 是独立 isolate，持有**自己的** `RecognizerSingleton` 实
 |---|---|
 | 归档卡 | 固定灰 `blueGrey.shade300` α0.5 + 删除线（不变） |
 | 活跃卡无标注 | 固定默认色 `OverlayConstants.defaultCardColor` #6F9AF0 |
-| 活跃卡已标注 | 标注色：urgent #FF6B6B / star #FEA545 / idea #AE82E4（`DiaryTag.colors`） |
+| 活跃卡已标注 | 该槽位配置色（默认 urgent #FF6B6B / star #FEA545 / idea #AE82E4 / task #2E9F5C） |
 
-tag→颜色映射唯一真值在 [lib/utils/diary_tag.dart](../../lib/utils/diary_tag.dart)，**主 App 日记页共用**：主 App 不改卡片背景，只在卡片顶部时间行前渲染 8dp 彩色小圆点（归档卡也显示）。CSV 全量备份导出加「标注」列（放最后），导入兼容旧备份（缺列/非法值按无标注处理）。
+tag→外观映射唯一真值在 [lib/utils/diary_tag.dart](../../lib/utils/diary_tag.dart)，**主 App 日记页共用**：主 App 不改卡片背景，只在卡片顶部时间行前渲染 8dp 彩色小圆点（归档卡也显示）。CSV 全量备份导出加「标注」列（放最后），导入兼容旧备份（缺列/非法值按无标注处理）。
 
 ### 关键文件
 
 | 文件 | 说明 |
 |---|---|
-| [lib/utils/diary_tag.dart](../../lib/utils/diary_tag.dart) | tag 常量 + `colors` 色映射 + `isValid` 校验（双 engine 共用） |
-| [lib/overlay/widgets/overlay_diary_card.dart](../../lib/overlay/widgets/overlay_diary_card.dart) | 取色逻辑 + `onTagToggle` 参数 + 时间行 `_buildInlineTagButton` |
-| [lib/overlay/overlay_home.dart](../../lib/overlay/overlay_home.dart) | `_setDiaryTag` |
+| [lib/utils/diary_tag.dart](../../lib/utils/diary_tag.dart) | 4 槽位 id + 24 图标/10 颜色白名单 + `DiaryTagStyleConfig` 编解码 + `DiaryTagStyles` prefs/notifier（双 engine 共用） |
+| [lib/settings/tag_style_settings_page.dart](../../lib/settings/tag_style_settings_page.dart) | 「标签外观」二级页：槽位列表 + 图标/颜色底部弹层 + 恢复默认 |
+| [lib/overlay/widgets/overlay_diary_card.dart](../../lib/overlay/widgets/overlay_diary_card.dart) | 取色逻辑 + `tagStyles`/`onTagToggle` 参数 + 时间行 `_buildInlineTagButton` |
+| [lib/overlay/overlay_home.dart](../../lib/overlay/overlay_home.dart) | `_setDiaryTag` + `_refreshOverlayConfig` 读入 `_tagStyles` 并透传 |
 | [lib/db_helper.dart](../../lib/db_helper.dart) | diary.tag 列（v9→v10 迁移）+ `updateDiaryTag` |
-| [lib/diary_tab.dart](../../lib/diary_tab.dart) | 主 App 卡片 8dp 标注小色点（`_buildNormalCard` 时间行） |
+| [lib/diary_tab.dart](../../lib/diary_tab.dart) | 主 App 卡片 8dp 标注小色点 + 4 槽位筛选行（notifier 监听重绘） |
+| [lib/web_server/diary_web_server.dart](../../lib/web_server/diary_web_server.dart) | `/api/notes` 的 `tagConfig` 投影 + `/tag-icons.otf` 字体路由 |
 
 ## 卡片长按拖动排序（2026-09-29）
 
@@ -647,9 +718,70 @@ tag→颜色映射唯一真值在 [lib/utils/diary_tag.dart](../../lib/utils/dia
 - **持久化纪律**（`_onReorderDiary`）：内存先行（setState 立即落位，拖动/动画期不查库）→ `DbHelper.reorderActiveDiaries(活跃区 id 序)`（事务内规范重写 0..n-1，漏网活跃行续排尾部、归档行不动，内部 bump 云同步数据版本）→ `DiarySyncBridge.bump()`（主 App 日记页感知）；失败 catch + `_loadDiaries(showLoading: false)` 回库恢复真相（照 `_setDiaryTag` 模式）
 - **真机回归点**：长按活跃收起卡可拖、展开/归档/编辑卡拖不动、拖到最底落活跃区末尾、归档分隔线不乱、主 App 日记页回前台顺序同步
 
-## 大爆炸分词层（2026-10-06；2026-10-07 词块区纵向居中 + 主 App 层顶边降高 + 四角圆弧；2026-10-08 白底浅色化 + 下层压暗遮罩）
+## 卡片截图附件（2026-10-21；2026-10-24 双向多图 + 图集）
+
+展开卡底部**复制按钮长按 = 截图存为附件**（tap 仍是复制，两手势由 GestureDetector 竞技场自然分流）：先收起悬浮窗避免自拍，等窗口缩回把手尺寸后调原生无障碍截图，落盘后写入该日记 `image_path`，展开卡正文右侧显示 44dp 缩略图，点缩略图在面板内唤起全屏预览（`InteractiveViewer` 最大 4 倍，单击/右滑/右上角 ✕ 均可关闭）。长按判定成立瞬间给 `click` 触觉反馈（用户要求：此前无震动，不知按多久才触发），缩略图点击给轻档 `tick` 反馈。截图成功后的去向由设置「截图后展开笔记卡片」控制：**默认关**（历史行为）= 只 Toast 提示并保持收起；**开启** = Toast 后重新唤出面板并展开该卡，方便核对截图效果或继续编辑。**首次长按会失败**：截图能力依赖无障碍服务配置 `android:canTakeScreenshot="true"`，已启用服务的用户需在系统设置里关闭再重开本服务才会加载新配置（Toast 提示「请重新开启无障碍服务」）。
+
+**多图（2026-10-24）**：电脑端同步来的图片落在 v18 `diary_images`，与本机截图一起构成该笔记的图集。缩略图显示 `primary_image_path`（本机截图优先，否则电脑端按 `position` 第一张），张数 > 1 时右下角叠数量角标；点击把「本机截图 + 下收多图（按 position）」合并成路径列表送入图集。图集可左右滑动切换、底部显示「当前 / 总数」，右滑不再直接关闭（避免翻页误退），关闭仍走 ✕/单击/黑底；单图时保留右滑关闭。文件被外部清理的路径在打开前过滤，全空时提示「图片文件已不存在」。
+
+**图集内删图（2026-10-25，用户要求：截图完也要能单独丢图）**：预览层左上角 🗑（与右上角 ✕ 同款 48×48 opaque 命中区，顶栏改 `Row(spaceBetween)` 左右各一格）。**只删手机自拍的那张**（`diary.image_path`）——电脑端同步来的图不给删除入口：`image_index.json` 按设备所有权合并，本机摘掉别人的条目会被来源端下轮重发布，删不干净（见 @cloud-sync.md「删除边界」）。因此按钮只在这组里确有本机截图时才渲染（`ownImagePath` 为空即不渲染，主 App 日记页共用本组件但不传删除参数、行为不变）；翻到电脑端那张再点 🗑 走 `onForeignImageTap` → 原生 Toast「这张来自电脑端，请在电脑端删除」。点 🗑 不立即删：左上角整格替换成「确认删除？✓✗」（复用卡片删除确认行的整行替换先例，✗ 只退出确认态、不关预览；翻页即作废确认态——确认的是上一页那张）。✓ → 父层 `_onDeleteOwnPreviewImage`：先 `updateDiaryImage(id, null)` 再删文件（顺序不可反，写库失败时图仍在，不留破图）→ `DiarySyncBridge.bump()` → 清预览态 → tick 震动 + Toast「截图已删除」→ 静默重查列表（缩略图/角标随即消失）。删完**关掉图集**：路径列表由父层持有，组件的翻页/缩放状态不随列表收缩重算，留在原地会停在越界页。`_deletingImageIds` 按 id 防抖（写库+删文件是异步的，连点 ✓ 会重复走链路并多 bump 一次）。下轮手动同步时本机索引条目自然消失 → 电脑端摘掉对应附件。
+
+### 原生截图链路（Android 11+ / API 30）
+
+- **能力判定**：`AccessibilityServiceInfo.CAPABILITY_CAN_TAKE_SCREENSHOT`（⚠️ 不存在 `FLAG_REQUEST_TAKE_SCREENSHOT`，曾照网络示例写错编译失败）；`Build.VERSION.SDK_INT < R` 直接返回 `unsupported_os`
+- **自拍规避**：`takeScreenshot` 会截到悬浮窗自身 → 先保存原 `LayoutParams.alpha`，设 0 + `updateViewLayout` 隐藏，等 64ms（约 3 帧）再截图，`onSuccess`/`onFailure`/3s 超时三路都必须恢复 alpha（`restoreOverlay()` 幂等）
+- **结果转换**：`ScreenshotResult.hardwareBuffer` + `colorSpace` → `Bitmap.wrapHardwareBuffer(...).copy(ARGB_8888, false)` → **立刻 close buffer** → JPEG 85 后台线程落盘
+- **并发守卫**：`screenshotBusy`（`AtomicBoolean.compareAndSet`）防连按；失败码映射（`interval_time_short` = 截图太频繁、`no_capability` = 服务需重开等）在 Dart 侧转中文 Toast
+- **Toast 载体**：收起后 overlay 窗口只剩 28×88 把手，Flutter SnackBar 无可见落点 → 走原生 `Toast.makeText`（channel 方法 `showToast`）
+
+### 存储与展示规则
+
+- 文件：`getApplicationDocumentsDirectory()/diary_images/diary_<id>_<ms>.jpg`（同 `diary_audio/` 约定）；**本机截图每卡一张**，重截先写新文件 → 更新 `image_path` → 再删旧文件（截图/落盘失败不丢旧附件）。电脑端同步下来的图片另存 `diary_images/diary_sync_<uuid>_<sha 前 8 位>.<ext>`，行落在 `diary_images` 表（见 @database.md v18）
+- **不进备份，图片随云同步双向（2026-10-24）**：不进全量备份 ZIP/CSV；`image_index.json` 只放索引、图片字节进共享 `v2/assets/<sha前两位>/<sha256>.<ext>`（内容寻址），电脑端以 `source='desktop'` 发布自有图片、手机按索引下收多图。`updateDiaryImage` 改为 bump `CloudSyncDataVersion`（替换截图算待同步变更），`batchInsertDiaries` 仍不映射该列；备份导入后的日记 `image_path` 为 NULL
+- 缩略图：仅展开查看态渲染（`lockedHidden` 打码卡不渲染——图片属笔记内容；编辑态也不渲染）；取 `primary_image_path`，`cacheWidth: 176` 控内存；张数 > 1 时右下角叠半透明黑底数量角标（fontSize 9）；文件缺失走 `broken_image_outlined` 兜底
+- 预览层：面板内 `Positioned.fill` 模态 `OverlayImagePreview`（照 BigBangLayer 模式，不用 `showDialog`——overlay engine 弹独立路由会脱离面板坐标系）；黑底 + `InteractiveViewer` 4 倍；多图时 PageView 左右切换（`physics: NeverScrollableScrollPhysics`，翻页由外层 `Listener` 原始指针在超过 56dp 时 `animateToPage`——InteractiveViewer 的缩放识别器会抢走 PageView 的水平拖拽），每页切换复位缩放，底部页码「n / N」；**单图**单击图片/黑底、右滑超过 88dp 关闭，多图右滑只翻页不关闭；放大态 scale>1 与多指期间不响应翻页/侧滑，避免平移图片时误翻；右上角 ✕ 始终可关；左上角 🗑 删本机自拍截图（归属判定/确认态/删除链路见上「图集内删图」）；收起/息屏/重锁/复位/删除当前卡都会清预览
+- 生命周期：**归档保留图片**（用户拍板），真实删除/转存才清文件——覆盖悬浮窗删除、滑动撤销最终落库、主 App 删除/转存/取消空白新笔记、电脑访问服务删除五条路径
+- 收尾去向：设置开关 `overlay_screenshot_expand_card`（悬浮窗二级页「截图附件」，默认关，Pro 门禁）由 `_onCardCopyLongPress` 在成功收尾时 reload 现场读——关=保持收起；开=再走 `_expand()` 并把该卡加进 `_expandedIds`（动作型设置即时生效，读取异常按关闭兜底）
+- 锁定门禁：长按截图与点开预览前都走 `_ensureNoteUnlocked`（与复制/编辑同语义）
+
+### 关键文件
+
+| 文件 | 说明 |
+|---|---|
+| [android/.../res/xml/accessibility_service_config.xml](../../android/app/src/main/res/xml/accessibility_service_config.xml) | `canTakeScreenshot="true"` |
+| [android/.../VolumeKeyAccessibilityService.kt](../../android/app/src/main/java/com/shengwuji/app/VolumeKeyAccessibilityService.kt) | `captureScreenshot`（隐藏窗口 → 截图 → 恢复 alpha → JPEG 落盘）+ `showToast` 通道 |
+| [lib/overlay/accessibility_overlay.dart](../../lib/overlay/accessibility_overlay.dart) | `captureScreenshot(path)` / `showToast(text)` channel 封装 |
+| [lib/overlay/overlay_home.dart](../../lib/overlay/overlay_home.dart) | `_onCardCopyLongPress`（长按 click 震动 → 收起 → 截图 → 落库 → Toast）、`_openImagePreview`（门禁 + tick 震动 + 合并本机/电脑端多图路径） |
+| [lib/overlay/overlay_data_client.dart](../../lib/overlay/overlay_data_client.dart) | `getDiaryImagePaths(diary)`（本机 image_path 在前 + `diary_images` 按 position） |
+| [lib/overlay/widgets/overlay_image_preview.dart](../../lib/overlay/widgets/overlay_image_preview.dart) | 图集层：PageView 左右切换 + 页码 + 单图右滑关闭 + 双指缩放 + 右上角 ✕（`Listener` 原始指针驱动翻页）+ 左上角 🗑 删本机截图（确认态整格替换；`ownImagePath` 为空不渲染） |
+| [lib/overlay/widgets/overlay_diary_card.dart](../../lib/overlay/widgets/overlay_diary_card.dart) | `onCopyLongPress` / `onImageTap` 参数 + 44dp 缩略图 + 数量角标 + `_estimateExpandedHeight` 宽度扣减 |
+| [lib/db_helper.dart](../../lib/db_helper.dart) | `diary.image_path`（v16→v17）+ v18 `diary_images` 多图读写 + `image_count`/`primary_image_path` 计算列 + `updateDiaryImage`（bump 云同步数据版本）+ `updateDiaryImagePathByUuid`（下载截图回填），迁移细节见 @database.md v17/v18 行 |
+| [lib/sync/image_sync.dart](../../lib/sync/image_sync.dart) | `image_index.json` 编解码 + 索引合并/下载计划纯函数（截图同步，见 @docs/architecture/cloud-sync.md） |
+| [lib/settings/overlay_settings_page.dart](../../lib/settings/overlay_settings_page.dart) | 「截图附件」分区开关 `overlay_screenshot_expand_card`（截图后展开当前卡） |
+| [lib/overlay/overlay_constants.dart](../../lib/overlay/overlay_constants.dart) | `screenshotExpandCardPrefKey`（截图后展开开关的 prefs key 唯一真值） |
+
+## 正文链接（2026-10-27）
+
+展开卡查看态正文里的 http(s)/www 链接显示**白色下划线**，点击用系统浏览器打开（不内嵌 WebView）：
+
+- 识别：`lib/utils/link_text.dart#findTextLinks`（主 App 与悬浮窗共用）。只认 `http://` / `https://` / `www.`（`www.` 补 `https://`）；裸域名/邮箱不识别；中文紧贴网址按 ASCII 边界截断；尾部句号/逗号/多余右括号不入链接；成对括号（Wikipedia 词条）保留。带 256 条扫描缓存，面板每帧重建不重复扫。
+- 手势：正文 `TextSpan` 内 `TapGestureRecognizer` 在竞技场胜过卡片外层 `GestureDetector(onTapUp → 进编辑)`——点链接只开浏览器，不误进编辑（`overlay_card_link_test` 锁定）。链接下划线/颜色不改变字宽行高，`_charOffsetAt` / `_estimateExpandedHeight` 的纯文本 `TextPainter` 度量无需同步。
+- 打开通道：`OverlayHome._onCardLinkTap` → `AccessibilityOverlay.openUrl`。悬浮窗 engine 无 Activity，`url_launcher` 的 `launchUrl` 会因缺 Activity 抛错，必须走无障碍服务原生 `startActivity(ACTION_VIEW + FLAG_ACTIVITY_NEW_TASK)`；失败原生 Toast「无法打开浏览器」。
+- 收起态胶囊不渲染链接（单行预览，点卡片展开）；锁定打码卡不传 `onLinkTap`（正文不出现链接，属内容级信息）。
+
+| 文件 | 说明 |
+|---|---|
+| [lib/utils/link_text.dart](../../lib/utils/link_text.dart) | `findTextLinks` 识别 + `buildLinkSpans` 切段 + 扫描缓存（主 App/悬浮窗共用） |
+| [lib/overlay/widgets/overlay_diary_card.dart](../../lib/overlay/widgets/overlay_diary_card.dart) | `onLinkTap` 参数 + `_buildViewingBody` 链接段（白色下划线，归档叠加删除线） |
+| [lib/overlay/overlay_home.dart](../../lib/overlay/overlay_home.dart) | `_onCardLinkTap` → `AccessibilityOverlay.openUrl` |
+| [lib/overlay/accessibility_overlay.dart](../../lib/overlay/accessibility_overlay.dart) | `openUrl(url, packageName: '')`（空包名 = 系统默认浏览器） |
+| [test/overlay_card_link_test.dart](../../test/overlay_card_link_test.dart) | 点链接不误进编辑 / 点正文仍进编辑 / `www.` 归一化 |
+
+## 大爆炸分词层（2026-10-06；2026-10-07 词块区纵向居中 + 主 App 层顶边降高 + 四角圆弧；2026-10-08 白底浅色化 + 下层压暗遮罩；2026-10-08 深色模式适配）
 
 展开卡查看态正文**长按**唤起全屏白底模态（锤子 Big Bang 式；2026-10-08 起由深色改浅色，对齐锤子原版白色卡片视觉——文字/词块配色随之反转：未选词块浅灰底深字、选中主题蓝底白字、顶栏/底栏控件同步浅色化）：正文被炸成一个个词块，点选 toggle、滑动连选区间，底栏预览选中拼接文本，一键复制后自动关层。用户拍板：滑动连选首期就要做、做全屏视觉（非底部弹层）。**词块区内容纵向居中（2026-10-07 用户拍板，主 App/悬浮窗共用本层一处生效）**：短内容在词块区居中展示而非从顶往下排，长内容超出视口仍可滚动——`LayoutBuilder` 取视口高 → `ConstrainedBox(minHeight: 视口高−上下padding)` → `Center` 包词块 Wrap（Center 在无界高度下收缩到内容、被 minHeight 钳到视口高，内容超高时居中自然退化）。**白色主体四角圆弧（2026-10-07 用户拍板，同样一处生效）**：`OverlayConstants.bigBangCornerRadius`=20dp——Material `borderRadius` + `clipBehavior: Clip.antiAlias`（Material 的 borderRadius 只影响背景形状，子内容须显式 clip 才随圆角裁切），圆角缺口透出压暗的下层画面（2026-10-08 起缺口/顶部留白/底部关闭条三处统一铺 `bigBangScrimColor` 35% 黑遮罩，明暗分层让白色主体浮出，用户拍板），同一「层不撑满全屏」的视觉语言；⚠️ 缺口区域外包 `GestureDetector(opaque, onTap:(){})` 吸收触摸——裁切外的角落若不接住，overlay 侧穿透会命中面板空白区收起手势（把面板连同本层一起收掉），主 App 侧（opaque:false 路由无 barrier）穿透会点到下层日记卡。
+
+**深色模式适配（2026-10-08，用户需求：APP 深色模式下白底太刺眼，白色改黑色）**：层新增可空参数 `isDark`（null = 跟随 `Theme.of(context).brightness` 自动判定）——主 App 侧经透明路由推入、Theme brightness 已解析 system 档，**不传参零改动自动跟随**；悬浮窗 engine 固定浅色主题（跨背景对比度既有设计），自动判定恒为浅色，故唤起时由 `OverlayHome._openBigBang` reload 后读 `theme_mode` prefs 经 `parseThemeMode` 解析（dark → true / light → false / system → 按 `platformDispatcher.platformBrightness` 裁决），显式传入 `isDark`——大爆炸层是悬浮窗侧唯一消费 `theme_mode` key 的组件。深色底值 `OverlayConstants.bigBangBackgroundDark` = `0xFA101319`，即 2026-10-08 浅色化之前的历史深色底值直接复用；9 处配色位（主文字/次文字/动作文字/未选词块底与描边/禁用底与图标/底栏预览条底与描边）走双色板辅助函数整体反转（深字浅底 ↔ 浅字深底）；选中词块恒主题蓝底白字、`bigBangScrimColor` 35% 黑遮罩与底部 ✕ 按钮（黑 55% 底白图标）深浅共用不变。
 
 > **主 App 随手记复用（2026-10-06 同日；2026-10-07 层顶边降高）**：`BigBangLayer` 同时挂在主 App 日记页——日记卡手势矩阵改为 单击=复制 / 双击=编辑 / **长按=大爆炸**（双击跳 AI 取消，AI 分享保留卡片底部按钮入口；「交换单击与长按」开关变为交换单击↔双击，prefs key 不变）。主 App 侧经透明 `PageRouteBuilder` 推入整层；层顶边 2026-10-07 起从「状态栏高度避让」改为**按悬浮窗「面板高度」8 条档位的顶部高度取值**（`OverlayConstants.bigBangMainAppTopInset` = panelHeaderTopPadding + panelTopOffsetFor(8) = 152dp，用户拍板——主 App 无档位设置项，固定参照 8 条档，比仅状态栏避让矮一截、单手够得着顶栏），`onHaptic` 必须注入 diary_tab 自己的 `_haptic`（缺省走悬浮窗无障碍通道，主 engine 未注册会抛 MissingPluginException），`onCopy` 复用 `_copyToClipboard`。分词器在主 isolate 独立懒加载（static 缓存不跨 isolate 铁律）。
 
@@ -681,11 +813,11 @@ tag→颜色映射唯一真值在 [lib/utils/diary_tag.dart](../../lib/utils/dia
 ### 生命周期与复制
 
 - 层 = `_buildPanel` Stack 最上层 `Positioned.fill`（展开面板态窗口本就全屏，无需 resize）；父层只存原文 `String? _bigBangText`，词块状态全在层内 State
-- **层顶边对齐面板 header 上缘（2026-10-06，用户反馈全屏太高单手够不着顶栏）**：`BigBangLayer.topInset` = 状态栏固定避让（`OverlayConstants.panelHeaderTopPadding`=40，与 `_buildHeader` 同源唯一真值）+ `panelTopOffsetFor(_panelMaxCards)`——随设置页「面板高度」档位联动下移（档位越低顶边越低，顶栏/词块区整体进拇指区；默认 10 档 inset=40 与旧全屏行为一致）。顶边上方为**留白透出下层画面**（2026-10-08 起铺 `bigBangScrimColor` 压暗遮罩，明暗分层）：留白区 `HitTestBehavior.opaque` + onTap 就地吸收触摸——底层是面板空白区的收起手势，穿透会把面板连同本层一起收掉；横滑在留白区无识别器认领（空白区不在命中路径内）天然无操作。层内原顶部 40 避让移除（改由留白承担）
+- **层顶边对齐面板 header 上缘（2026-10-06，用户反馈全屏太高单手够不着顶栏）**：`BigBangLayer.topInset` = 状态栏固定避让（`OverlayConstants.panelHeaderTopPadding`=40，与 `_buildHeader` 同源唯一真值）+ `panelTopOffsetFor(_panelMaxCards)`——随设置页「面板高度」档位联动下移（档位越低顶边越低，顶栏/词块区整体进拇指区；默认 10 档 inset=40 与旧全屏行为一致）。**2026-10-27「按钮位置 = 底部」时** header 已在屏幕底部、不用让位，`topInset` 回到只避让状态栏（不再叠加面板高度档偏移）。顶边上方为**留白透出下层画面**（2026-10-08 起铺 `bigBangScrimColor` 压暗遮罩，明暗分层）：留白区 `HitTestBehavior.opaque` + onTap 就地吸收触摸——底层是面板空白区的收起手势，穿透会把面板连同本层一起收掉；横滑在留白区无识别器认领（空白区不在命中路径内）天然无操作。层内原顶部 40 避让移除（改由留白承担）
 - **层底部改透明关闭条（2026-10-07，用户反馈底部 48dp 深色条带「完全盖住」；2026-10-08 透出部分加压暗遮罩）**：原 Material 内 `Padding(bottom: 48)` 深色避让条带移出改 `_buildCloseStrip()`——**透出下层画面（压暗遮罩 `bigBangScrimColor`）** + **整条点击即关闭**（`onTap: widget.onClose`）+ 中间一枚 ✕ 圆形按钮（黑 55% 底白图标）作视觉落点，单手大拇指在底部即可关层；视觉透明但 `HitTestBehavior.opaque` 吸收触摸（穿透到面板空白区会把面板连同本层一起收掉，主 App 侧穿透会点到下层日记卡）；高度 48 沿用原避让惯例。⚠️ 同款修复：顶部留白 `SizedBox` 只给高度时在 Column（交叉轴默认 center）里收缩到 0 宽，「吸收触摸」形同虚设——已补 `width: double.infinity`
 - 清零方：✕ 按钮（顶栏/底部关闭条）/ 复制成功 / 搜索成功 / `_collapse()` / `_resetFromNative()`
 - 复制：`joinSelected` 拼接 → 原生 `copyText` 通道（自带 EFFECT_TICK + 写剪贴板）→ 成功关层，失败留在原地
-- **搜索（2026-10-06）**：底栏预览与复制之间新增搜索按钮（`onSearch` 可空构造参数，null 不渲染）：`joinSelected` 拼接 → `buildSearchUrl(engine, text)`（`lib/utils/big_bang_search.dart`，百度/必应/Google 注册表，`Uri.encodeComponent` 编码）→ 原生 `openUrl` 通道（`Intent(ACTION_VIEW, url)`，选过浏览器则 `setPackage` 指定，`ActivityNotFoundException` 回落系统默认——覆盖浏览器被卸载场景；overlay 侧走 accessibility_overlay 通道加 `FLAG_ACTIVITY_NEW_TASK`，主 App 侧走 app 通道）→ 成功关层，失败留在原地。引擎与浏览器在设置→「大爆炸搜索」二级页选择（prefs `search_engine`/`search_browser_package`/`search_browser_name`，默认百度+系统默认；浏览器列表来自新增通道方法 `getInstalledBrowsers`——`queryIntentActivities(ACTION_VIEW, https)` 枚举真浏览器）；读取方 `loadSearchConfig()` 先 reload（跨 engine 惯例）。无选中不搜（与复制同规则）
+- **搜索（2026-10-06）**：底栏预览与复制之间新增搜索按钮（`onSearch` 可空构造参数，null 不渲染）：`joinSelected` 拼接 → `buildSearchUrl(engine, text)`（`lib/utils/big_bang_search.dart`，百度/必应/Google 注册表，`Uri.encodeComponent` 编码）→ 原生 `openUrl` 通道（`Intent(ACTION_VIEW, url)`，选过浏览器则 `setPackage` 指定，`ActivityNotFoundException` 回落系统默认——覆盖浏览器被卸载场景；overlay 侧走 accessibility_overlay 通道加 `FLAG_ACTIVITY_NEW_TASK`，主 App 侧走 app 通道）→ 成功关层，失败留在原地。**悬浮窗侧搜索成功后面板随即收起到把手（2026-10-20，用户拍板）**——用户跳去浏览器看搜索结果页，全屏模态面板继续展开会挡触摸，overlay_home 的 onSearch 回调在 openUrl 成功后调 `_collapse(source: '大爆炸搜索')`（与卡片 AI 对话按钮 launchApp 成功后收起同语义；失败不收起留在原地）；主 App 侧无此行为（路由页返回即回日记页）。引擎与浏览器在设置→「大爆炸搜索」二级页选择（prefs `search_engine`/`search_browser_package`/`search_browser_name`，默认百度+系统默认；浏览器列表来自新增通道方法 `getInstalledBrowsers`——`queryIntentActivities(ACTION_VIEW, https)` 枚举真浏览器）；读取方 `loadSearchConfig()` 先 reload（跨 engine 惯例）。无选中不搜（与复制同规则）
 - **二次爆炸（2026-10-06）**：底栏预览与搜索之间的刀图标按钮（`Icons.content_cut` + Tooltip「再炸成单字」，`_buildCapsuleIcon` 与搜索按钮共用样式 helper），点击把选中词块**就地**炸成单字（`explodeToChars`，选中 index 排序后逐个替换、未选中 token 原对象搬运），炸出的可选单字 index 映射进新 `_selected` **保持选中**（用户可立刻复制/搜索，或点掉多余单字逐字微调）；禁用规则 `_canExplode` = 选中中至少一个多字词（选中全是单字/无选中/分词中禁用，幂等）；**不做撤销**——爆炸是追加式变换（可逐字点选修正），重炸成本仅一次长按；⚠️ tokens 更换后 `_prepareKeys` 连带清 `_rects`（旧 index 的命中 Rect 全部失效，setState 到 postFrame 重缓存之间 `_hitToken` 会拿旧 Rect 命中新词块）+ 连选状态（`_pressedToken/_dragAnchor/_dragBase/_scrollLocked`）防御性复位
 - 测试经 `initialTokens` 直通词块跳过 jieba 异步加载、`onHaptic`/`onCopy`/`onSearch` 注入，不触平台通道
 
@@ -695,7 +827,7 @@ tag→颜色映射唯一真值在 [lib/utils/diary_tag.dart](../../lib/utils/dia
 
 ### 第一层：设置页 UI（Dart，settings_tab.dart）
 
-- **Pro 徽章**（`_buildProBadge`，金色胶囊复用主题卡片视觉）挂在：手势选择器中 3 个悬浮窗动作 chip（`show_overlay` / `overlay_record` / `overlay_new_note`）+ "屏幕边缘随手记面板"分区标题
+- **Pro 徽章**（`_buildProBadge`，金色胶囊复用主题卡片视觉）挂在：手势选择器中 4 个悬浮窗动作 chip（`show_overlay` / `overlay_record` / `overlay_new_note` / `overlay_clipboard_note`）+ "屏幕边缘随手记面板"分区标题
 - **点击拦截**（`_ensureOverlayPro`）：未解锁时弹 `ProUnlockDialog` 并 return，**不写 prefs**（用户改不了槽位配置）；自动隐藏时长选择器同款门禁（不加徽章——它是配置项而非入口）
 - 解锁后 `_loadProUnlockStatus()` 刷新，徽章即时消失
 - 无障碍服务开关行**不标** Pro——它是免费功能（APP 内录音/笔记）共用的系统入口
@@ -707,11 +839,12 @@ tag→颜色映射唯一真值在 [lib/utils/diary_tag.dart](../../lib/utils/dia
 - `isProUnlocked()`：读落盘 prefs `flutter.is_pro_unlocked` **或** `flutter.pro_trial_deadline_ms`（试用截止，未到即放行；与 Dart ProGate 同 key 同语义，2026-09-19 起双层判定。与 `isRecording()` 同款读取模式，每次按键现读，无 MethodChannel）
 - `blockOverlayIfProLocked()`：不可用 → 50ms 短震 + **「暂未解锁」提示胶囊** + return
 - **提示胶囊**（2026-09-19，替代旧 Toast）：复用语音速记隐藏窗直建机制，在原录音胶囊位置（312×84）弹提示——`showProLockedHint()` 直建隐藏窗 + `notifyDartProLockedHint()` 走 dartReady 挂起补发握手 → Dart `OverlayHome._proHintShown` 渲染 `ProLockedHintPill`（黑 72% 胶囊 +「暂未解锁，无法使用」）→ 首帧发 `voiceMemoUiReady` 揭示（提示窗保持 `FLAG_NOT_TOUCHABLE`）→ 3 秒 Kotlin 收窗。⚠️ 渲染分支必须排在揭示门与「84<88 硬不变量」判定之前（提示态 voiceMemo 仍 idle，排后会被吞成空白）；`proHintActive` 清零唯一入口在 `hideOverlay`（防借提示窗绕出完整悬浮窗/标志残留）；建窗失败或已有浮窗在场回退 Toast 兜底
-- **三个挂点**（均在 toggle 放行分支之后）：
+- **四个挂点**（均在 toggle 放行分支之后）：
   | 函数 | 门禁位置 | 放行的 toggle 分支 |
   |---|---|---|
   | `triggerShowOverlay` | toggle 隐藏分支 return 之后 | 已显示时长按 = 立即隐藏（未解锁用户必须关得掉已显示的浮窗） |
   | `triggerOverlayNewNote` | 方法入口（无 toggle 语义） | — |
+  | `triggerOverlayClipboardNote` | 录音中判断之后、建临时窗之前（无 toggle 语义，2026-10-28） | — |
   | `triggerVoiceMemoOverlay` | 录音中 toggle 停止分支 return 之后 | 录音中再长按 = 停止（进行中的录音必须停得掉） |
 
 ### 关键文件

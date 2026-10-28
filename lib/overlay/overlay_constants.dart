@@ -5,8 +5,8 @@ import 'package:flutter/material.dart';
 /// 把手主题（皮肤）。三套（2026-09-22 用户定夺）：
 /// - [duo] 双色药丸（默认，历史视觉）：上暖白 / 下绿，图标取下半色呼应成对
 /// - [bluePurple] 蓝紫：与悬浮窗笔记卡片色系一致——上 = 卡片默认蓝
-///   [OverlayConstants.defaultCardColor] / 下 = 灵感标注紫（utils/diary_tag
-///   DiaryTag.colors），图标文字白色
+///   [OverlayConstants.defaultCardColor] / 下 = 默认「灵感」槽位紫（槽位外观
+///   可在设置页「标签外观」改色，utils/diary_tag 的 DiaryTagStyles），图标文字白色
 /// - [pill3d] 拟物胶囊💊：上白 / 下珊瑚红 + 左侧高光条 + 下半暗部渐变的
 ///   立体药丸，纯造型无图标无文字（用户定夺"没有文字的风格"）
 enum HandleTheme { duo, bluePurple, pill3d }
@@ -132,6 +132,15 @@ class OverlayConstants {
   static const int fontSizeStepMin = -2;
   static const int fontSizeStepMax = 2;
   static const int fontSizeStepDefault = 0;
+
+  /// ── 「全部展开」状态持久化（2026-10-19，用户要求沿上次展开）──
+  ///
+  /// header「全部展开/收起」按钮的状态跨窗口会话保留：展开全部 → true，
+  /// 收起全部 → false（缺省 false = 历史行为，下次打开全收起）。
+  /// 写入方/读取方同为 overlay engine（_toggleExpandAll 写、_expand 收起态
+  /// 主分支读），同一 isolate 的 prefs 内存缓存天然同步，读取无需 reload；
+  /// 主 App 侧无入口
+  static const String expandAllCardsPrefKey = 'overlay_expand_all_cards';
 
   /// 解析 prefs 档位值：null 兜底标准档，越界/坏值 clamp 到 [-2, 2]
   ///（范围语义，与把手大小的合法集合白名单不同——档位是连续刻度）
@@ -302,10 +311,16 @@ class OverlayConstants {
   /// 词块基准字号（比正文大两档，词块即触控目标；随字体大小档位 ±1pt 缩放）
   static const double bigBangFontSize = 17.0;
 
-  /// 大爆炸层背景：近不透明白色（2026-10-08 起由深色改浅色，对齐锤子原版
-  /// Big Bang 白色卡片视觉；全屏模态盖住面板与空白区，留白 2% 透明让下层
-  /// 隐约在场，关闭时无跳变感）。文字/词块配色随之反转（深字浅底）
+  /// 大爆炸层背景（浅色）：近不透明白色（2026-10-08 起由深色改浅色，对齐
+  /// 锤子原版 Big Bang 白色卡片视觉；全屏模态盖住面板与空白区，留白 2%
+  /// 透明让下层隐约在场，关闭时无跳变感）。文字/词块配色随之反转（深字
+  /// 浅底）。深色模式改用 [bigBangBackgroundDark]
   static const Color bigBangBackground = Color(0xFAFFFFFF);
+
+  /// 大爆炸层背景（深色）：近不透黑——2026-10-08 浅色化之前的深色底值
+  /// 直接复用。读取方：BigBangLayer（isDark 时替代 [bigBangBackground]，主
+  /// App 跟随 Theme brightness / 悬浮窗读 theme_mode prefs 显式传入）
+  static const Color bigBangBackgroundDark = Color(0xFA101319);
 
   /// 大爆炸层顶部留白区/底部关闭条/四角圆角缺口的下层压暗遮罩（用户拍板：
   /// 透出下层画面但要明显压暗，明暗分层让白色主体浮出）。35% 黑——下层
@@ -434,6 +449,60 @@ class OverlayConstants {
   static double panelTopOffsetFor(int cards) =>
       (panelMaxCardsDefault - cards) * (cardHeight + cardSpacing);
 
+  /// ── 面板按钮条位置（顶部/底部，2026-10-27 用户要求单手操作）──
+  ///
+  /// 设置项「按钮位置」：false（缺省）= 顶部（历史行为），true = 底部。
+  /// 底部模式把面板整体改为**贴停靠侧下角锚定**、按钮条移到列表下方——
+  /// 光把按钮挪到列表底部不够：面板仍是顶部锚定时，条目少的面板按钮仍停在
+  /// 屏幕上方；只有底部锚定才让按钮贴到拇指区。顶部模式的面板高度档位下压
+  /// 偏移（[panelTopOffsetFor]）在底部模式不适用（面板已贴底，下压无意义）。
+  /// prefs key（bool；写入方：设置页悬浮窗二级页；读取方：overlay engine 的
+  /// _refreshOverlayConfig/_scheduleAutoHide——跨 engine 各自读，无内存共享）
+  static const String panelButtonsBottomPrefKey =
+      'overlay_panel_buttons_bottom';
+
+  /// 按钮条在底部时的下边距（dp）：全屏窗口延伸到导航栏下（窗口拿不到
+  /// insets），用固定值避让导航栏，与列表原本的底部 padding 48 同值
+  static const double panelHeaderBottomPadding = 48.0;
+
+  /// 面板整体在窗口内的锚点：顶部模式贴停靠侧上角（历史行为）；底部模式
+  /// 贴停靠侧下角（按钮条随面板落进拇指区）
+  static Alignment panelAlignment({
+    required bool dockLeft,
+    required bool buttonsBottom,
+  }) {
+    if (buttonsBottom) {
+      return dockLeft ? Alignment.bottomLeft : Alignment.bottomRight;
+    }
+    return dockLeft ? Alignment.topLeft : Alignment.topRight;
+  }
+
+  /// 按钮条内边距：顶部模式避让状态栏（[panelHeaderTopPadding]，固定 40，
+  /// overlay 窗口拿不到系统 insets）；底部模式改为避让导航栏
+  ///（[panelHeaderBottomPadding]）。左右 8/16 随停靠侧镜像（历史值）
+  static EdgeInsets panelHeaderPadding({
+    required bool dockLeft,
+    required bool buttonsBottom,
+  }) => buttonsBottom
+      ? EdgeInsets.fromLTRB(
+          dockLeft ? 8 : 16,
+          4,
+          dockLeft ? 16 : 8,
+          panelHeaderBottomPadding,
+        )
+      : EdgeInsets.fromLTRB(
+          dockLeft ? 8 : 16,
+          panelHeaderTopPadding,
+          dockLeft ? 16 : 8,
+          4,
+        );
+
+  /// 日记列表滚动区的底部内边距：顶部模式 48（导航栏避让，历史行为，
+  /// 卡片能滚到面板底缘之上）；底部模式 8——列表下方是按钮条，导航栏由
+  /// 按钮条自身避让，列表再留 48 只会和按钮条之间多出一大段空白
+  static double panelListBottomPadding(bool buttonsBottom) =>
+      buttonsBottom ? 8.0 : 48.0;
+
   /// 主 App 大爆炸分词层顶边的参照条数档（用户拍板：主 App 没有「面板高度」
   /// 设置项，层顶边固定按悬浮窗 8 条档位的顶部高度取值——比「仅状态栏避让」
   /// 矮一截，单手够得着顶栏）
@@ -445,10 +514,10 @@ class OverlayConstants {
   static double get bigBangMainAppTopInset =>
       panelHeaderTopPadding + panelTopOffsetFor(bigBangMainAppRefCards);
 
-  /// 卡片固定默认色（无标注的活跃卡片）。标注（紧急/收藏/灵感）后整卡换
-  /// 标注色（色映射唯一真值在 utils/diary_tag.dart 的 DiaryTag.colors，
-  /// 主 App 日记页小色点共用），已归档卡片不参与取色，固定灰色 + 删除线。
-  /// 取色方：OverlayDiaryCard.build
+  /// 卡片固定默认色（无标注的活跃卡片）。标注后整卡换标注色（4 槽位外观
+  /// 唯一真值在 utils/diary_tag.dart 的 DiaryTagStyles，设置页「标签外观」
+  /// 可换图标/颜色，主 App 日记页小色点与网页端共用），已归档卡片不参与
+  /// 取色，固定灰色 + 删除线。取色方：OverlayDiaryCard.build
   static const Color defaultCardColor = Color(0xFF6F9AF0);
 
   /// 面板内边距
@@ -731,4 +800,12 @@ class OverlayConstants {
   /// 滑动删除的撤销窗口时长：到期后删除落定（录音文件此刻才从磁盘补删；
   /// 窗口内撤销靠把库行原样插回，音频不删才能连录音一起还原）
   static const Duration swipeDeleteUndoWindow = Duration(seconds: 3);
+
+  /// 截图附件完成后是否自动唤出悬浮窗并展开当前卡（设置页「截图附件」开关）。
+  /// 写入方：overlay_settings_page；读取方：OverlayHome._onCardCopyLongPress
+  /// ——动作型开关，截图成功收尾现场 reload 读，即时生效。缺省 false =
+  /// 历史行为（只 Toast 提示、保持收起）；true = 提示后展开面板并展开该卡，
+  /// 方便核对截图效果或继续编辑
+  static const String screenshotExpandCardPrefKey =
+      'overlay_screenshot_expand_card';
 }

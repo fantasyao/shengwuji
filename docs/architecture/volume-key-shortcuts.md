@@ -3,10 +3,12 @@
 > 2026-08-29 重构：从"监听哪些音量键"的两开关模型改为 **4 手势槽位 × 6 动作** 的统一矩阵（提交 `4c64d57` 契约+单测 / `a7a6b6e` Kotlin 重构 / `0d0a8cb` 设置页 UI；第 6 动作 `overlay_new_note` 后补）。本文档以新架构为准。
 >
 > **⚠️ 实验分支（2026-09-21）**：本分支新增第 7 动作 `ptt_record`「按住说话」（长按槽位专属，松手停录），见下方「按住说话（ptt_record）」小节。合回主干前本文档按实验状态描述。
+>
+> **2026-10-28**：新增第 8 动作 `overlay_clipboard_note`「剪贴板笔记」——读系统剪贴板最近一条文本直接存成随手记，不展开面板、不切前台，见下方「剪贴板笔记（overlay_clipboard_note）」小节。
 
 ## 概述
 
-通过 Android 无障碍服务（AccessibilityService）拦截音量键事件。每个音量键的长按、双击各是一个独立"手势槽位"，共 4 个槽位，每个槽位可绑定 6 种动作之一。
+通过 Android 无障碍服务（AccessibilityService）拦截音量键事件。每个音量键的长按、双击各是一个独立"手势槽位"，共 4 个槽位，每个槽位可绑定 8 种动作之一。
 
 ### 手势槽位 × 动作矩阵
 
@@ -21,7 +23,7 @@
 
 > 长按触发阈值见下方「长按触发阈值（预设档 + 自定义）」；双击窗口仍为固定 300ms 硬编码。
 
-**6 种动作**（字符串常量，Dart `VolumeGestureAction.*` 与 Kotlin `ACTION_*` 严格一致）：
+**8 种动作**（字符串常量，Dart `VolumeGestureAction.*` 与 Kotlin `ACTION_*` 严格一致）：
 
 | 动作值 | 含义 |
 | --- | --- |
@@ -29,11 +31,12 @@
 | `show_overlay` | 显示悬浮窗（toggle：显示中再触发则立即隐藏）**〔Pro〕** |
 | `overlay_record` | 悬浮窗语音速记（toggle 状态机，详见 @floating-window.md）**〔Pro〕** |
 | `overlay_new_note` | 悬浮窗新增笔记（浮窗未显示则先建，通知 Dart 新增空白笔记进编辑态；不做 toggle 隐藏，重复触发 = 再新增一条）**〔Pro〕** |
+| `overlay_clipboard_note` | 剪贴板笔记（读系统剪贴板最近一条文本直接存成随手记，**不展开面板、不切前台**；浮窗未显示时只用不可见的临时隐藏窗借焦点，见下方专节）**〔Pro〕** |
 | `quick_record` | 快速进入 APP 录音（Flutter 侧 toggle：录音中再触发则停录） |
 | `quick_text_note` | 快速进入 APP 新建文本笔记 |
 | `ptt_record` | 按住说话（长按槽位专属，实验分支：按住达阈值开录、松开同一键停录转写，见下方专节）**〔Pro〕** |
 
-> **Pro 门禁（2026-09-03；2026-09-19 反馈升级）**：悬浮窗系动作（`show_overlay` / `overlay_record` / `overlay_new_note`）为 Pro 付费功能。不可用（未解锁且试用过期）时：① 设置页手势选择器的对应 chip 标 Pro 徽章且点击弹付费弹窗（不写 prefs）；② Kotlin 侧执行动作前读落盘 `flutter.is_pro_unlocked` / `flutter.pro_trial_deadline_ms` 拦截——在原录音胶囊位置弹「暂未解锁，无法使用」提示胶囊 3 秒（旧 Toast 已替换），但**放行 toggle 分支**——已显示的浮窗/进行中的录音，未解锁用户必须关得掉、停得掉。详见 @floating-window.md 的"Pro 门禁"小节与 @pro-license.md。
+> **Pro 门禁（2026-09-03；2026-09-19 反馈升级）**：悬浮窗系动作（`show_overlay` / `overlay_record` / `overlay_new_note` / `overlay_clipboard_note`）为 Pro 付费功能。不可用（未解锁且试用过期）时：① 设置页手势选择器的对应 chip 标 Pro 徽章且点击弹付费弹窗（不写 prefs）；② Kotlin 侧执行动作前读落盘 `flutter.is_pro_unlocked` / `flutter.pro_trial_deadline_ms` 拦截——在原录音胶囊位置弹「暂未解锁，无法使用」提示胶囊 3 秒（旧 Toast 已替换），但**放行 toggle 分支**——已显示的浮窗/进行中的录音，未解锁用户必须关得掉、停得掉。详见 @floating-window.md 的"Pro 门禁"小节与 @pro-license.md。
 
 出厂默认对齐重构前旧版的默认行为（音量减键长按录音 + 双击笔记、音量加键不监听）。
 
@@ -72,6 +75,19 @@
 - **停止提示文案**：`startVoiceMemo` 负载新增 `ptt` key，Dart `OverlayVoiceMemoController.isPttSession` 快照，`_StopHintPill` 切「松开音量键，停止并转写」（优先级高于单击停录文案）；旧版本 Kotlin 不带此 key 按 false 兼容
 - **不做主 APP 快捷录音版 PTT 的原因**：quick_record 靠 Intent 冷启动 Activity，启动期间 `is_recording` 未落盘，快速松手的 toggle 停录会被 Flutter 侧当成「开始」反向误触——松手即停要求停录指令低延迟且不依赖 Activity
 
+### 剪贴板笔记（overlay_clipboard_note，2026-10-28）
+
+用户需求：给一个手势槽位（如双击音量减）绑上后，按一下就把系统剪贴板**最近一条文本**直接存成随手记，**不需要展开悬浮窗再点 header 的剪贴按钮**。落库链路完全复用 2026-10-27 的 header 剪贴按钮（`_saveClipboardToNote`：`readClipboard` → `trim` → `insertDiary` → `DiarySyncBridge.bump()` → 静默刷新），只是触发入口从面板按钮换成音量键。
+
+- **动作值 `overlay_clipboard_note`**：Dart `VolumeGestureAction.overlayClipboardNote` ↔ Kotlin `ACTION_OVERLAY_CLIPBOARD_NOTE` 严格一致（跨端硬编码副本）；合法值集合双侧同步扩为 8 个；迁移推导永不产出它（只由设置页写入）；4 个槽位都提供（双击也可用——它没有"按住中态"依赖，与 `ptt_record` 不同）
+- **⚠️ 核心难点：不展开面板就没有窗口可借焦点**。Android 10+ 只允许持有输入焦点的应用读剪贴板，而展开面板刻意是 `FLAG_NOT_FOCUSABLE`（不抢用户 App 焦点，见 @floating-window.md「剪贴板存为笔记」小节）。浮窗**已显示**（把手/竖线/面板）→ 复用现有窗口走 `readClipboardWithFocus` 的临时提权；浮窗**不存在** → Kotlin 直建一个 `alpha=0 + NOT_TOUCHABLE` 的**临时隐藏窗**（复用语音速记冷启动的 312×84 直建机制，`showOverlay(hidden=true, revealOnUiReady=false)`），只为这次读取借焦点
+- **临时窗的收尾（两层兜底）**：Dart 处理完（成功/失败/空剪贴板都发）回执 `clipboardNoteDone` → Kotlin 立即收窗；10s 超时（`CLIPBOARD_NOTE_TIMEOUT_MS`）兜底收窗，防 Dart 卡死留下看不见的窗口。收窗按 **View 身份比对**（`clipboardNoteView`），等待期间用户用别的动作重建了浮窗不会被误关；所有移窗路径（`hideOverlay` / `destroyOverlayEngine`）清空临时窗与挂起请求
+- **`revealOnUiReady=false`**：`showOverlay` 新增该参数（默认 true 保持语音速记/按住说话/Pro 提示胶囊行为不变）；剪贴板临时窗**永不揭示**，不置 `pendingVoiceMemoReveal`——置了会让后续动作把"还有隐藏窗在场"误判成待揭示状态
+- **Dart 未就绪**：`pendingClipboardNote` + `pendingClipboardNoteEphemeral` 挂起，`dartReady` 握手后补发（与 `pendingNewNote` 同机制）；持 `{ephemeral: bool}` 负载，Dart 只用于日志（收窗判断在原生侧）
+- **互斥与门禁**：录音中直接 Toast「录音中，先结束录音再存剪贴板」不建窗（该判断先于 Pro 门禁——录音中但试用已过期的用户不该被提示胶囊顶掉正在录的胶囊）；其余走 `blockOverlayIfProLocked()`；震动一次（50ms/50）在原生触发时发出，Dart 成功路径 `haptic:false` 不再震，防两次震动贴脸
+- **边界**：剪贴板为空/图片等非文本/系统拒绝读取 → Toast「剪贴板里没有可保存的文字」不落库；编辑中提示「先完成当前编辑」；`_savingClipboard` 防连点重复入库
+- **未验证风险（需真机确认）**：`alpha=0` 临时窗能否拿到输入焦点理论上可行（焦点判定与 alpha 无关），但 `readClipboardWithFocus` 500ms 等焦点超时会安全降级为「剪贴板里没有可保存的文字」并收窗，不会卡死
+
 ### 配置迁移（旧 key → 槽位推导）
 
 旧版 4 个 key（`volume_key_mode` / `overlay_volume_up_long_press` / `overlay_volume_up_action` / `double_click_text_note`）重构后**不再被写入**，落盘保留仅作迁移 fallback 输入源。
@@ -100,7 +116,7 @@
   - **ACTION_DOWN**：取消 pendingSingleClick；长按槽有动作才缓存 `currentLongPressAction` + 启动长按计时（`longPressHandler.postDelayed`，时长读 prefs 档位，默认 400ms）。长按槽=none 时不启动计时——**按住不放由「按住连调」接管**（见下）；框架 repeat DOWN 事件直接吞掉（自排驱动，不依赖 ROM 是否派发重复事件）
   - **按住连续调音量接管（2026-09-28）**：双击槽占用整键后，系统原生「按住音量键连调」必然失效——原生连调依赖系统收到未消费的 DOWN 事件流，而双击检测必须消费整键（第一次单击延迟 300ms 确认无第二击），这是结构性冲突无法「释放」。故在**长按槽=无动作**时由服务代为还原：DOWN 排定 500ms 初始延迟（对齐原生 repeat 起始），到期按 100ms/步重复 `adjustVolume`；UP 撤销计时，已连调过的按压跳过单击/双击状态机（防抬起被当第一次单击白跳一格）。用 Handler 自排而非依赖 repeat 事件（三星 ROM 不发送重复事件，longPressHandler 同款考量）。长按槽有动作时按住归手势不接管；录音中+单击停录开启时不接管
   - **ACTION_UP**：移除长按计时 → `wasLongPress` 短路（长按已处理，不再进双击）→ 双击槽有动作走 300ms 同键双击检测（第二次抬起时执行 `executeGestureAction`；录音中与非录音态同一套，2026-09-15 前录音中会短路直接调音量、导致双击停录失效）；双击槽无动作则**立即调音量**（不配双击的键单击没有 300ms 延迟，本次重构的体验优化）
-  - **`executeGestureAction(action, source)`**：4 槽位动作的唯一分发入口（`when` → `triggerQuickRecord` / `triggerQuickTextNote` / `triggerShowOverlay` / `triggerVoiceMemoOverlay`）；`source`（「长按」/「双击」/「外部快捷方式」默认值）只进分发入口日志定位触发来源，trigger* 内部日志不再硬编码手势名
+  - **`executeGestureAction(action, source)`**：4 槽位动作的唯一分发入口（`when` → `triggerQuickRecord` / `triggerQuickTextNote` / `triggerShowOverlay` / `triggerVoiceMemoOverlay` / `triggerOverlayClipboardNote` 等）；`source`（「长按」/「双击」/「外部快捷方式」默认值）只进分发入口日志定位触发来源，trigger* 内部日志不再硬编码手势名
   - **`getGestureAction(prefs, newKey, migrate)`**：新 key 合法直接用，否则 Kotlin 侧内置迁移 fallback
   - 录音状态感知：SharedPreferences 的 `is_recording` 标志
   - `onInterrupt` 补齐了长按 Handler 清理（原 DOWN/UP 清理不对称）
@@ -114,8 +130,8 @@
 ### Flutter 层
 
 - **main.dart** - 接收快捷方式 Intent，触发对应操作（`quick_record` / `quick_text_note` 动作仍走此链路）
-- **settings_tab.dart** - "音量键快捷操作"分区：服务状态行 + 4 行手势选择器（每行 = 手势标题 + Wrap ChoiceChip 6 选项：无动作 / 显示悬浮窗〔Pro〕/ 悬浮窗录音〔Pro〕/ 悬浮窗笔记〔Pro〕/ APP内录音 / APP内笔记）+ 前往系统设置按钮 + 静音提示开关
-- **lib/utils/volume_gesture_config.dart** - 槽位/动作常量 + 迁移推导纯函数（`VolumeGestureAction` / `VolumeGestureSlot` / `migrateVolumeGestures` / `loadVolumeGestureActions`，含 11 个单元测试）
+- **settings_tab.dart** - "音量键快捷操作"分区：服务状态行 + 4 行手势选择器（每行 = 手势标题 + Wrap ChoiceChip：无动作 / 显示悬浮窗〔Pro〕/ 悬浮窗录音〔Pro〕/ 悬浮窗笔记〔Pro〕/ 剪贴板笔记〔Pro〕/ APP内录音 / APP内笔记 / 按住说话〔Pro，仅长按两行〕）+ 前往系统设置按钮 + 静音提示开关
+- **lib/utils/volume_gesture_config.dart** - 槽位/动作常量 + 迁移推导纯函数（`VolumeGestureAction` / `VolumeGestureSlot` / `migrateVolumeGestures` / `loadVolumeGestureActions`，含 20 个单元测试）
 
 ## 事件流程
 
@@ -128,6 +144,7 @@
                 ├─ quick_record    → 震动(100ms, 70) + quick_record Intent → Flutter 录音开始/停止(toggle)
                 ├─ quick_text_note → 震动(50+50+50ms, 80) + quick_text_note Intent
                 ├─ show_overlay    → 显示/隐藏悬浮窗（详见 @floating-window.md）
+                ├─ overlay_clipboard_note → 读剪贴板最近一条文本存为随手记（不展开面板，见专节）
                 └─ overlay_record  → 悬浮窗语音速记 toggle（详见 @floating-window.md）
 音量键抬起(UP)   → 移除长按计时 → wasLongPress=true 短路返回（不进双击检测）
 ```
@@ -207,6 +224,7 @@
 | 悬浮窗显示中 toggle 隐藏 | 50ms | 60  | 短震             |
 | 悬浮窗语音速记开始 | 100ms    | 70   | 确认录音已开始   |
 | 悬浮窗语音速记停止（toggle） | 50ms | 50 | 短震           |
+| 剪贴板笔记       | 50ms       | 50   | 原生触发时一次；Dart 落库成功不再震（haptic:false） |
 
 ## 关键文件
 
@@ -225,11 +243,14 @@
 ```
 滑动键（系统映射快捷方式）
   → 静态快捷方式 overlay_record（shortcuts.xml，label「悬浮窗语音速记（再触发停止）」）
-  → ACTION_OVERLAY_RECORD Intent
+    或 show_overlay（label「显示悬浮窗（再触发隐藏）」，2026-10-20 新增）
+  → ACTION_OVERLAY_RECORD / ACTION_SHOW_OVERLAY Intent
   → ShortcutDispatchActivity（透明无 UI，空 taskAffinity 独立 task，不拉主 App 前台）
-  → VolumeKeyAccessibilityService.executeGestureAction("overlay_record")（同进程静态 instance 引用）
-  → triggerVoiceMemoOverlay()——与音量键手势同一链路，toggle / Pro 门禁 / 麦克风互斥 / watchdog 全部复用
+  → VolumeKeyAccessibilityService.executeGestureAction("overlay_record" / "show_overlay")（同进程静态 instance 引用）
+  → triggerVoiceMemoOverlay() / triggerShowOverlay()——与音量键手势同一链路，toggle / Pro 门禁 / 麦克风互斥 / watchdog 全部复用
 ```
+
+- **两条悬浮窗快捷方式的分工**：`overlay_record` = 按一下开录再按一下停（toggle）；`show_overlay` = 按一下显示并展开面板、再按一下隐藏（toggle）——后者适合只想把悬浮窗当「随手记面板」呼出查看/手输的场景。两者共用 ShortcutDispatchActivity 同一分发层，服务不可达重试与 Toast 引导完全一致
 
 - **服务不可达重试**：分发层以 350ms × 6 重试等服务绑定（进程刚重启的竞态窗口），仍不可达 Toast 引导开启无障碍服务——悬浮窗动作本就以服务启用为前置（与音量键手势同款要求）
 - **quick_record 不走此链路**：主 App 录音需要 Activity（锁屏显示/页面切换），静态快捷方式仍直落 MainActivity（现状不变）
@@ -248,6 +269,10 @@
 - @floating-window.md - 悬浮窗（`show_overlay` / `overlay_record` 动作的实现细节）
 
 ## Changelog
+
+- 2026-10-28：新增第 8 动作 `overlay_clipboard_note`「剪贴板笔记」（用户需求：绑到双击键，一按就把最近一次复制的内容存进随手记，不用展开悬浮窗点剪贴按钮）——落库复用 header 剪贴按钮的 `_saveClipboardToNote`（读剪贴板→trim→insertDiary→DiarySyncBridge→静默刷新），只换触发入口；⚠️ 不展开面板时没有可借焦点的窗口（Android 10+ 读剪贴板需焦点），浮窗不存在时直建 `alpha=0 + NOT_TOUCHABLE` 临时隐藏窗（`showOverlay` 新增 `revealOnUiReady=false`，不置 pendingVoiceMemoReveal），Dart 回执 `clipboardNoteDone` 收窗 + 10s 超时兜底，收窗按 View 身份比对防误关用户重建的浮窗；录音中先于 Pro 门禁直接 Toast 不建窗；合法值集合 7→8（Dart/Kotlin 双侧同步）；新增通道契约测试 3 例 + 设置页 3 例 + 配置 1 例
+
+- 2026-10-20：新增静态快捷方式 `show_overlay`「显示悬浮窗（再触发隐藏）」——把音量键手势的「显示悬浮窗」动作暴露给第三方额外按键（努比亚滑动键等）映射；复用 ShortcutDispatchActivity 分发层与 executeGestureAction 链路（toggle/Pro 门禁/震动全复用），服务侧零改动；shortcuts.xml 注册（图标：卡片蓝底+白色竖胶囊把手）+ manifest intent-filter 加 action + 分发层映射表与 Toast 文案泛化（「悬浮窗录音需要…」→「悬浮窗功能需要…」）
 
 - 2026-09-28：新增「按住连续调音量」接管（用户反馈：双击槽位占用后，抖音/B站/微信里按住音量键无法连调音量）——根因是双击检测必须消费整键导致系统原生连调收不到事件流（结构性冲突无法「释放」，把 DOWN 还给系统则双击变成音量先跳两格+还触发动作）；长按槽=无动作时由服务代为还原：DOWN 排定 500ms 初始延迟后按 100ms/步重复 adjustVolume，UP 撤销且已连调的按压跳过单击/双击状态机（防抬起白跳一格+污染双击计时）；Handler 自排不依赖 ROM 是否派发 repeat 事件（三星不发，longPressHandler 同款考量）；长按槽有动作/录音中+单击停录开启时不接管；onInterrupt 补对称清理；compileDebugKotlin 通过
 - 2026-09-28：新增「无障碍保活指南」三级页——音量键快捷操作二级页顶部常驻入口「音量键没反应？看这里」（无论服务当前开关状态都展示：此刻开着 ≠ 明天不被系统杀掉）；三级页 `lib/settings/accessibility_keepalive_page.dart` 纯说明无状态：原因解释（国产 ROM 省电策略杀后台顺带关无障碍）+ 六项自查清单（自启动 / 最近任务锁定 / 电池无限制+允许后台活动 / 后台弹出界面 / 锁屏显示 / 重开无障碍服务）+ 兜底建议（搜索引擎查「无障碍服务 保活 + 手机品牌」）+ 底部按钮直达系统无障碍设置（复用 openAccessibilitySettings）；步骤不做深链跳转——各家 ROM 路径差异大，跳不准反而误导；新增 accessibility_keepalive_page_test 2 例（六步渲染契约 + 按钮可点，视口拉高防 ListView 懒构建漏渲染下半屏）

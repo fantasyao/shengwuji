@@ -47,7 +47,8 @@ class _AIAppPageState extends State<AIAppPage> {
     // 显示保存成功提示（内置 findById，自定义从已加载列表取）
     if (mounted) {
       final matches = _customApps.where((a) => a.id == appId).toList();
-      final app = AIApp.findById(appId) ?? (matches.isNotEmpty ? matches.first : null);
+      final app =
+          AIApp.findById(appId) ?? (matches.isNotEmpty ? matches.first : null);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text("已设置为 ${app?.name ?? '未知应用'}"),
@@ -304,9 +305,7 @@ class _AppPickerSheetState extends State<_AppPickerSheet>
   // inactive，抽屉不销毁），授权回来不会重新 initState，故列表为空时趁 resumed 自动重查
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed &&
-        _apps != null &&
-        _apps!.isEmpty) {
+    if (state == AppLifecycleState.resumed && _apps != null && _apps!.isEmpty) {
       _loadInstalledApps();
     }
   }
@@ -344,10 +343,9 @@ class _AppPickerSheetState extends State<_AppPickerSheet>
   Future<Uint8List?> _loadIcon(String packageName) async {
     if (_iconCache.containsKey(packageName)) return _iconCache[packageName];
     try {
-      final bytes = await _channel.invokeMethod<Uint8List>(
-        'getAppIcon',
-        {'packageName': packageName},
-      );
+      final bytes = await _channel.invokeMethod<Uint8List>('getAppIcon', {
+        'packageName': packageName,
+      });
       _iconCache[packageName] = bytes;
     } catch (e) {
       _iconCache[packageName] = null;
@@ -357,9 +355,7 @@ class _AppPickerSheetState extends State<_AppPickerSheet>
 
   /// 过滤：搜索词（名称/包名不区分大小写）+ 排除内置与已添加的自定义应用
   List<_InstalledApp> _filtered(List<_InstalledApp> apps) {
-    final excludePackages = {
-      ...AIApp.allApps.map((a) => a.packageName),
-    };
+    final excludePackages = {...AIApp.allApps.map((a) => a.packageName)};
     final q = _query.trim().toLowerCase();
     return apps.where((a) {
       if (excludePackages.contains(a.packageName)) return false;

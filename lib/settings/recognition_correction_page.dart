@@ -73,10 +73,7 @@ class _RecognitionCorrectionPageState extends State<RecognitionCorrectionPage> {
   }
 
   /// 开关/阈值变化：写 prefs + 热更新 processor（识别链路立即生效）
-  Future<void> _updatePhonemeConfig({
-    bool? enabled,
-    double? threshold,
-  }) async {
+  Future<void> _updatePhonemeConfig({bool? enabled, double? threshold}) async {
     final prefs = await SharedPreferences.getInstance();
     if (enabled != null) {
       await prefs.setBool(PhonemeHotwordConfig.enabledPrefKey, enabled);
@@ -121,10 +118,7 @@ class _RecognitionCorrectionPageState extends State<RecognitionCorrectionPage> {
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   child: buildSettingsSwitchTile(
                     context,
-                    title: const Text(
-                      '音素匹配热词',
-                      style: TextStyle(fontSize: 15),
-                    ),
+                    title: const Text('音素匹配热词', style: TextStyle(fontSize: 15)),
                     subtitle: Text(
                       '按发音匹配：识别结果与热词读音相似度超过阈值才替换，'
                       '识别写法稍有出入也能命中；关闭后退回逐字精确替换',
@@ -140,10 +134,7 @@ class _RecognitionCorrectionPageState extends State<RecognitionCorrectionPage> {
                   padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
                   child: Row(
                     children: [
-                      Text(
-                        '替换阈值',
-                        style: TextStyle(fontSize: 15),
-                      ),
+                      Text('替换阈值', style: TextStyle(fontSize: 15)),
                       const Spacer(),
                       Text(
                         _phonemeThreshold.toStringAsFixed(2),
@@ -160,59 +151,58 @@ class _RecognitionCorrectionPageState extends State<RecognitionCorrectionPage> {
                   value: _phonemeThreshold,
                   min: PhonemeHotwordConfig.minThreshold,
                   max: PhonemeHotwordConfig.maxThreshold,
-                  divisions: ((PhonemeHotwordConfig.maxThreshold -
-                          PhonemeHotwordConfig.minThreshold) *
-                      100)
-                      .round(),
+                  divisions:
+                      ((PhonemeHotwordConfig.maxThreshold -
+                                  PhonemeHotwordConfig.minThreshold) *
+                              100)
+                          .round(),
                   label: _phonemeThreshold.toStringAsFixed(2),
-                  onChanged: (v) =>
-                      setState(() => _phonemeThreshold = v),
+                  onChanged: (v) => setState(() => _phonemeThreshold = v),
                   onChangeEnd: (v) => _updatePhonemeConfig(threshold: v),
                 ),
                 const Divider(height: 1, indent: 16, endIndent: 16),
-                TextField(
-                  controller: _hotwordController,
-                  maxLines: 5,
-                  decoration: InputDecoration(
-                    filled: true,
-                    fillColor: ext.cardBackground,
-                    hintText: "错词 = 正词 / 目标 | 别名 (每行一个)",
-                    hintStyle: TextStyle(color: ext.textHint, fontSize: 13),
-                    contentPadding: const EdgeInsets.all(16),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(15),
-                      borderSide: BorderSide.none,
+                Padding(
+                  // 拟物主题留出卡片内边距，让凹陷输入框不顶到卡片边缘
+                  padding: ext.isNeumorphic
+                      ? const EdgeInsets.fromLTRB(16, 8, 16, 8)
+                      : EdgeInsets.zero,
+                  child: buildSettingsFieldShell(
+                    context,
+                    field: TextField(
+                      controller: _hotwordController,
+                      maxLines: 5,
+                      decoration: InputDecoration(
+                        // 拟物主题由外层 NeuInset 提供同色凹陷底，填充会盖住内阴影
+                        filled: !ext.isNeumorphic,
+                        fillColor: ext.cardBackground,
+                        hintText: "错词 = 正词 / 目标 | 别名 (每行一个)",
+                        hintStyle: TextStyle(color: ext.textHint, fontSize: 13),
+                        contentPadding: const EdgeInsets.all(16),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(15),
+                          borderSide: BorderSide.none,
+                        ),
+                      ),
                     ),
                   ),
                 ),
                 const Divider(height: 1),
                 Padding(
                   padding: const EdgeInsets.all(12),
-                  child: ElevatedButton.icon(
+                  child: buildSettingsPrimaryButton(
+                    context,
+                    icon: Icons.save_rounded,
+                    label: "保存并更新热词",
+                    minHeight: 50,
                     onPressed: () async {
                       await widget.processor.saveContent(
                         _hotwordController.text,
                       );
-                      if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text("✅ 热词已保存生效")),
-                        );
-                      }
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text("✅ 热词已保存生效")),
+                      );
                     },
-                    icon: const Icon(Icons.save_rounded, size: 20),
-                    label: const Text(
-                      "保存并更新热词",
-                      style: TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: ext.primary,
-                      foregroundColor: ext.textOnPrimary,
-                      elevation: 0,
-                      minimumSize: const Size.fromHeight(50),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                    ),
                   ),
                 ),
                 Padding(
@@ -268,7 +258,10 @@ class _RecognitionCorrectionPageState extends State<RecognitionCorrectionPage> {
                         value: snapshot.data ?? true,
                         onChanged: (v) async {
                           final prefs = await SharedPreferences.getInstance();
-                          await prefs.setBool(CorrectionConfig.enabledPrefKey, v);
+                          await prefs.setBool(
+                            CorrectionConfig.enabledPrefKey,
+                            v,
+                          );
                           setState(() {});
                         },
                       ),
@@ -312,8 +305,7 @@ class _RecognitionCorrectionPageState extends State<RecognitionCorrectionPage> {
           context,
           MaterialPageRoute(
             // 传主实例：管理页「加入热词」写盘后同步重建主实例词表立即生效
-            builder: (_) =>
-                CorrectionPairsPage(processor: widget.processor),
+            builder: (_) => CorrectionPairsPage(processor: widget.processor),
           ),
         );
         _loadCorrectionPairCount(); // 管理页可能有增删，返回后刷新计数
